@@ -185,7 +185,9 @@ that happened to contain an older version of the test.
   - memory flag contracts
   - colocation config and SGLang AR budget contracts
   - `PipelineState` request builders
-  - talker behavior
+  - talker behavior, including projected prefill tensor storage/slicing, decode
+    feedback/text FIFO consumption, and replay of generated-token input embeds
+    after decode retract
   - Code2Wav streaming/cleanup behavior
   - logit-shaping helpers (e.g. repetition penalty) numerical equivalence with the original per-row scalar formulas.
 
