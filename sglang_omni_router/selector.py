@@ -25,11 +25,14 @@ class WorkerSelector:
         *,
         required_capabilities: set[Capability],
         requested_model: str | None = None,
+        exclude: set[str] | None = None,
     ) -> Worker:
+        excluded = exclude or set()
         candidates = [
             worker
             for worker in workers
             if worker.is_routable
+            and worker.worker_id not in excluded
             and all(worker.supports(capability) for capability in required_capabilities)
         ]
         if requested_model is not None and any(worker.model for worker in candidates):

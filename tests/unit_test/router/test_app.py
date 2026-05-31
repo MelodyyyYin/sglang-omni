@@ -26,6 +26,8 @@ def _router_config(
     max_connections: int = 100,
     health_failure_threshold: int = 1,
     health_check_timeout_secs: int = 5,
+    max_request_retries: int = 0,
+    retry_backoff_secs: float = 0.0,
     worker_configs: list[WorkerConfig] | None = None,
 ) -> RouterConfig:
     return RouterConfig(
@@ -37,6 +39,8 @@ def _router_config(
         policy=policy,
         max_payload_size=max_payload_size,
         max_connections=max_connections,
+        max_request_retries=max_request_retries,
+        retry_backoff_secs=retry_backoff_secs,
         health_success_threshold=1,
         health_failure_threshold=health_failure_threshold,
         health_check_timeout_secs=health_check_timeout_secs,
@@ -817,6 +821,251 @@ def test_retryable_upstream_status_refreshes_worker_routability() -> None:
     assert seen_workers == ["worker-a:8101", "worker-b:8102"]
     assert app.state.workers[0].state == "unhealthy"
     assert app.state.workers[0].last_error == "status=502"
+
+
+def test_transient_status_fails_over_to_next_worker() -> None:
+    seen_workers: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/chat/completions":
+            seen_workers.append(_request_netloc(request))
+            if _request_netloc(request) == "worker-a:8101":
+                return httpx.Response(500, content=b"thinker oom", request=request)
+            return httpx.Response(200, json={"ok": True}, request=request)
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(
+        _router_config(max_request_retries=2, health_failure_threshold=5),
+        client=async_client,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"model": "qwen3-omni", "messages": []},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    assert response.headers["x-sglang-omni-route-attempt"] == "2"
+    assert seen_workers == ["worker-a:8101", "worker-b:8102"]
+    worker_a, worker_b = app.state.workers
+    assert worker_a.failed_requests == 1
+    assert worker_b.successful_requests == 1
+    assert all(worker.active_requests == 0 for worker in app.state.workers)
+
+
+def test_connection_error_fails_over_to_next_worker() -> None:
+    seen_workers: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/chat/completions":
+            seen_workers.append(_request_netloc(request))
+            if _request_netloc(request) == "worker-a:8101":
+                raise httpx.ConnectError("worker down", request=request)
+            return httpx.Response(200, json={"ok": True}, request=request)
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(
+        _router_config(max_request_retries=2, health_failure_threshold=5),
+        client=async_client,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"model": "qwen3-omni", "messages": []},
+        )
+
+    assert response.status_code == 200
+    assert response.headers["x-sglang-omni-route-attempt"] == "2"
+    assert seen_workers == ["worker-a:8101", "worker-b:8102"]
+    assert all(worker.active_requests == 0 for worker in app.state.workers)
+
+
+def test_retry_reuses_only_routable_worker_after_backoff() -> None:
+    seen: list[int] = []
+    statuses = iter([503, 503, 200])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/chat/completions":
+            status = next(statuses)
+            seen.append(status)
+            if status == 200:
+                return httpx.Response(200, json={"ok": True}, request=request)
+            return httpx.Response(status, content=b"busy", request=request)
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(
+        _router_config(
+            max_request_retries=2,
+            health_failure_threshold=5,
+            worker_configs=[WorkerConfig(url="http://worker-a:8101")],
+        ),
+        client=async_client,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"model": "qwen3-omni", "messages": []},
+        )
+
+    assert response.status_code == 200
+    assert response.headers["x-sglang-omni-route-attempt"] == "3"
+    assert seen == [503, 503, 200]
+    worker = app.state.workers[0]
+    assert worker.routed_requests == 3
+    assert worker.failed_requests == 2
+    assert worker.successful_requests == 1
+
+
+def test_retry_exhaustion_surfaces_last_upstream_failure() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(503, content=b"overloaded", request=request)
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(
+        _router_config(
+            max_request_retries=3,
+            health_failure_threshold=5,
+            worker_configs=[WorkerConfig(url="http://worker-a:8101")],
+        ),
+        client=async_client,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"model": "qwen3-omni", "messages": []},
+        )
+
+    assert response.status_code == 503
+    assert response.content == b"overloaded"
+    assert response.headers["x-sglang-omni-route-attempt"] == "4"
+    worker = app.state.workers[0]
+    assert worker.routed_requests == 4
+    assert worker.failed_requests == 4
+
+
+def test_retry_applies_backoff_between_attempts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backoff_attempts: list[int] = []
+    statuses = iter([500, 200])
+
+    async def fake_backoff(self: object, attempt: int) -> None:
+        backoff_attempts.append(attempt)
+
+    monkeypatch.setattr(proxy_module.ProxyHandler, "_retry_backoff", fake_backoff)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/chat/completions":
+            if next(statuses) == 200:
+                return httpx.Response(200, json={"ok": True}, request=request)
+            return httpx.Response(500, content=b"oom", request=request)
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(
+        _router_config(
+            max_request_retries=2,
+            health_failure_threshold=5,
+            worker_configs=[WorkerConfig(url="http://worker-a:8101")],
+        ),
+        client=async_client,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"model": "qwen3-omni", "messages": []},
+        )
+
+    assert response.status_code == 200
+    assert backoff_attempts == [1]
+
+
+def test_client_error_status_is_not_retried() -> None:
+    seen_workers: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/chat/completions":
+            seen_workers.append(_request_netloc(request))
+            return httpx.Response(400, json={"error": "bad"}, request=request)
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(
+        _router_config(max_request_retries=2, health_failure_threshold=5),
+        client=async_client,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"model": "qwen3-omni", "messages": []},
+        )
+
+    assert response.status_code == 400
+    assert response.headers["x-sglang-omni-route-attempt"] == "1"
+    assert seen_workers == ["worker-a:8101"]
+
+
+def test_streaming_initial_connection_error_fails_over() -> None:
+    seen_workers: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/chat/completions":
+            seen_workers.append(_request_netloc(request))
+            if _request_netloc(request) == "worker-a:8101":
+                raise httpx.ConnectError("worker down", request=request)
+            return httpx.Response(
+                200,
+                content=b"data: hello\n\n",
+                headers={"content-type": "text/event-stream"},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(
+        _router_config(max_request_retries=2, health_failure_threshold=5),
+        client=async_client,
+    )
+
+    with TestClient(app) as client:
+        with client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={"model": "qwen3-omni", "stream": True},
+        ) as response:
+            body = b"".join(response.iter_bytes())
+
+    assert response.status_code == 200
+    assert body == b"data: hello\n\n"
+    assert response.headers["x-sglang-omni-route-attempt"] == "2"
+    assert seen_workers == ["worker-a:8101", "worker-b:8102"]
+    assert all(worker.active_requests == 0 for worker in app.state.workers)
 
 
 def test_worker_validation_error_does_not_refresh_worker_routability() -> None:

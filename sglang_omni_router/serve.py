@@ -80,6 +80,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--request-timeout-secs", type=int, default=1800)
     parser.add_argument("--max-payload-size", type=int, default=512 * 1024 * 1024)
     parser.add_argument("--max-connections", type=int, default=100)
+    parser.add_argument("--max-request-retries", type=int, default=2)
+    parser.add_argument("--retry-backoff-secs", type=float, default=0.5)
     parser.add_argument("--health-failure-threshold", type=int, default=3)
     parser.add_argument("--health-success-threshold", type=int, default=2)
     parser.add_argument("--health-check-timeout-secs", type=int, default=5)
@@ -137,6 +139,8 @@ def build_config_from_args(
         request_timeout_secs=args.request_timeout_secs,
         max_payload_size=args.max_payload_size,
         max_connections=args.max_connections,
+        max_request_retries=args.max_request_retries,
+        retry_backoff_secs=args.retry_backoff_secs,
         health_failure_threshold=args.health_failure_threshold,
         health_success_threshold=args.health_success_threshold,
         health_check_timeout_secs=args.health_check_timeout_secs,
@@ -189,6 +193,8 @@ def main(argv: Sequence[str] | None = None) -> None:
             f"policy={config.policy} | "
             f"max_payload_size={config.max_payload_size} | "
             f"max_connections={config.max_connections} | "
+            f"max_request_retries={config.max_request_retries} | "
+            f"retry_backoff_secs={config.retry_backoff_secs} | "
             f"health_failure_threshold={config.health_failure_threshold} | "
             f"health_success_threshold={config.health_success_threshold} | "
             f"health_check_endpoint={config.health_check_endpoint} | "

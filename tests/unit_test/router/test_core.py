@@ -579,6 +579,33 @@ def test_router_config_rejects_non_positive_integer_knobs(field: str) -> None:
         )
 
 
+@pytest.mark.parametrize("field", ["max_request_retries", "retry_backoff_secs"])
+def test_router_config_rejects_negative_retry_knobs(field: str) -> None:
+    with pytest.raises(ValidationError, match="value must be >= 0"):
+        RouterConfig(
+            workers=[WorkerConfig(url="http://127.0.0.1:8101")],
+            **{field: -1},
+        )
+
+
+def test_router_config_allows_disabling_retries() -> None:
+    config = RouterConfig(
+        workers=[WorkerConfig(url="http://127.0.0.1:8101")],
+        max_request_retries=0,
+        retry_backoff_secs=0.0,
+    )
+
+    assert config.max_request_retries == 0
+    assert config.retry_backoff_secs == 0.0
+
+
+def test_router_config_retry_defaults() -> None:
+    config = RouterConfig(workers=[WorkerConfig(url="http://127.0.0.1:8101")])
+
+    assert config.max_request_retries == 2
+    assert config.retry_backoff_secs == 0.5
+
+
 def test_router_config_rejects_hyphenated_policy_aliases() -> None:
     with pytest.raises(ValidationError):
         RouterConfig(
@@ -680,6 +707,34 @@ def test_selector_excludes_disabled_workers() -> None:
         selector.select(workers, required_capabilities={"chat"}).url
         == "http://127.0.0.1:8102"
     )
+
+
+def test_selector_excludes_tried_workers() -> None:
+    workers = build_workers(
+        [
+            WorkerConfig(url="http://127.0.0.1:8101"),
+            WorkerConfig(url="http://127.0.0.1:8102"),
+        ]
+    )
+    for worker in workers:
+        worker.state = "healthy"
+
+    selector = WorkerSelector("round_robin")
+
+    assert (
+        selector.select(
+            workers,
+            required_capabilities={"chat"},
+            exclude={workers[0].worker_id},
+        ).url
+        == "http://127.0.0.1:8102"
+    )
+    with pytest.raises(NoEligibleWorkerError):
+        selector.select(
+            workers,
+            required_capabilities={"chat"},
+            exclude={workers[0].worker_id, workers[1].worker_id},
+        )
 
 
 def test_selector_requires_all_capabilities() -> None:

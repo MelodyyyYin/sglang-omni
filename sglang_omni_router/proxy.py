@@ -200,6 +200,40 @@ class ProxyHandler:
         metadata: RouteMetadata,
         worker: Worker,
     ) -> Response:
+        # Buffered inference requests are idempotent, so a transient upstream
+        # failure (connection error, 5xx, 408, 429) on one worker is retried on
+        # another routable worker — or the same one after a backoff when it is
+        # the only candidate left. This absorbs intermittent worker hiccups
+        # (e.g. colocated thinker OOM) instead of surfacing them as hard
+        # failures to the client.
+        tried: set[str] = set()
+        max_attempts = 1 + self._config.max_request_retries
+        attempt = 0
+        while True:
+            attempt += 1
+            tried.add(worker.worker_id)
+            response, retryable = await self._attempt_non_streaming(
+                request, path, body, metadata, worker, attempt
+            )
+            if not retryable or attempt >= max_attempts:
+                return response
+            next_worker = self._select_retry_worker(metadata, exclude=tried)
+            if next_worker is None:
+                next_worker = self._select_retry_worker(metadata, exclude=set())
+            if next_worker is None:
+                return response
+            await self._retry_backoff(attempt)
+            worker = next_worker
+
+    async def _attempt_non_streaming(
+        self,
+        request: Request,
+        path: str,
+        body: bytes,
+        metadata: RouteMetadata,
+        worker: Worker,
+        attempt: int,
+    ) -> tuple[Response, bool]:
         with worker.request_guard():
             start_time = time.perf_counter()
             upstream_url = build_upstream_url(worker, path, request)
@@ -224,14 +258,19 @@ class ProxyHandler:
                     status_code=502,
                     outcome="upstream_error",
                     start_time=start_time,
+                    attempt=attempt,
                 )
-                return JSONResponse(
-                    status_code=502,
-                    content={"error": {"message": "upstream request failed"}},
-                    headers=self._diagnostic_headers(worker, metadata),
+                return (
+                    JSONResponse(
+                        status_code=502,
+                        content={"error": {"message": "upstream request failed"}},
+                        headers=self._diagnostic_headers(worker, metadata, attempt),
+                    ),
+                    True,
                 )
 
-            if response.status_code in WORKER_REQUEST_FAILURE_STATUS_CODES:
+            retryable = response.status_code in WORKER_REQUEST_FAILURE_STATUS_CODES
+            if retryable:
                 self._record_worker_request_failure(
                     worker,
                     status_code=response.status_code,
@@ -246,14 +285,18 @@ class ProxyHandler:
                 status_code=response.status_code,
                 outcome=outcome,
                 start_time=start_time,
+                attempt=attempt,
             )
             headers = filter_response_headers(response.headers, buffered=True)
-            headers.update(self._diagnostic_headers(worker, metadata))
-            return Response(
-                content=response.content,
-                status_code=response.status_code,
-                headers=headers,
-                media_type=response.headers.get("content-type"),
+            headers.update(self._diagnostic_headers(worker, metadata, attempt))
+            return (
+                Response(
+                    content=response.content,
+                    status_code=response.status_code,
+                    headers=headers,
+                    media_type=response.headers.get("content-type"),
+                ),
+                retryable,
             )
 
     async def _forward_streaming(
@@ -264,36 +307,53 @@ class ProxyHandler:
         metadata: RouteMetadata,
         worker: Worker,
     ) -> StreamingResponse | JSONResponse:
-        start_time = time.perf_counter()
-        upstream_request = self._client.build_request(
-            request.method,
-            build_upstream_url(worker, path, request),
-            content=body,
-            headers=filter_request_headers(request),
-        )
-        worker.increment_active()
-        try:
-            upstream = await self._client.send(upstream_request, stream=True)
-        except httpx.HTTPError as exc:
-            worker.decrement_active()
-            worker.record_routed_request()
-            self._record_worker_request_failure(
-                worker,
-                error=type(exc).__name__,
+        # Streaming responses can only be retried before any bytes reach the
+        # client, so failover here covers the initial connect/send only. Once
+        # the upstream stream is established the body is relayed as-is.
+        tried: set[str] = set()
+        max_attempts = 1 + self._config.max_request_retries
+        attempt = 0
+        while True:
+            attempt += 1
+            tried.add(worker.worker_id)
+            start_time = time.perf_counter()
+            upstream_request = self._client.build_request(
+                request.method,
+                build_upstream_url(worker, path, request),
+                content=body,
+                headers=filter_request_headers(request),
             )
-            self._log_route_completion(
-                worker=worker,
-                path=path,
-                metadata=metadata,
-                status_code=502,
-                outcome="upstream_error",
-                start_time=start_time,
-            )
-            return JSONResponse(
-                status_code=502,
-                content={"error": {"message": "upstream request failed"}},
-                headers=self._diagnostic_headers(worker, metadata),
-            )
+            worker.increment_active()
+            try:
+                upstream = await self._client.send(upstream_request, stream=True)
+                break
+            except httpx.HTTPError as exc:
+                worker.decrement_active()
+                worker.record_routed_request()
+                self._record_worker_request_failure(
+                    worker,
+                    error=type(exc).__name__,
+                )
+                self._log_route_completion(
+                    worker=worker,
+                    path=path,
+                    metadata=metadata,
+                    status_code=502,
+                    outcome="upstream_error",
+                    start_time=start_time,
+                    attempt=attempt,
+                )
+                next_worker = self._select_retry_worker(metadata, exclude=tried)
+                if next_worker is None:
+                    next_worker = self._select_retry_worker(metadata, exclude=set())
+                if attempt >= max_attempts or next_worker is None:
+                    return JSONResponse(
+                        status_code=502,
+                        content={"error": {"message": "upstream request failed"}},
+                        headers=self._diagnostic_headers(worker, metadata, attempt),
+                    )
+                await self._retry_backoff(attempt)
+                worker = next_worker
 
         worker_failure_recorded = False
 
@@ -342,11 +402,12 @@ class ProxyHandler:
                     status_code=upstream.status_code,
                     outcome=outcome,
                     start_time=start_time,
+                    attempt=attempt,
                 )
 
         try:
             headers = filter_response_headers(upstream.headers)
-            headers.update(self._diagnostic_headers(worker, metadata))
+            headers.update(self._diagnostic_headers(worker, metadata, attempt))
         except Exception:
             await upstream.aclose()
             worker.decrement_active()
@@ -358,15 +419,37 @@ class ProxyHandler:
             media_type=upstream.headers.get("content-type", "text/event-stream"),
         )
 
+    def _select_retry_worker(
+        self,
+        metadata: RouteMetadata,
+        *,
+        exclude: set[str],
+    ) -> Worker | None:
+        try:
+            return self._selector.select(
+                self._workers,
+                required_capabilities=metadata.required_capabilities,
+                requested_model=metadata.model,
+                exclude=exclude,
+            )
+        except NoEligibleWorkerError:
+            return None
+
+    async def _retry_backoff(self, attempt: int) -> None:
+        delay = self._config.retry_backoff_secs * (2 ** (attempt - 1))
+        if delay > 0:
+            await asyncio.sleep(delay)
+
     def _diagnostic_headers(
         self,
         worker: Worker,
         metadata: RouteMetadata,
+        attempt: int,
     ) -> dict[str, str]:
         return {
             "X-SGLang-Omni-Worker": worker.worker_id,
             "X-SGLang-Omni-Request-ID": metadata.request_id,
-            "X-SGLang-Omni-Route-Attempt": "1",
+            "X-SGLang-Omni-Route-Attempt": str(attempt),
         }
 
     def _record_worker_request_failure(
@@ -398,6 +481,7 @@ class ProxyHandler:
         status_code: int,
         outcome: str,
         start_time: float,
+        attempt: int = 1,
     ) -> None:
         duration_ms = (time.perf_counter() - start_time) * 1000
         logger.info(
@@ -405,7 +489,7 @@ class ProxyHandler:
             f"worker={worker.display_id} path={path} stream={metadata.stream} "
             f"capabilities={_format_capabilities(metadata.required_capabilities)} "
             f"status_code={status_code} duration_ms={duration_ms:.2f} "
-            f"outcome={outcome}",
+            f"outcome={outcome} attempt={attempt}",
         )
 
     def _log_route_rejection(
