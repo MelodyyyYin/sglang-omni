@@ -35,18 +35,27 @@ from tests.test_model.omni_router_utils import (
 from tests.utils import MetricCheckCollector, apply_wer_slack, disable_proxy
 
 QWEN3_ASR_CI_MODEL_PATH = QWEN3_ASR_MODEL_PATH
-QWEN3_ASR_CONCURRENCY = int(os.getenv("QWEN3_ASR_CI_CONCURRENCY", "32"))
+# This is a small (20-sample) deterministic correctness gate. Per issue #646,
+# low concurrency is the right fit here: on this 20-sample SeedTTS EN subset,
+# concurrency=2 is faster than concurrency=32 (high fan-out mostly measures
+# burst queueing/tail latency rather than steady-state throughput). The default
+# matches the value CI exports (QWEN3_ASR_CI_CONCURRENCY=2) so local runs and
+# tune-ci-thresholds calibrate against the same workload.
+QWEN3_ASR_CONCURRENCY = int(os.getenv("QWEN3_ASR_CI_CONCURRENCY", "2"))
 QWEN3_ASR_WARMUP_REQUESTS = QWEN3_ASR_CONCURRENCY * 2
 SEEDTTS_ASR_CORRECTNESS_SAMPLES = 20
 
-# P95 reference values calibrated by tune.py (worst-of-N).
+# Reference values for the concurrency=2 small gate (issue #646 measurements).
+# WER is concurrency-independent; the speed bounds below were previously
+# calibrated at concurrency=32, which left them 2-5x too loose for the
+# concurrency=2 workload CI actually runs.
 SEEDTTS_ASR_CORPUS_WER_MAX = 0.007
 SEEDTTS_ASR_SAMPLE_WER_MAX = 0.0667
-QWEN3_ASR_THROUGHPUT_MIN = 10.294983887949183
-QWEN3_ASR_LATENCY_MEAN_MAX_S = 0.19333569328882733
-QWEN3_ASR_LATENCY_P95_MAX_S = 0.555
-QWEN3_ASR_RTF_MEAN_MAX = 0.0409
-QWEN3_ASR_RTF_P95_MAX = 0.1421
+QWEN3_ASR_THROUGHPUT_MIN = 16.331
+QWEN3_ASR_LATENCY_MEAN_MAX_S = 0.121
+QWEN3_ASR_LATENCY_P95_MAX_S = 0.159
+QWEN3_ASR_RTF_MEAN_MAX = 0.0240
+QWEN3_ASR_RTF_P95_MAX = 0.0302
 
 THRESHOLD_SLACK_HIGHER = 0.9
 THRESHOLD_SLACK_LOWER = 1.1

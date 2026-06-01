@@ -44,5 +44,8 @@ results/
 .tune-runs/
 .eval-runs/
 benchmarks/eval/*.edit.lock
+qwen3_asr_concurrency_results.json
+PR.md
+summary.md
 .claude/*
 !.claude/skills/
