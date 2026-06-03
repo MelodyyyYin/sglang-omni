@@ -161,8 +161,7 @@ python -m benchmarks.eval.benchmark_tts_seedtts \
   --output-dir results/moss_tts_en --lang en --max-concurrency 8
 ```
 
-Use `--lang zh` for the Chinese split. See the [SeedTTS benchmark](../../benchmarks/README.md)
-for the full workflow.
+Use `--lang zh` for the Chinese split. See `benchmarks/README.md` for the full workflow.
 
 ## Benchmark Results
 
