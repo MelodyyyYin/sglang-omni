@@ -59,6 +59,9 @@ print(resp.json()["text"])
 | `response_format` | string | `json` | `json`, `verbose_json`, or `text` |
 | `temperature` | float | `0.01` effective | Sampling temperature; `0` is converted to near-greedy `0.01` |
 
+`verbose_json` is accepted, but currently returns the same minimal JSON shape as `json`:
+`{"text": "..."}`.
+
 `max_new_tokens` is supported inside the model request builder, but the public transcription endpoint does not currently expose it as a form field. The route uses the ASR stage default unless the pipeline is configured another way.
 
 ## Benchmarking
