@@ -21,7 +21,39 @@ uv pip install -v .
 
 ## Server Configuration
 
-Use the selector below to generate the exact launch command for your configuration.
+For text-output-only serving, start the thinker pipeline on one GPU:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --text-only \
+  --port 8000
+```
+
+For speech output on one H200, use the colocated config:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --config examples/configs/qwen3_omni_colocated_h200.yaml \
+  --colocate \
+  --port 8000
+```
+
+Use `examples/configs/qwen3_omni_colocated_h20.yaml` on H20. For manual
+multi-GPU placement, use the speech launcher:
+
+```bash
+python examples/run_qwen3_omni_speech_server.py \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --gpu-thinker 0 \
+  --gpu-talker 1 \
+  --gpu-code-predictor 1 \
+  --gpu-code2wav 1 \
+  --port 8000
+```
+
+Use the selector below for other hardware, TP, topology, and precision combinations.
 
 ```{raw} html
 <div id="sgl-server-gen-mount"></div>
@@ -79,10 +111,11 @@ Standard sampling parameters apply to the thinker stage. When `modalities` inclu
 | `min_p` | float | `0.0` | Thinker |
 | `repetition_penalty` | float | `1.0` | Thinker |
 | `max_tokens` | int | `2048` | Thinker |
+| `max_completion_tokens` | int | `null` | Thinker; OpenAI-compatible alias for `max_tokens` |
 | `stop` | str \| list | `null` | Thinker |
 | `seed` | int | `null` | Thinker |
 | `stream` | bool | `false` | Both |
-| `audio` | dict | `null` | Talker (speech output only) — format config, e.g. `{"voice": "default", "format": "wav"}` |
+| `audio` | dict | `null` | Speech response format config, e.g. `{"format": "wav"}` |
 | `talker_temperature` | float | `0.9` | Talker (audio output only) |
 | `talker_top_p` | float | `1.0` | Talker (audio output only) |
 | `talker_top_k` | int | `50` | Talker (audio output only) |

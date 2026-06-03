@@ -16,7 +16,7 @@ reference clip, and fine-grained inline control over emotion, style, sound effec
 
 ![Higgs Audio v3 Generation Architecture](../_static/image/higgs-architecture.png)
 
-Higgs autoregressive decoder consumes interleaved text and audio tokens. Audio is encoded by the **Higgs Tokenizer** into 8 codebooks at 25 fps, staggered via a **delay pattern**, then mapped to backbone hidden states through a **multi-codebook fused embedding**. Output codes pass through a **multi-codebook fused head**, are de-delayed, and decoded back to waveform. Multi-turn generation interleaves `<|text|>…<|audio|>…` chunks so each new chunk is grounded on reference + prior chunks.
+Higgs consumes interleaved text and audio tokens. Reference audio is encoded into 8 codebooks, the decoder generates delayed codebook tokens, and the vocoder reconstructs 24 kHz speech.
 
 | Component | Spec |
 |---|---|
@@ -139,7 +139,7 @@ Reference output:
 
 Unlike a standard request where you wait for the full audio to be generated before receiving anything, streaming lets you start receiving and playing audio **while generation is still in progress**. This significantly reduces time-to-first-audio, which matters for real-time or interactive use cases.
 
-Higgs TTS implements streaming via [Server-Sent Events (SSE)](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events) by default. Each SSE event carries a base64-encoded audio chunk. Your client can decode and play each chunk as it arrives, rather than buffering the entire response.
+Higgs TTS implements streaming via [Server-Sent Events (SSE)](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events). Each SSE event carries a base64-encoded WAV chunk. Your client can decode and play each chunk as it arrives, rather than buffering the entire response.
 
 Enable streaming by setting `"stream": true` in the request body. During generation, the vocoder emits incremental audio chunks; the terminal event is intentionally slim and carries metadata such as `sample_rate` and `usage` instead of repeating the full waveform. Inside the pipeline, audio chunks use the compact `audio_waveform` payload (`bytes` plus `audio_waveform_shape`, `audio_waveform_dtype`, and `sample_rate`), which the HTTP layer encodes into the SSE `audio.data` field.
 
@@ -160,27 +160,6 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
   }'
 ```
 The `-N` flag disables curl's output buffering so SSE events are printed as they arrive.
-
-For lowest-friction playback pipelines, request raw PCM bytes instead of SSE:
-
-```bash
-curl -N -X POST http://localhost:8000/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{
-    "input": "Get the trust fund to the bank early.",
-    "references": [{
-      "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
-      "text": "We asked over twenty different people, and they all said it was his."
-    }],
-    "stream": true,
-    "stream_format": "audio",
-    "response_format": "pcm",
-    "initial_codec_chunk_frames": 1
-  }' \
-  --output output.pcm
-```
-
-`stream_format="audio"` is only valid with `response_format="pcm"` and returns `audio/pcm` 16-bit mono PCM bytes. This mode has no SSE JSON events, no final usage event, and no `[DONE]` sentinel. The response headers report the actual stream sample rate, channel count, and bit depth. Raw PCM speech requests default `initial_codec_chunk_frames` to `1` for lower first-audio latency; clients can still set another value, including `0`. The setting controls only the first vocoder chunk for TTFA tuning; follow-up chunks return to the normal Higgs streaming window.
 
 2. Use Python
 
@@ -232,7 +211,7 @@ Reference output:
 
 
 #### What the SSE response looks like
-Each default stream event follows the standard SSE format:
+Each event follows the standard SSE format:
 ```
 data: {"id": "speech-...", "object": "audio.speech.chunk", "index": 0, "audio": {"data": "<base64-encoded WAV bytes>", "format": "wav", ...}, "finish_reason": null}
 data: {"id": "speech-...", "object": "audio.speech.chunk", "index": 1, "audio": null, "finish_reason": "stop", "usage": {...}}
@@ -425,21 +404,6 @@ Reference output:
 | `<\|prosody:expressive_high\|>` | More expressive delivery |
 | `<\|prosody:expressive_low\|>` | Flatter delivery |
 
-### Pre-encoded reference codes
-For high-throughput pipelines (e.g. RL rollout) where the same reference audio is reused across many requests, you can encode the reference audio offline and pass the discrete codes directly via `reference_codes` — this skips the server-side codec encode step. Shape must be `[T, num_codebooks=8]`.
-
-```python
-# python
-resp = requests.post(
-    "http://localhost:8000/v1/audio/speech",
-    json={
-        "input": SPEECH_INPUT,
-        "reference_codes": codes_TN,   # [T, 8] int list, pre-delay-pattern
-        "reference_text": REFERENCE_TEXT,
-    },
-)
-```
-
 ### Request parameters
 
 | Parameter | Type | Default | Description |
@@ -449,8 +413,7 @@ resp = requests.post(
 | `response_format` | string | `"wav"` | Output audio format |
 | `stream` | bool | `false` | Enable streaming via SSE |
 | `references` | list | `null` | Reference audio for voice cloning; each item has `audio_path` (local path or HTTP URL) and `text` (transcript) |
-| `reference_codes` | list[list[int]] | `null` | Pre-encoded discrete codes, shape `[T, 8]` — alternative to `references[0].audio_path` |
-| `reference_text` | string | `null` | Transcript of reference audio when supplying `reference_codes` |
+| `ref_audio` / `ref_text` | string | `null` | Shorthand for `references[0].audio_path` / `references[0].text` |
 | `max_new_tokens` | int | `2048` | Maximum number of generated multi-codebook steps |
 | `temperature` | float | `1.0` | Sampling temperature |
 | `top_p` | float | `null` | Top-p sampling |
@@ -459,8 +422,6 @@ resp = requests.post(
 
 
 ### Throughput
-
-[TODO (yichi, Huapeng): This should be updated in the last minute.]
 
 Throughput on seed-tts en (N=50 per concurrency, sequential thread pool, A100 40GB, bf16):
 

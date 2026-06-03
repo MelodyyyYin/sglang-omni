@@ -53,10 +53,9 @@ sgl-omni serve \
 
 ## Synthesizing Speech
 
-### Zero-shot
+### Text-only Requests
 
-
-Qwen3-TTS does not support zero-shot synthesis.
+Qwen3-TTS Base checkpoints require a reference clip. Text-only requests are supported by CustomVoice and VoiceDesign checkpoints; see [TTS Model Usage](../basic_usage/tts.md) for those launch commands.
 
 ### Voice Cloning
 
