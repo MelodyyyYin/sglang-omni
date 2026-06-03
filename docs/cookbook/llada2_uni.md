@@ -1,6 +1,6 @@
 # LLaDA2.0-Uni
 
-[LLaDA2.0-Uni](https://huggingface.co/inclusionAI/LLaDA2.0-Uni) is a multimodal model that accepts text and image input. This SGLang-Omni cookbook covers the current text-output serving path.
+[LLaDA2.0-Uni](https://huggingface.co/inclusionAI/LLaDA2.0-Uni) is a multimodal model that accepts text and image input. This SGLang-Omni cookbook covers the experimental text-output serving path.
 
 ## Highlights
 
@@ -142,3 +142,9 @@ The table below lists all parameters accepted by the `/v1/chat/completions` endp
 - Text-to-image generation
 - Text-to-Image Generation with Thinking
 - Interleaved Generation
+
+## Known Limitations
+
+- In the current tree, the server can start and `/v1/models` responds, but `/v1/chat/completions`
+  can fail because the DLLM scheduler still passes `dllm_config` to SGLang's `PrefillAdder`.
+  Treat this cookbook as experimental until that scheduler path is updated.
