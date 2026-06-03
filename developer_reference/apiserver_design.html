@@ -33,8 +33,8 @@
     <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=03e43079" />
     <link rel="stylesheet" type="text/css" href="../_static/styles/sphinx-book-theme.css?v=3c74b3bc" />
     <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
-    <link rel="stylesheet" type="text/css" href="../_static/css/custom_log.css?v=731335ad" />
-    <link rel="stylesheet" type="text/css" href="../_static/css/custom_log.css?v=731335ad" />
+    <link rel="stylesheet" type="text/css" href="../_static/css/custom_log.css?v=a64801f4" />
+    <link rel="stylesheet" type="text/css" href="../_static/css/custom_log.css?v=a64801f4" />
   
   <!-- So that users can add custom icons -->
   <script src="../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
@@ -59,7 +59,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.1.0" />
-    <meta name="docbuild:last-update" content="Jun 02, 2026"/>
+    <meta name="docbuild:last-update" content="Jun 03, 2026"/>
   </head>
   
   
@@ -138,8 +138,8 @@
       
     
     
-    <img src="../_static/sgl-omni-logo.png" class="logo__image only-light" alt="SGLang - Home"/>
-    <img src="../_static/sgl-omni-logo.png" class="logo__image only-dark pst-js-only" alt="SGLang - Home"/>
+    <img src="../_static/sgl-omni-logo.svg" class="logo__image only-light" alt="SGLang - Home"/>
+    <img src="../_static/sgl-omni-logo.svg" class="logo__image only-dark pst-js-only" alt="SGLang - Home"/>
   
   
 </a></div>
@@ -668,9 +668,19 @@ to an <code class="docutils literal notranslate"><span class="pre">OmniRequest</
 </ul>
 <p>For non-streaming requests, <code class="docutils literal notranslate"><span class="pre">Client.speech()</span></code> collects audio chunks, encodes
 them, and returns raw audio bytes to the HTTP layer.</p>
-<p>For <code class="docutils literal notranslate"><span class="pre">stream=true</span></code>, the route returns SSE events. Each event carries a
+<p>For <code class="docutils literal notranslate"><span class="pre">stream=true</span></code>, the default route returns SSE events. Each event carries a
 base64-encoded audio chunk and format metadata; the stream ends with a final
 chunk carrying <code class="docutils literal notranslate"><span class="pre">finish_reason</span></code> followed by <code class="docutils literal notranslate"><span class="pre">data:</span> <span class="pre">[DONE]</span></code>.</p>
+<p>Raw PCM streaming is opt-in through <code class="docutils literal notranslate"><span class="pre">stream_format=&quot;audio&quot;</span></code> plus
+<code class="docutils literal notranslate"><span class="pre">response_format=&quot;pcm&quot;</span></code>. That path emits <code class="docutils literal notranslate"><span class="pre">audio/pcm</span></code> bytes directly and does
+not carry SSE metadata, usage, or a <code class="docutils literal notranslate"><span class="pre">[DONE]</span></code> sentinel. The HTTP response
+headers are derived from the first audio chunk and subsequent chunks must keep
+the same sample rate. TTS chunk-timing knobs such as
+<code class="docutils literal notranslate"><span class="pre">initial_codec_chunk_frames</span></code> are forwarded as request params so model schedulers
+can consume them without changing Stage, Coordinator, or Relay. Raw PCM speech
+defaults <code class="docutils literal notranslate"><span class="pre">initial_codec_chunk_frames</span></code> to <code class="docutils literal notranslate"><span class="pre">1</span></code> when the client does not provide a
+value; SSE keeps the model’s normal chunking unless the client explicitly sets
+the knob.</p>
 </section>
 </section>
 </section>
@@ -774,7 +784,7 @@ By SGLang-Omni Team
   
   <div class="footer-item">
     <p class="last-updated">
-  Last updated on Jun 02, 2026.
+  Last updated on Jun 03, 2026.
   <br/>
 </p>
   </div>
