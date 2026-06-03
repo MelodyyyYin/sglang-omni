@@ -22,8 +22,6 @@ sgl-omni serve \
 
 ## Transcribe Audio
 
-Use a minimal multipart request to verify that the server accepts audio and returns the transcription response schema:
-
 ```bash
 curl -X POST http://localhost:8000/v1/audio/transcriptions \
   -F model=openai/whisper-large-v3 \
@@ -55,17 +53,25 @@ print(resp.json()["text"])
 |---|---|---|---|
 | `file` | file | required | Audio file uploaded as multipart form data |
 | `model` | string | server default | Model identifier |
-| `language` | string | unset | Leave unset in the current tree; explicit values can trigger a 500 response |
-| `response_format` | string | `json` | Use `json`; `text` and `verbose_json` can trigger a 500 response |
-| `temperature` | float | unset | Leave unset in the current tree; explicit values can trigger a 500 response |
+| `language` | string | unset | Optional language hint |
+| `response_format` | string | `json` | Use `json` for the current Whisper path |
+| `temperature` | float | unset | Optional sampling temperature |
 
-The request builder also supports `task` (`transcribe` by default) and `max_new_tokens`, but the public transcription endpoint currently exposes only the fields above. The route uses the ASR stage default unless the pipeline is configured another way. For smoke tests, keep the request minimal and use `response_format=json`.
+The request builder also supports `task` (`transcribe` by default) and
+`max_new_tokens`, but the public transcription endpoint currently exposes only
+the fields above. The route uses the ASR stage default unless the pipeline is
+configured another way. For smoke tests, keep the request minimal and use
+`response_format=json`.
 
 ## Known Limitations
 
-- This path is not yet correctness-validated. On the current test environment, `openai/whisper-large-v3` starts on a clean H200 and returns the OpenAI-compatible response schema, but short local smoke-test clips returned an empty `text` field.
-- Non-`json` response formats, explicit `language`, and explicit `temperature` can fail with `500` (`'NoneType' object has no attribute 'view'`). After that failure, the same server process can continue returning 500s for later requests; restart the server before retrying.
-- First startup can spend several minutes in torch compile / CUDA graph capture.
+- This path is experimental and not yet correctness-validated. Prefer Qwen3-ASR
+  for validated ASR serving.
+- Keep Whisper ASR at encoder batch size 1.
+- Use `response_format=json`; other response formats are not validated for this
+  experimental path.
+- First startup can take several minutes.
 - The endpoint accepts one uploaded file per request.
 - Audio is resampled to 16 kHz before transcription.
-- `prompt` is accepted by the HTTP endpoint for OpenAI compatibility, but Whisper ASR currently does not pass it into decoding.
+- `prompt` is accepted by the HTTP endpoint for OpenAI compatibility, but
+  Whisper ASR currently does not pass it into decoding.

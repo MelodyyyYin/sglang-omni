@@ -80,7 +80,7 @@ Supported Models
 
 .. toctree::
    :maxdepth: 1
-   :caption: Basic Usage
+   :caption: General Usage
 
    basic_usage/qwen3_omni.md
    basic_usage/tts.md
