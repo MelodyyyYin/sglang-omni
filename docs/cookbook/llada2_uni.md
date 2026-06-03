@@ -20,7 +20,9 @@ Install `sglang-omni` by following [Installation](../get_started/installation.md
 
 ## Server Configuration
 
-LLaDA2.0-Uni runs a 4-stage pipeline (`preprocessing → image_encoder → thinker → decode`) on a single GPU.
+LLaDA2.0-Uni runs a 4-stage pipeline
+(`preprocessing → image_encoder → thinker → decode`) on a single GPU. The
+thinker disables CUDA graph by default for this experimental DLLM path.
 
 ```bash
 sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni --port 8000
@@ -145,6 +147,6 @@ The table below lists all parameters accepted by the `/v1/chat/completions` endp
 
 ## Known Limitations
 
-- In the current tree, the server can start and `/v1/models` responds, but `/v1/chat/completions`
-  can fail because the DLLM scheduler still passes `dllm_config` to SGLang's `PrefillAdder`.
-  Treat this cookbook as experimental until that scheduler path is updated.
+- Text output is supported for text and image input. Image generation and
+  interleaved generation are not wired to the OpenAI-compatible response path
+  yet.
