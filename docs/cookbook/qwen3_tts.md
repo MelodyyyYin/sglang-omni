@@ -16,13 +16,16 @@ Qwen3-TTS Base uses the upstream `qwen-tts` package, which currently pins Transf
 Install it only in environments that serve Qwen3-TTS:
 
 ```bash
-uv pip install transformers==4.57.3 accelerate==1.12.0 sox einops
+sudo apt-get update && sudo apt-get install -y sox
+uv pip install transformers==4.57.3 accelerate==1.12.0 sox einops onnxruntime
 uv pip install --no-deps qwen-tts==0.1.1
 ```
 
 > Do **not** add `--upgrade` here. It pulls a newer `torch`/`numpy`/CUDA stack and breaks
 > inference (mismatched cuDNN, `numba` requires NumPy ≤ 2.3). Pin only what is listed above so
 > the image's existing `torch` build is left untouched.
+
+The Python `sox` package shells out to the system `sox` binary on some paths, so install both.
 
 Download a checkpoint (both repositories are public, no token required):
 
@@ -33,7 +36,8 @@ hf download Qwen/Qwen3-TTS-12Hz-1.7B-Base
 
 ## Server Configuration
 
-The pipeline is `preprocessing → tts_engine → vocoder`.
+The pipeline is `preprocessing → tts_engine → vocoder`. First startup can take several minutes
+while the `tts_engine` captures CUDA graphs.
 
 ```bash
 # 0.6B
