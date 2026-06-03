@@ -23,6 +23,7 @@ The model repository is public, so no Hugging Face token is required.
 ## Server Configuration
 
 The pipeline is `preprocessing → tts_generation → vocoder`.
+First startup can take several minutes while the `tts_generation` stage captures CUDA graphs.
 
 ```bash
 sgl-omni serve \
