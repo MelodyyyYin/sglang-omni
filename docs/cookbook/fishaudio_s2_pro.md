@@ -77,14 +77,6 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
 | `top_k` | int | `30` | Top-k sampling; must be `-1` or between `1` and `30` |
 | `repetition_penalty` | float | `1.1` | Repetition penalty |
 
-## Validation
-
-S2-Pro has docs tests that exercise the same `/v1/audio/speech` examples:
-
-```bash
-pytest tests/docs/s2pro/test_docs_tts_s2pro.py -s -x
-```
-
 ## Known Limitations
 
 - `top_k` is constrained to `-1` or `1..30`; keep requests inside this range because invalid values currently fail the S2-Pro pipeline instead of returning a clean parameter error.

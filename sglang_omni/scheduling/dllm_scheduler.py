@@ -215,6 +215,13 @@ class DllmScheduler:
             if hasattr(next_token_ids, "tolist")
             else next_token_ids
         )
+        # This stage runs one request at a time (PrefillAdder is built with
+        # prefill_max_requests=1 in _schedule_next_batch), so the model may
+        # return a flat list of token ids for the single request rather than a
+        # list-per-request. Normalize that flat list into the per-request shape.
+        # NOTE: if prefill_max_requests is ever raised above 1, this flat-list
+        # branch must be revisited together with the scheduling cap, otherwise
+        # the zip() below would pair each Req with a single int.
         if len(batch.reqs) == 1 and (not token_ids or isinstance(token_ids[0], int)):
             token_ids_per_req = [token_ids]
         else:

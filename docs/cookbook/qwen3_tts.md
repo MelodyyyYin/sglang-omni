@@ -16,7 +16,7 @@ Qwen3-TTS Base uses the upstream `qwen-tts` package, which currently pins Transf
 Install it only in environments that serve Qwen3-TTS:
 
 ```bash
-sudo apt-get update && sudo apt-get install -y sox
+apt-get update && apt-get install -y sox
 uv pip install transformers==4.57.3 accelerate==1.12.0 sox einops onnxruntime
 uv pip install --no-deps qwen-tts==0.1.1
 ```
