@@ -519,21 +519,6 @@ Pair each token with the matching onomatopoeia immediately after it.
 | `<\|prosody:expressive_high\|>` | More expressive delivery |
 | `<\|prosody:expressive_low\|>` | Flatter delivery |
 
-### Pre-encoded reference codes
-For high-throughput pipelines (e.g. RL rollout) where the same reference audio is reused across many requests, you can encode the reference audio offline and pass the discrete codes directly via `reference_codes` — this skips the server-side codec encode step. Shape must be `[T, num_codebooks=8]`.
-
-```python
-# python
-resp = requests.post(
-    "http://localhost:8000/v1/audio/speech",
-    json={
-        "input": SPEECH_INPUT,
-        "reference_codes": codes_TN,   # [T, 8] int list, pre-delay-pattern
-        "reference_text": REFERENCE_TEXT,
-    },
-)
-```
-
 ### Request parameters
 
 | Parameter | Type | Default | Description |
@@ -543,8 +528,7 @@ resp = requests.post(
 | `response_format` | string | `"wav"` | Output audio format |
 | `stream` | bool | `false` | Enable streaming via SSE |
 | `references` | list | `null` | Reference audio for voice cloning; each item has `audio_path` (local path or HTTP URL) and `text` (transcript) |
-| `reference_codes` | list[list[int]] | `null` | Pre-encoded discrete codes, shape `[T, 8]` — alternative to `references[0].audio_path` |
-| `reference_text` | string | `null` | Transcript of reference audio when supplying `reference_codes` |
+| `ref_audio` / `ref_text` | string | `null` | Shorthand for `references[0].audio_path` / `references[0].text` |
 | `max_new_tokens` | int | `2048` | Maximum number of generated multi-codebook steps |
 | `temperature` | float | `1.0` | Sampling temperature |
 | `top_p` | float | `null` | Top-p sampling |
