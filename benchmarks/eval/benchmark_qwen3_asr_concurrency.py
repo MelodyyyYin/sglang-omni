@@ -12,6 +12,12 @@ SeedTTS EN transcription / WER workloads.
 This script transcribes the SeedTTS *reference* clips directly (no TTS
 generation step), so it isolates ASR behavior from TTS.
 
+``run_asr_transcription`` + ``build_asr_eval_results`` are the shared
+transcription/scoring path; the Qwen3-ASR correctness gate
+(``tests/test_model/test_qwen3_asr_ci.py``) imports them so the gate is just
+this benchmark run at concurrency=2 plus thresholds. Both reuse the benchmark
+framework abstractions (``BenchmarkRunner``, ``benchmarks.metrics``).
+
 Usage:
 
     # Download the test set once:
@@ -37,40 +43,215 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import concurrent.futures
+import asyncio
 import json
 import os
 import statistics
 import time
-from dataclasses import dataclass, field
 
+import aiohttp
 import requests
 from jiwer import process_words
 
+from benchmarks.benchmarker.data import RequestResult
+from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig, SendFn
 from benchmarks.benchmarker.utils import get_wav_duration
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
+from benchmarks.metrics.performance import compute_speed_metrics
+from benchmarks.metrics.wer import calculate_asr_speed_metrics, calculate_wer_metrics
 from benchmarks.tasks.tts import (
+    DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
+    QWEN3_ASR_MAX_NEW_TOKENS,
     QWEN3_ASR_MODEL_PATH,
-    load_router_asr,
+    QWEN3_ASR_REQUEST_TIMEOUT_S,
+    SampleOutput,
     normalize_text,
-    transcribe,
 )
 
 DEFAULT_CONCURRENCIES = "1,2,4,8,16,32,64"
 
 
-def _percentile(values: list[float], percentile: float) -> float:
-    ordered = sorted(values)
-    if not ordered:
-        return 0.0
-    if len(ordered) == 1:
-        return ordered[0]
-    rank = (len(ordered) - 1) * percentile / 100.0
-    lower = int(rank)
-    upper = min(lower + 1, len(ordered) - 1)
-    weight = rank - lower
-    return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
+# ---------------------------------------------------------------------------
+# Shared transcription + scoring path (imported by the Qwen3-ASR CI gate)
+# ---------------------------------------------------------------------------
+
+
+def make_asr_send_fn(
+    model_name: str,
+    api_url: str,
+    *,
+    lang: str = "en",
+    max_new_tokens: int = QWEN3_ASR_MAX_NEW_TOKENS,
+) -> SendFn:
+    """Return a *send_fn(session, sample) -> RequestResult* that transcribes one
+    SeedTTS reference clip via the Omni ``/v1/audio/transcriptions`` endpoint.
+
+    Note: do NOT send temperature=0 — Qwen3-ASR degenerates under pure greedy
+    (the server bumps it to 0.01). ``language`` selects the forced prefix.
+    """
+
+    async def send_fn(
+        session: aiohttp.ClientSession, sample: SampleInput
+    ) -> RequestResult:
+        result = RequestResult(request_id=sample.sample_id)
+        try:
+            with open(sample.ref_audio, "rb") as audio_file:
+                audio_bytes = audio_file.read()
+        except OSError as exc:
+            result.error = str(exc)
+            return result
+        result.audio_duration_s = get_wav_duration(audio_bytes)
+
+        form = aiohttp.FormData()
+        form.add_field("model", model_name)
+        form.add_field("language", "en" if lang == "en" else lang)
+        form.add_field("response_format", "json")
+        form.add_field("max_new_tokens", str(max_new_tokens))
+        form.add_field(
+            "file",
+            audio_bytes,
+            filename=os.path.basename(sample.ref_audio),
+            content_type="audio/wav",
+        )
+
+        start_time = time.perf_counter()
+        try:
+            async with session.post(api_url, data=form) as response:
+                if response.status != 200:
+                    result.error = f"HTTP {response.status}: {await response.text()}"
+                else:
+                    payload = await response.json()
+                    result.text = str(payload.get("text", ""))
+                    result.is_success = True
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            result.error = str(exc)
+        finally:
+            result.latency_s = time.perf_counter() - start_time
+        if result.is_success and result.audio_duration_s > 0:
+            result.rtf = result.latency_s / result.audio_duration_s
+        return result
+
+    return send_fn
+
+
+async def run_asr_transcription(
+    samples: list[SampleInput],
+    *,
+    host: str = "127.0.0.1",
+    port: int,
+    model_path: str = QWEN3_ASR_MODEL_PATH,
+    lang: str = "en",
+    concurrency: int = DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
+    warmup: int = 0,
+    request_timeout_s: int = QWEN3_ASR_REQUEST_TIMEOUT_S,
+    disable_tqdm: bool = True,
+) -> tuple[list[RequestResult], float]:
+    """Transcribe ``samples`` against a running ASR router at one concurrency.
+
+    Returns ``(outputs, wall_clock_s)`` via the shared ``BenchmarkRunner``.
+    """
+    api_url = f"http://{host}:{port}/v1/audio/transcriptions"
+    send_fn = make_asr_send_fn(model_path, api_url, lang=lang)
+    runner = BenchmarkRunner(
+        RunConfig(
+            max_concurrency=concurrency,
+            warmup=warmup,
+            disable_tqdm=disable_tqdm,
+            timeout_s=request_timeout_s,
+        )
+    )
+    outputs = await runner.run(samples, send_fn)
+    return outputs, runner.wall_clock_s
+
+
+def build_asr_eval_results(
+    samples: list[SampleInput],
+    outputs: list[RequestResult],
+    wall_clock_s: float,
+    lang: str,
+    *,
+    model_path: str = QWEN3_ASR_MODEL_PATH,
+    concurrency: int = DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
+) -> dict:
+    """Score transcriptions and assemble WER + speed metrics.
+
+    Returns ``{"summary": wer, "speed": speed, "per_sample": [...]}`` with the
+    exact ``summary.*`` / ``speed.*`` keys the Qwen3-ASR gate writes and the
+    tune-ci-thresholds config reads. WER/speed reuse ``benchmarks.metrics``.
+    """
+    result_by_id = {result.request_id: result for result in outputs}
+    sample_outputs: list[SampleOutput] = []
+    per_sample: list[dict] = []
+    for sample in samples:
+        result = result_by_id.get(sample.sample_id)
+        output = SampleOutput(
+            sample_id=sample.sample_id,
+            target_text=sample.ref_text,
+        )
+        if result is None or not result.is_success:
+            output.error = (result.error if result else "") or "No transcription"
+        else:
+            output.latency_s = result.latency_s
+            output.asr_latency_s = result.latency_s
+            output.audio_duration_s = result.audio_duration_s
+            output.whisper_text = result.text
+            output.ref_norm = normalize_text(sample.ref_text, lang)
+            output.hyp_norm = normalize_text(result.text, lang)
+            if output.ref_norm:
+                measures = process_words(output.ref_norm, output.hyp_norm)
+                output.wer = measures.wer
+                output.substitutions = measures.substitutions
+                output.deletions = measures.deletions
+                output.insertions = measures.insertions
+                output.hits = measures.hits
+                output.is_success = True
+            else:
+                output.error = "Empty reference after normalization"
+        sample_outputs.append(output)
+        per_sample.append(
+            {
+                "id": output.sample_id,
+                "is_success": output.is_success,
+                "wer": output.wer if output.is_success else None,
+                "ref_text": output.target_text,
+                "hyp_text": output.whisper_text,
+                "ref_norm": output.ref_norm,
+                "hyp_norm": output.hyp_norm,
+                "audio_duration_s": output.audio_duration_s,
+                "latency_s": output.latency_s,
+                "error": output.error,
+            }
+        )
+
+    wer_summary = calculate_wer_metrics(sample_outputs, lang)
+    # Alias for the gate assertion and tune-ci-thresholds (reads summary.corpus_wer).
+    wer_summary["corpus_wer"] = wer_summary["wer_corpus"]
+
+    asr_speed = calculate_asr_speed_metrics(sample_outputs, wall_time_s=wall_clock_s)
+    # compute_speed_metrics adds the rtf p95 percentile calculate_asr_speed_metrics omits.
+    perf = compute_speed_metrics(outputs, wall_clock_s=wall_clock_s)
+    speed = {
+        **asr_speed,
+        "asr_model": model_path,
+        "asr_concurrency": concurrency,
+        "asr_rtf_p95": perf.get("rtf_p95"),
+        # Plain calibration keys read by tune-ci-thresholds and the gate thresholds.
+        "throughput_samples_per_s": asr_speed["asr_throughput_samples_per_s"],
+        "latency_mean_s": asr_speed["asr_latency_mean_s"],
+        "latency_median_s": asr_speed["asr_latency_median_s"],
+        "latency_p95_s": asr_speed["asr_latency_p95_s"],
+        "latency_p99_s": asr_speed["asr_latency_p99_s"],
+        "rtf_mean": asr_speed["asr_rtf_mean"],
+        "rtf_median": asr_speed["asr_rtf_median"],
+        "rtf_p95": perf.get("rtf_p95"),
+    }
+    return {"summary": wer_summary, "speed": speed, "per_sample": per_sample}
+
+
+# ---------------------------------------------------------------------------
+# Router worker routing-balance diagnostics
+# ---------------------------------------------------------------------------
 
 
 def _fetch_worker_snapshot(host: str, port: int) -> dict | None:
@@ -85,12 +266,6 @@ def _fetch_worker_snapshot(host: str, port: int) -> dict | None:
         return response.json()
     except Exception:
         return None
-
-
-def _worker_routed_counts(snapshot: dict | None) -> list[int]:
-    if not snapshot:
-        return []
-    return [int(w.get("routed_requests", 0)) for w in snapshot.get("workers", [])]
 
 
 def _worker_delta(before: dict | None, after: dict | None) -> dict:
@@ -118,115 +293,57 @@ def _worker_delta(before: dict | None, after: dict | None) -> dict:
     return out
 
 
-@dataclass
-class RepeatResult:
-    concurrency: int
-    repeat: int
-    evaluated: int
-    total: int
-    skipped: int
-    corpus_wer: float
-    per_sample_wer_mean: float
-    per_sample_wer_p95: float
-    per_sample_wer_max: float
-    wall_clock_s: float
-    throughput_samples_per_s: float
-    latency_mean_s: float
-    latency_p50_s: float
-    latency_p95_s: float
-    latency_p99_s: float
-    rtf_mean: float
-    rtf_p95: float
-    rtf_p99: float
-    worker: dict = field(default_factory=dict)
+# ---------------------------------------------------------------------------
+# Concurrency sweep driver
+# ---------------------------------------------------------------------------
 
 
-def _run_one(
-    *,
-    asr: dict,
-    host: str,
-    port: int,
-    samples: list[SampleInput],
-    lang: str,
-    concurrency: int,
-    repeat: int,
-) -> RepeatResult:
-    audio_durations: dict[str, float] = {}
-    for sample in samples:
-        with open(sample.ref_audio, "rb") as handle:
-            audio_durations[sample.sample_id] = get_wav_duration(handle.read())
-
-    def _transcribe(sample: SampleInput) -> tuple[str, str, float]:
-        start = time.perf_counter()
-        text = transcribe(asr, sample.ref_audio, lang, "cuda")
-        return sample.sample_id, text, time.perf_counter() - start
-
-    hyp_by_id: dict[str, str] = {}
-    latencies_s: list[float] = []
-    rtfs: list[float] = []
-    errors = 0
-
-    before = _fetch_worker_snapshot(host, port)
-    wall_start = time.perf_counter()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
-        futures = [executor.submit(_transcribe, sample) for sample in samples]
-        for future in concurrent.futures.as_completed(futures):
-            try:
-                sample_id, text, latency_s = future.result()
-            except Exception as exc:  # noqa: BLE001 - report and continue
-                errors += 1
-                print(f"  [conc={concurrency} rep={repeat}] request failed: {exc}")
-                continue
-            hyp_by_id[sample_id] = text
-            latencies_s.append(latency_s)
-            duration = audio_durations.get(sample_id, 0.0)
-            if duration > 0:
-                rtfs.append(latency_s / duration)
-    wall_clock_s = time.perf_counter() - wall_start
-    after = _fetch_worker_snapshot(host, port)
-
-    ref_norms: list[str] = []
-    hyp_norms: list[str] = []
-    sample_wers: list[float] = []
-    for sample in samples:
-        if sample.sample_id not in hyp_by_id:
-            continue
-        ref_norm = normalize_text(sample.ref_text, lang)
-        hyp_norm = normalize_text(hyp_by_id[sample.sample_id], lang)
-        ref_norms.append(ref_norm)
-        hyp_norms.append(hyp_norm)
-        sample_wers.append(process_words(ref_norm, hyp_norm).wer)
-
-    corpus_wer = process_words(ref_norms, hyp_norms).wer if ref_norms else 0.0
-    evaluated = len(latencies_s)
-    return RepeatResult(
+async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
+    before = _fetch_worker_snapshot(args.host, args.port)
+    outputs, wall_clock_s = await run_asr_transcription(
+        samples,
+        host=args.host,
+        port=args.port,
+        model_path=args.model_path,
+        lang=args.lang,
         concurrency=concurrency,
-        repeat=repeat,
-        evaluated=evaluated,
-        total=len(samples),
-        skipped=len(samples) - evaluated,
-        corpus_wer=corpus_wer,
-        per_sample_wer_mean=statistics.mean(sample_wers) if sample_wers else 0.0,
-        per_sample_wer_p95=_percentile(sample_wers, 95),
-        per_sample_wer_max=max(sample_wers, default=0.0),
-        wall_clock_s=wall_clock_s,
-        throughput_samples_per_s=evaluated / wall_clock_s if wall_clock_s else 0.0,
-        latency_mean_s=statistics.mean(latencies_s) if latencies_s else 0.0,
-        latency_p50_s=_percentile(latencies_s, 50),
-        latency_p95_s=_percentile(latencies_s, 95),
-        latency_p99_s=_percentile(latencies_s, 99),
-        rtf_mean=statistics.mean(rtfs) if rtfs else 0.0,
-        rtf_p95=_percentile(rtfs, 95),
-        rtf_p99=_percentile(rtfs, 99),
-        worker=_worker_delta(before, after),
     )
+    after = _fetch_worker_snapshot(args.host, args.port)
+
+    results = build_asr_eval_results(
+        samples,
+        outputs,
+        wall_clock_s,
+        args.lang,
+        model_path=args.model_path,
+        concurrency=concurrency,
+    )
+    summary = results["summary"]
+    speed = results["speed"]
+    return {
+        "concurrency": concurrency,
+        "repeat": repeat,
+        "evaluated": summary["evaluated"],
+        "total": summary["total_samples"],
+        "skipped": summary["skipped"],
+        "corpus_wer": summary["corpus_wer"],
+        "per_sample_wer_max": summary["wer_per_sample_max"],
+        "wall_clock_s": wall_clock_s,
+        "throughput_samples_per_s": speed["throughput_samples_per_s"],
+        "latency_mean_s": speed["latency_mean_s"],
+        "latency_p95_s": speed["latency_p95_s"],
+        "latency_p99_s": speed["latency_p99_s"],
+        "rtf_mean": speed["rtf_mean"],
+        "rtf_p95": speed["rtf_p95"],
+        "worker": _worker_delta(before, after),
+    }
 
 
-def _aggregate(results: list[RepeatResult]) -> dict:
+def _aggregate(repeats: list[dict]) -> dict:
     """Mean/best/worst across repeats for the headline metrics."""
 
-    def _stat(attr: str) -> dict:
-        values = [getattr(r, attr) for r in results]
+    def _stat(key: str) -> dict:
+        values = [r[key] for r in repeats]
         return {
             "mean": statistics.mean(values),
             "min": min(values),
@@ -234,11 +351,11 @@ def _aggregate(results: list[RepeatResult]) -> dict:
         }
 
     return {
-        "concurrency": results[0].concurrency,
-        "repeats": len(results),
-        "evaluated": results[0].evaluated,
-        "total": results[0].total,
-        "skipped": results[0].skipped,
+        "concurrency": repeats[0]["concurrency"],
+        "repeats": len(repeats),
+        "evaluated": repeats[0]["evaluated"],
+        "total": repeats[0]["total"],
+        "skipped": repeats[0]["skipped"],
         "corpus_wer": _stat("corpus_wer"),
         "per_sample_wer_max": _stat("per_sample_wer_max"),
         "wall_clock_s": _stat("wall_clock_s"),
@@ -248,7 +365,7 @@ def _aggregate(results: list[RepeatResult]) -> dict:
         "latency_p99_s": _stat("latency_p99_s"),
         "rtf_mean": _stat("rtf_mean"),
         "rtf_p95": _stat("rtf_p95"),
-        "per_repeat": [vars(r) for r in results],
+        "per_repeat": repeats,
     }
 
 
@@ -320,6 +437,39 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+async def _sweep(args, samples, concurrencies: list[int]) -> list[dict]:
+    aggregates: list[dict] = []
+    for concurrency in concurrencies:
+        if args.warmup:
+            print(f"[conc={concurrency}] warmup pass ...")
+            await run_asr_transcription(
+                samples,
+                host=args.host,
+                port=args.port,
+                model_path=args.model_path,
+                lang=args.lang,
+                concurrency=concurrency,
+            )
+        repeats: list[dict] = []
+        for repeat in range(1, args.repeats + 1):
+            result = await _run_repeat(args, samples, concurrency, repeat)
+            repeats.append(result)
+            print(
+                f"[conc={concurrency} rep={repeat}] "
+                f"wall={result['wall_clock_s']:.3f}s "
+                f"thrpt={result['throughput_samples_per_s']:.3f}/s "
+                f"lat_mean={result['latency_mean_s']:.3f}s "
+                f"lat_p95={result['latency_p95_s']:.3f}s "
+                f"rtf_mean={result['rtf_mean']:.4f} "
+                f"corpus_wer={result['corpus_wer']:.4f} "
+                f"skipped={result['skipped']}"
+            )
+            if result["worker"].get("per_worker_routed"):
+                print(f"    routed per worker: {result['worker']['per_worker_routed']}")
+        aggregates.append(_aggregate(repeats))
+    return aggregates
+
+
 def main() -> None:
     args = parse_args()
     concurrencies = [int(c) for c in args.concurrencies.split(",") if c.strip()]
@@ -332,46 +482,7 @@ def main() -> None:
         f"against {args.host}:{args.port} ({args.model_path})"
     )
 
-    asr = load_router_asr(args.port, model_path=args.model_path)
-    aggregates: list[dict] = []
-    for concurrency in concurrencies:
-        if args.warmup:
-            print(f"[conc={concurrency}] warmup pass ...")
-            _run_one(
-                asr=asr,
-                host=args.host,
-                port=args.port,
-                samples=samples,
-                lang=args.lang,
-                concurrency=concurrency,
-                repeat=0,
-            )
-        repeats: list[RepeatResult] = []
-        for repeat in range(1, args.repeats + 1):
-            result = _run_one(
-                asr=asr,
-                host=args.host,
-                port=args.port,
-                samples=samples,
-                lang=args.lang,
-                concurrency=concurrency,
-                repeat=repeat,
-            )
-            repeats.append(result)
-            print(
-                f"[conc={concurrency} rep={repeat}] "
-                f"wall={result.wall_clock_s:.3f}s "
-                f"thrpt={result.throughput_samples_per_s:.3f}/s "
-                f"lat_mean={result.latency_mean_s:.3f}s "
-                f"lat_p95={result.latency_p95_s:.3f}s "
-                f"rtf_mean={result.rtf_mean:.4f} "
-                f"corpus_wer={result.corpus_wer:.4f} "
-                f"skipped={result.skipped}"
-            )
-            if result.worker.get("per_worker_routed"):
-                print(f"    routed per worker: {result.worker['per_worker_routed']}")
-        aggregates.append(_aggregate(repeats))
-
+    aggregates = asyncio.run(_sweep(args, samples, concurrencies))
     _print_table(aggregates)
 
     payload = {
