@@ -15,8 +15,8 @@ generation step), so it isolates ASR behavior from TTS.
 ``run_asr_transcription`` + ``build_asr_eval_results`` are the shared
 transcription/scoring path; the Qwen3-ASR correctness gate
 (``tests/test_model/test_qwen3_asr_ci.py``) imports them so the gate is just
-this benchmark run at concurrency=2 plus thresholds. Both reuse the benchmark
-framework abstractions (``BenchmarkRunner``, ``benchmarks.metrics``).
+this benchmark run plus thresholds. Both reuse the benchmark framework
+abstractions (``BenchmarkRunner``, ``benchmarks.metrics``).
 
 Usage:
 

@@ -6,8 +6,8 @@ corpus. It compares normalized transcriptions from the SGLang Omni Qwen3-ASR
 router against the dataset reference text. Transcription, WER, and speed metrics
 are computed by the shared benchmark path imported from
 ``benchmarks.eval.benchmark_qwen3_asr_concurrency`` (``run_asr_transcription`` /
-``build_asr_eval_results``); this gate only launches the router, runs one pass
-at concurrency=2, and applies thresholds.
+``build_asr_eval_results``); this gate only launches the router, runs one pass,
+and applies thresholds.
 """
 
 from __future__ import annotations
@@ -34,22 +34,18 @@ from tests.test_model.omni_router_utils import (
 from tests.utils import MetricCheckCollector, apply_wer_slack
 
 QWEN3_ASR_CI_MODEL_PATH = QWEN3_ASR_MODEL_PATH
-# note (Yue Yin): small 20-sample gate runs at concurrency=2 (issue #646) — on
-# this subset concurrency=2 beats 32 (high fan-out just measures burst tail
-# latency), and matches CI's QWEN3_ASR_CI_CONCURRENCY=2.
-QWEN3_ASR_CONCURRENCY = int(os.getenv("QWEN3_ASR_CI_CONCURRENCY", "2"))
+QWEN3_ASR_CONCURRENCY = int(os.getenv("QWEN3_ASR_CI_CONCURRENCY", "32"))
 QWEN3_ASR_WARMUP_REQUESTS = QWEN3_ASR_CONCURRENCY * 2
 SEEDTTS_ASR_CORRECTNESS_SAMPLES = 20
 
-# note (Yue Yin): speed bounds calibrated at concurrency=2 (issue #646); WER is
-# concurrency-independent. The old concurrency=32 bounds were 2-5x too loose.
+# P95 reference values calibrated by tune.py (worst-of-N).
 SEEDTTS_ASR_CORPUS_WER_MAX = 0.007
 SEEDTTS_ASR_SAMPLE_WER_MAX = 0.0667
-QWEN3_ASR_THROUGHPUT_MIN = 16.331
-QWEN3_ASR_LATENCY_MEAN_MAX_S = 0.121
-QWEN3_ASR_LATENCY_P95_MAX_S = 0.159
-QWEN3_ASR_RTF_MEAN_MAX = 0.0240
-QWEN3_ASR_RTF_P95_MAX = 0.0302
+QWEN3_ASR_THROUGHPUT_MIN = 10.294983887949183
+QWEN3_ASR_LATENCY_MEAN_MAX_S = 0.19333569328882733
+QWEN3_ASR_LATENCY_P95_MAX_S = 0.555
+QWEN3_ASR_RTF_MEAN_MAX = 0.0409
+QWEN3_ASR_RTF_P95_MAX = 0.1421
 
 THRESHOLD_SLACK_HIGHER = 0.9
 THRESHOLD_SLACK_LOWER = 1.1

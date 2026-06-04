@@ -175,13 +175,8 @@ docstring (sequential phases on CI to reduce OOM risk).
 `benchmark_qwen3_asr_concurrency.py` is a standalone ASR fan-out sweep (issue
 #646): it transcribes the SeedTTS *reference* clips directly against a running
 Qwen3-ASR router and reports WER + speed + per-worker routing balance per
-concurrency level. Use it to pick the right ASR concurrency for a given
-workload. Finding: ASR fan-out only pays off on large workloads. On the small
-20-sample correctness subset, high concurrency (e.g. 32) mostly measures burst
-queueing/tail latency, so concurrency=2 is faster — which is why the stage-1
-correctness gate (`tests/test_model/test_qwen3_asr_ci.py`) runs at concurrency=2,
-while the full SeedTTS EN transcription / WER stages fan out at 32. WER is
-essentially unchanged across concurrency levels (run-to-run noise).
+concurrency level. Use it to measure how ASR concurrency affects throughput,
+latency, and WER for a given workload.
 
 ## Adding a New Model or Task
 

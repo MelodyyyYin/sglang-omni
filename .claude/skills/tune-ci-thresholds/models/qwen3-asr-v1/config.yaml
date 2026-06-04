@@ -1,7 +1,5 @@
 # Qwen3-ASR CI threshold calibration (shared omni venv).
-# Concurrency: the stage-1 correctness gate is a small 20-sample SeedTTS EN
-# check and runs at concurrency=2 (the test default; see issue #646). The TTS
-# WER stages still fan out ASR at 32 for the full set at DP=2.
+# Concurrency: Qwen3-ASR router/transcribe fan-out uses 32 at DP=2.
 name: qwen3-asr-v1
 description: "Qwen3-ASR via SGLang Omni"
 hf_model_id: "Qwen/Qwen3-ASR-1.7B"
