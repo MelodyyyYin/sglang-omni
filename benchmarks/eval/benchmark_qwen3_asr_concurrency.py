@@ -72,11 +72,6 @@ from benchmarks.tasks.tts import (
 DEFAULT_CONCURRENCIES = "1,2,4,8,16,32,64"
 
 
-# ---------------------------------------------------------------------------
-# Shared transcription + scoring path (imported by the Qwen3-ASR CI gate)
-# ---------------------------------------------------------------------------
-
-
 def make_asr_send_fn(
     model_name: str,
     api_url: str,
@@ -225,18 +220,18 @@ def build_asr_eval_results(
         )
 
     wer_summary = calculate_wer_metrics(sample_outputs, lang)
-    # Alias for the gate assertion and tune-ci-thresholds (reads summary.corpus_wer).
+    # note (Yue Yin): gate + tune-ci-thresholds read summary.corpus_wer
     wer_summary["corpus_wer"] = wer_summary["wer_corpus"]
 
     asr_speed = calculate_asr_speed_metrics(sample_outputs, wall_time_s=wall_clock_s)
-    # compute_speed_metrics adds the rtf p95 percentile calculate_asr_speed_metrics omits.
+    # note (Yue Yin): compute_speed_metrics supplies rtf_p95 (the asr metrics omit it)
     perf = compute_speed_metrics(outputs, wall_clock_s=wall_clock_s)
     speed = {
         **asr_speed,
         "asr_model": model_path,
         "asr_concurrency": concurrency,
         "asr_rtf_p95": perf.get("rtf_p95"),
-        # Plain calibration keys read by tune-ci-thresholds and the gate thresholds.
+        # note (Yue Yin): plain calibration keys read by tune-ci-thresholds + gate
         "throughput_samples_per_s": asr_speed["asr_throughput_samples_per_s"],
         "latency_mean_s": asr_speed["asr_latency_mean_s"],
         "latency_median_s": asr_speed["asr_latency_median_s"],
@@ -247,11 +242,6 @@ def build_asr_eval_results(
         "rtf_p95": perf.get("rtf_p95"),
     }
     return {"summary": wer_summary, "speed": speed, "per_sample": per_sample}
-
-
-# ---------------------------------------------------------------------------
-# Router worker routing-balance diagnostics
-# ---------------------------------------------------------------------------
 
 
 def _fetch_worker_snapshot(host: str, port: int) -> dict | None:
@@ -291,11 +281,6 @@ def _worker_delta(before: dict | None, after: dict | None) -> dict:
         if key == "routed_requests":
             out["per_worker_routed"] = deltas
     return out
-
-
-# ---------------------------------------------------------------------------
-# Concurrency sweep driver
-# ---------------------------------------------------------------------------
 
 
 async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
