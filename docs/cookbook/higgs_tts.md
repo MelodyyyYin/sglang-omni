@@ -1,16 +1,17 @@
 # Higgs TTS
 
-[Higgs Audio v3 TTS](https://huggingface.co/boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999)
-is a chat-native text-to-speech model from Boson AI built on a Qwen3-4B backbone. It generates
-24 kHz speech through 8 discrete codebooks and supports 100+ languages, voice cloning from a
+[Higgs Audio v3 TTS](https://huggingface.co/bosonai/higgs-audio-v3-tts-4b)
+is a text-to-speech model from Boson AI built on a Qwen3-4B backbone. It generates
+24 kHz speech through 8 discrete codebooks and supports 100 languages, voice cloning from a
 reference clip, and fine-grained inline control over emotion, style, sound effects, and prosody.
 
 ## Highlights
 
-- **Chat-native, low-latency** streaming multi-turn speech generation
-- **Multilingual** — 100+ languages and dialects, 90+ with single-digit WER/CER
+- **Multilingual** — 100 languages with single-digit WER/CER
 - **Voice clone accuracy** — high-fidelity zero-shot speaker cloning from reference clips
 - **Inline control** via `<|emotion:…|>`, `<|style:…|>`, `<|sfx:…|>`, `<|prosody:…|>` tags
+
+The **100-language single-digit WER/CER** claim comes from our internal **Higgs-Multilingual** benchmark — an extension of FLEURS-102 covering 111 languages and dialects, of which Higgs Audio v3 TTS reaches single-digit WER/CER on 100.
 
 ## Architecture
 
@@ -32,7 +33,7 @@ Install `sglang-omni` by following [Installation](../get_started/installation.md
 ```bash
 # Higgs TTS model is private; export your HF token before downloading.
 export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-hf download boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999
+hf download bosonai/higgs-audio-v3-tts-4b
 hf download bosonai/higgs-audio-v2-tokenizer
 ```
 
@@ -42,7 +43,7 @@ The pipeline is `preprocessing → audio_encoder → tts_engine → vocoder`.
 
 ```bash
 sgl-omni serve \
-  --model-path boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999 \
+  --model-path bosonai/higgs-audio-v3-tts-4b \
   --port 8000
 ```
 
@@ -91,8 +92,8 @@ curl -X POST http://localhost:8000/v1/audio/speech \
   -d '{
     "input": "Have a nice day and enjoy south california sunshine.",
     "references": [{
-      "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
-      "text": "We asked over twenty different people, and they all said it was his."
+      "audio_path": "docs/_static/audio/male-voice.wav",
+      "text": "Hey, Adam here. Let'\''s create something that feels real, sounds human, and connects every time."
     }],
     "temperature": 0.8,
     "top_k": 50,
@@ -111,8 +112,8 @@ resp = requests.post(
     json={
         "input": "Have a nice day and enjoy south california sunshine.",
         "references": [{
-            "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
-            "text": "We asked over twenty different people, and they all said it was his.",
+            "audio_path": "docs/_static/audio/male-voice.wav",
+            "text": "Hey, Adam here. Let's create something that feels real, sounds human, and connects every time.",
         }],
         "temperature": 0.8,
         "top_k": 50,
@@ -126,7 +127,7 @@ with open("output.wav", "wb") as f:
 Reference input:
 
 <audio controls>
-  <source src="../_static/audio/higgs-3.wav" type="audio/wav">
+  <source src="../_static/audio/male-voice.wav" type="audio/wav">
 </audio>
 
 Reference output:
@@ -153,8 +154,8 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
   -d '{
     "input": "Get the trust fund to the bank early.",
     "references": [{
-      "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
-      "text": "We asked over twenty different people, and they all said it was his."
+      "audio_path": "docs/_static/audio/male-voice.wav",
+      "text": "Hey, Adam here. Let'\''s create something that feels real, sounds human, and connects every time."
     }],
     "stream": true
   }'
@@ -191,8 +192,8 @@ import requests
 import base64
 import json
 
-REFERENCE_AUDIO = "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav"
-REFERENCE_TEXT = "We asked over twenty different people, and they all said it was his."
+REFERENCE_AUDIO = "docs/_static/audio/male-voice.wav"
+REFERENCE_TEXT = "Hey, Adam here. Let's create something that feels real, sounds human, and connects every time."
 SPEECH_INPUT = "Get the trust fund to the bank early."
 
 with requests.post(
@@ -245,17 +246,36 @@ Audio chunks have `"finish_reason": null` and carry audio data in `audio.data`. 
 ### Inline Control Tokens
 
 Embed control tokens directly in the `input` field. Tokens from different
-categories can be combined:
+categories can be combined.
+
+Each request is a single **turn**, and two rules make control tokens reliable:
+
+1. **Lead the turn with the delivery tokens.** Emotion (`<|emotion:…|>`), Style
+   (`<|style:…|>`), and the prosody *speed* (`<|prosody:speed_…|>`), *pitch*
+   (`<|prosody:pitch_…|>`) and *expressive* (`<|prosody:expressive_…|>`) tokens
+   set how the entire turn is delivered, so place them at the very start of the
+   `input`, before any text. Positional tokens are the exception:
+   `<|prosody:pause|>` / `<|prosody:long_pause|>` go inline exactly where the
+   break should fall, and each `<|sfx:…|>` goes right before the sound it triggers.
+
+2. **Pair every sound effect with its onomatopoeia.** A `<|sfx:…|>` token lands
+   best when the matching written sound follows it immediately
+   (e.g. `<|sfx:laughter|>Haha`, `<|sfx:sigh|>Uh`, `<|sfx:sneeze|>Achoo`) — the
+   onomatopoeia gives the model the acoustic cue to realize the effect. See the
+   [Sound Effects](#sound-effects) table for suggested pairings.
 
 **Demo**
 
-1. Emotion: surprise
+1. Emotion: amusement + laughter
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
-    "input": "I cant believe it! <|emotion:surprise|> <|prosody:pause|> <|style:whispering|> Higgs Model and SGLang are absolutely incredible."
+    "input": "<|emotion:amusement|><|prosody:expressive_high|>Wait, wait, that was kind of hilarious. <|sfx:laughter|>Hehe, no, seriously, I was not ready for that.",
+    "temperature": 0.8,
+    "top_k": 50,
+    "max_new_tokens": 1024
   }' \
   --output output.wav
 ```
@@ -266,13 +286,16 @@ Reference output:
   <source src="../_static/audio/control-tokens-test1.wav" type="audio/wav">
 </audio>
 
-2. Prosody: speed_slow
+2. Emotion: anger + shouting
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
-    "input": "<|emotion:enthusiasm|> Welcome to the show! <|prosody:pause|> <|prosody:speed_slow|> Today we have something truly special for you."
+    "input": "<|emotion:anger|><|style:shouting|>No, that is not okay! We cannot ship something that sounds broken, delayed, and unnatural.",
+    "temperature": 0.8,
+    "top_k": 50,
+    "max_new_tokens": 1024
   }' \
   --output output.wav
 ```
@@ -282,63 +305,132 @@ Reference output:
   <source src="../_static/audio/control-tokens-test2.wav" type="audio/wav">
 </audio>
 
-3. Combine them together:
+3. Emotion: sadness + sniff
 
-Here is an example of combining emotion, prosody and style tokens together:
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": "<|emotion:sadness|><|sfx:crying|>I... I’m sorry. <|sfx:sniff|>Sff, We really tried. after all those late nights, I thought the whole thing had failed.",
+    "references": [{
+      "audio_path": "docs/_static/audio/ref_voice.wav",
+      "text": "It was the night before my birthday. Hooray! It’s almost here! It may not be a holiday, but it’s the best day of the year."
+    }],
+    "temperature": 0.8,
+    "top_k": 50,
+    "max_new_tokens": 1024
+  }' \
+  --output output.wav
+```
+Reference output:
+
+<audio controls>
+  <source src="../_static/audio/control-tokens-test3.wav" type="audio/wav">
+</audio>
+
+4. Emotion: confusion + humming + sigh
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": "<|emotion:confusion|><|sfx:humming|>Hmm... wait. <|sfx:sigh|>Uh, I’m not sure I understand. Do you mean the voice should speak faster, or the system should respond earlier?",
+    "references": [{
+      "audio_path": "docs/_static/audio/ref_voice.wav",
+      "text": "It was the night before my birthday. Hooray! It’s almost here! It may not be a holiday, but it’s the best day of the year."
+    }],
+    "temperature": 0.8,
+    "top_k": 50,
+    "max_new_tokens": 1024
+  }' \
+  --output output.wav
+```
+Reference output:
+
+<audio controls>
+  <source src="../_static/audio/control-tokens-test4.wav" type="audio/wav">
+</audio>
+
+5. Emotion: surprise + screaming
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": "<|emotion:surprise|><|prosody:pitch_high|><|sfx:screaming|>Ah! Wait, I almost forgot! Higgs Audio v3 also supports over one hundred languages.",
+    "references": [{
+      "audio_path": "docs/_static/audio/ref_voice.wav",
+      "text": "It was the night before my birthday. Hooray! It’s almost here! It may not be a holiday, but it’s the best day of the year."
+    }],
+    "temperature": 0.8,
+    "top_k": 50,
+    "max_new_tokens": 1024
+  }' \
+  --output output.wav
+```
+Reference output:
+
+<audio controls>
+  <source src="../_static/audio/control-tokens-test5.wav" type="audio/wav">
+</audio>
+
+6. Combine them together:
+
+Here is an example of combining emotion, sound effects, and prosody tokens together — a short Gaokao-style English listening dialogue between two speakers:
 
 <details>
 <summary>Commands</summary>
 
-Part 1 — female asks:
+Part 1 — she asks about the missed class:
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
-    "input": "<|prosody:pitch_high|> <|prosody:speed_slow|> Excuse me. Can you tell me how much the shirt is?",
+    "input": "<|emotion:contemplation|>Hi David, I missed the biology class today because I caught a cold. <|sfx:cough|>Ahem! Sorry, Could you tell me what the teacher covered?",
     "references": [{
-      "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_103675.wav",
-      "text": "Excuse me. Can you tell me how much the shirt is?"
+      "audio_path": "docs/_static/audio/female-voice.wav",
+      "text": "By repeating what students say, teachers can demonstrate that they are listening. By extending what students say."
     }],
-    "temperature": 0.5,
-    "top_k": 30,
-    "seed": 404
+    "temperature": 0.8,
+    "top_k": 50,
+    "max_new_tokens": 1024
   }' \
   --output part1.wav
 ```
 
-Part 2 — male answers:
+Part 2 — he explains what was covered:
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
-    "input": "<|prosody:speed_very_slow|> <|prosody:expressive_low|> Yes, it is nine fifteen.",
+    "input": "<|emotion:enthusiasm|>Sure, no problem! We learned how plants make food through photosynthesis, and <|prosody:long_pause|> there will be a quiz this Friday.",
     "references": [{
-      "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
-      "text": "We asked over twenty different people, and they all said it was his."
+      "audio_path": "docs/_static/audio/male-voice.wav",
+      "text": "Hey, Adam here. Let'\''s create something that feels real, sounds human, and connects every time."
     }],
-    "temperature": 0.5,
-    "top_k": 30,
-    "seed": 43
+    "temperature": 0.8,
+    "top_k": 50,
+    "max_new_tokens": 1024
   }' \
   --output part2.wav
 ```
 
-Part 3 — female reads the question:
+Part 3 — she reads the result:
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
-    "input": "<|prosody:speed_slow|> <|prosody:expressive_low|> Question: How much is the shirt?",
+    "input": "<|emotion:relief|>Oh, that is really helpful. Thank you!",
     "references": [{
-      "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_103675.wav",
-      "text": "We asked over twenty different people, and they all said it was his."
+      "audio_path": "docs/_static/audio/female-voice.wav",
+      "text": "By repeating what students say, teachers can demonstrate that they are listening. By extending what students say."
     }],
-    "temperature": 0.5,
-    "top_k": 30,
-    "seed": 44
+    "temperature": 0.8,
+    "top_k": 50,
+    "max_new_tokens": 1024
   }' \
   --output part3.wav
 ```
@@ -398,17 +490,19 @@ Reference output:
 
 #### Sound Effects
 
-| Token | Description |
-|---|---|
-| `<\|sfx:cough\|>` | Cough |
-| `<\|sfx:laughter\|>` | Laughter |
-| `<\|sfx:crying\|>` | Crying |
-| `<\|sfx:screaming\|>` | Screaming |
-| `<\|sfx:burping\|>` | Burping |
-| `<\|sfx:humming\|>` | Humming |
-| `<\|sfx:sigh\|>` | Sigh |
-| `<\|sfx:sniff\|>` | Sniff |
-| `<\|sfx:sneeze\|>` | Sneeze |
+Pair each token with the matching onomatopoeia immediately after it.
+
+| Token | Description | Suggested onomatopoeia |
+|---|---|---|
+| `<\|sfx:cough\|>` | Cough | Ahem |
+| `<\|sfx:laughter\|>` | Laughter | Haha / Hehe |
+| `<\|sfx:crying\|>` | Crying | Boohoo / Sob |
+| `<\|sfx:screaming\|>` | Screaming | Ahh / Aaah |
+| `<\|sfx:burping\|>` | Burping | Burp |
+| `<\|sfx:humming\|>` | Humming | Hmm / Mmm |
+| `<\|sfx:sigh\|>` | Sigh | Uh / Ahh |
+| `<\|sfx:sniff\|>` | Sniff | Sff |
+| `<\|sfx:sneeze\|>` | Sneeze | Achoo |
 
 #### Prosody
 
@@ -450,62 +544,20 @@ Throughput on seed-tts en (N=50 per concurrency, sequential thread pool, A100 40
 
 | Concurrency | Mean latency | RTF (per-req) | audio_s/s |
 |---:|---:|---:|---:|
-| 1 | 4637 ms | 0.526 | 1.90 |
-| 16 | 7138 ms | 0.747 | 12.88 |
-| 32 | 10188 ms | 0.865 | 16.94 |
+| 1 | [—] | [—] | [—] |
+| 16 | [—] | [—] | [—] |
+| 32 | [—] | [—] | [—] |
 
 ## Evaluation Benchmarks
 
-We report **WER / CER** (↓, %) and **WavLM speaker similarity** (↑, ×100) on three zero-shot voice-cloning benchmarks.
+We report **WER / CER** (↓, %) and **WavLM speaker similarity** (↑, ×100) on the Seed-TTS zero-shot voice-cloning benchmark.
 
 ### Seed-TTS
 
 | Lang | WER ↓ | SIM ↑ |
 |---|---|---|
-| en | 2.05 | 64.86 |
-| zh | 2.00 | 70.96 |
-| **macro** | **2.02** | **67.91** |
+| en | [0.80] | [73.00] |
+| zh | [1.46] | [67.26] |
+| **macro** | **[1.13]** | **[70.13]** |
 
-### CV3 (9 langs)
-
-| Lang | WER ↓ | SIM ↑ |
-|---|---|---|
-| de | 8.62 | 65.43 |
-| en | 6.73 | 60.37 |
-| es | 5.03 | 68.18 |
-| fr | 14.50 | 62.34 |
-| it | 8.55 | 67.34 |
-| ja | 7.96 | 67.91 |
-| ko | 4.38 | 68.40 |
-| ru | 9.38 | 66.77 |
-| zh | 5.19 | 69.71 |
-| **macro** | **7.82** | **66.27** |
-
-### MiniMax-Multilingual (23 langs)
-
-| Lang | WER ↓ | SIM ↑ |
-|---|---|---|
-| ar | 2.59 | 74.77 |
-| cs | 4.62 | 78.80 |
-| de | 0.74 | 70.65 |
-| el | 1.81 | 78.02 |
-| en | 1.87 | 81.32 |
-| es | 3.06 | 72.78 |
-| fi | 4.62 | 82.69 |
-| fr | 4.70 | 70.27 |
-| hi | 6.81 | 80.94 |
-| id | 2.38 | 72.42 |
-| it | 2.07 | 74.56 |
-| ja | 3.74 | 74.23 |
-| ko | 3.57 | 74.86 |
-| nl | 2.10 | 73.02 |
-| pl | 2.08 | 83.16 |
-| pt | 2.59 | 76.52 |
-| ro | 3.64 | 77.10 |
-| ru | 4.66 | 74.48 |
-| th | 7.59 | 77.64 |
-| tr | 2.09 | 77.72 |
-| uk | 2.69 | 71.79 |
-| vi | 1.18 | 73.46 |
-| zh | 1.65 | 74.85 |
-| **macro** | **3.17** | **75.92** |
+Results are generated with SGLang Omni. WER/CER and speaker similarity follow the original text normalization and metric implementation from [seed-tts-eval](https://github.com/BytedanceSpeech/seed-tts-eval).
