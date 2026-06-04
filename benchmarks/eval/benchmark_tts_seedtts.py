@@ -1,63 +1,57 @@
 # SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: Apache-2.0
 """SeedTTS benchmark for TTS models with performance and WER metrics.
 
 Note (Qiujiang, Chenyang):
 
 1. Voice-clone models (e.g. fishaudio/s2-pro): default uses ref_audio /
   ref_text from the meta file.
+
 2. Plain TTS (e.g. mistralai/Voxtral-4B-TTS-2603): use --no-ref-audio and
   --voice for a server-side speaker preset.
-3. Higgs TTS uses the same benchmark with --ref-format references.
 
 Usage:
 
-    # Download the test set:
+1. Download the test set:
+
     python -m benchmarks.dataset.prepare --dataset seedtts
 
-    # Launch the server:
-    1. For S2-Pro:
-    python -m sglang_omni.cli serve \
-        --model-path fishaudio/s2-pro \
-        --port 8000
+2. Full pipeline (auto start TTS → generate → stop TTS → start ASR → WER):
 
-    2. For Voxtral-4B-TTS-2603:
-    python -m sglang_omni.cli serve \
-        --model-path mistralai/Voxtral-4B-TTS-2603 \
-        --port 8000
 
-    3. For Higgs TTS:
-    python -m sglang_omni.cli serve \
-        --model-path boson-sglang/higgs-audio-v3-tts-4b-base \
-        --port 8000
-
-    # Full pipeline (auto start TTS → generate → stop TTS → start ASR → WER)
-    # Single GPU: TTS and ASR reuse the same --port sequentially.
     python -m benchmarks.eval.benchmark_tts_seedtts \
         --meta zhaochenyang20/seed-tts-eval-arrow \
         --max-concurrency 16 \
         --model fishaudio/s2-pro \
         --port 8000
 
-    # Plain TTS (no ref audio from testset)
     python -m benchmarks.eval.benchmark_tts_seedtts \
         --meta zhaochenyang20/seed-tts-eval-arrow \
         --model mistralai/Voxtral-4B-TTS-2603 --port 8000 \
         --max-concurrency 16 \
-        --no-ref-audio --voice cheerful_female --max-samples 50
+        --no-ref-audio --voice cheerful_female
 
-    # Higgs TTS voice cloning
     python -m benchmarks.eval.benchmark_tts_seedtts \
         --meta zhaochenyang20/seed-tts-eval-arrow \
-        --model boson-sglang/higgs-audio-v3-tts-4b-base --port 8000 \
+        --model boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999 --port 8000 \
         --ref-format references \
         --output-dir results/higgs_tts_en \
         --lang en --max-concurrency 16
 
-For CI settings, separate the generate and transcribe phases into two runs.
+    python -m benchmarks.eval.benchmark_tts_seedtts \
+        --meta zhaochenyang20/seed-tts-eval-arrow \
+        --model OpenMOSS-Team/MOSS-TTS-v1.5 --port 8000 \
+        --ref-format references \
+        --token-count auto \
+        --output-dir results/moss_tts_en \
+        --lang en --max-concurrency 16
+
+3. For CI settings, separate the generate and transcribe phases into two runs.
 
 Usage (CI):
 
     # Generate audio only
+
     python -m benchmarks.eval.benchmark_tts_seedtts \
         --generate-only \
         --meta zhaochenyang20/seed-tts-eval-arrow \
@@ -67,6 +61,7 @@ Usage (CI):
         --port 8000
 
     # Transcribe + WER only
+
     python -m benchmarks.eval.benchmark_tts_seedtts \
         --transcribe-only \
         --meta zhaochenyang20/seed-tts-eval-arrow \
@@ -75,7 +70,7 @@ Usage (CI):
         --lang en --port 8000
 
 
-H200 Full-Set Reference Results
+Reference Results
 
 Reproducibility references for the FULL eval set — NOT CI thresholds.
 CI runs on a subset and has its own thresholds elsewhere (see tasks/*.py).
@@ -88,6 +83,9 @@ Accuracy (accuracy.wer)
 
 Note: the Higgs TTS EN raw corpus WER includes 2 samples above 50% WER; the
 outlier-excluded corpus WER is 1.36%.
+
+Note: the MOSS-TTS EN raw corpus WER includes 5 samples above 50% WER; the
+outlier-excluded corpus WER is 1.54%.
 
 | Model  | Config           | wer_corpus | wer_per_sample_mean | wer_per_sample_median | wer_per_sample_std | evaluated | skipped | Source                         |
 | ------ | ---------------- | ---------- | ------------------- | --------------------- | ------------------ | --------- | ------- | ------------------------------ |
@@ -105,6 +103,7 @@ outlier-excluded corpus WER is 1.36%.
 | S2-Pro | ZH, stream=True  | 0.90%      | 0.86%               | 0.00%                 | 2.1%               | 2020/2020 | 0       | PR #411 [H100, full-set, c=16] |
 | Higgs TTS | EN, stream=False | 4.68%   | 4.16%               | 0.00%                 | 91.2%              | 1088/1088 | 0       | PR #534 [H200, full-set, c=16, CUDA Graph on, torch.compile off] |
 | Higgs TTS | ZH, stream=False | 1.14%   | 1.08%               | 0.00%                 | 2.7%               | 2020/2020 | 0       | PR #534 [H200, full-set, c=16, CUDA Graph on, torch.compile off] |
+| MOSS-TTS | EN, stream=False | 1.93%   | 1.98%               | 0.00%                 | 8.1%               | 1088/1088 | 0       | PR #609 [H100, full-set, c=16, token-count=auto] |
 
 Generation speed (generation.speed)
 
@@ -124,21 +123,7 @@ Generation speed (generation.speed)
 | S2-Pro | ZH, stream=True  | 11.417         | 15.020        | 2.141    | 1.398          | 65.5                           | PR #411 [H100, V1-pipeline, full-set, c=16] |
 | Higgs TTS | EN, stream=False | 1.749       | 2.600         | 0.425    | 9.104          | 112.9                          | PR #534 [H200, full-set, c=16, CUDA Graph on, torch.compile off] |
 | Higgs TTS | ZH, stream=False | 1.629       | 2.110         | 0.282    | 9.792          | 109.9                          | PR #534 [H200, full-set, c=16, CUDA Graph on, torch.compile off] |
-
-Note (Chenyang): output-token rates here count S2-Pro's codec tokens. They are not
-comparable to Qwen3-Omni rates in benchmark_omni_seedtts.py, whose tokens are
-discrete talker LM tokens emitted at audio frame rate. Cross-model comparison of
-this rate is not meaningful; use latency_mean_s / rtf_mean / throughput_qps
-instead when comparing backends.
-
-ASR speed (asr_speed_results.json) — Qwen3-ASR-1.7B server for EN/ZH
-
-| Model     | Lang | asr_latency_mean_s | asr_rtf_mean | asr_throughput_samples_per_s | Source                                          |
-| --------- | ---- | ------------------ | ------------ | ---------------------------- | ----------------------------------------------- |
-| S2-Pro    | EN   | 0.297              | 0.0772       | 3.36                         | PR #393 [H200, from S2-Pro EN stream=False run] |
-| S2-Pro    | ZH   | 0.294              | 0.0556       | 3.40                         | PR #393 [H200, from S2-Pro ZH stream=False run] |
-| Higgs TTS | EN   | 0.360              | 0.0835       | 2.78                         | PR #534 [H200, from Higgs TTS EN stream=False run] |
-| Higgs TTS | ZH   | 0.0867             | 0.0157       | 11.53                        | PR #534 [H200, from Higgs TTS ZH stream=False run] |
+| MOSS-TTS | EN, stream=False | 3.890       | 4.781         | 0.913    | 4.091          | 54.1                           | PR #609 [H100, full-set, c=16, token-count=auto] |
 """
 
 from __future__ import annotations
@@ -160,6 +145,7 @@ from benchmarks.metrics.performance import (
 )
 from benchmarks.tasks.tts import (
     DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
+    MOSS_TTS_TOKEN_COUNT_AUTO,
     QWEN3_ASR_MODEL_PATH,
     build_base_url,
     make_tts_send_fn,
@@ -200,9 +186,11 @@ class TtsSeedttsBenchmarkConfig:
     # Reference payload shape for voice cloning. The default keeps the original
     # ref_audio/ref_text fields; Higgs TTS should pass --ref-format references.
     ref_format: str = "flat"
+    response_format: str = "wav"
     output_dir: str = "results/tts_seedtts"
     max_samples: int | None = None
     max_new_tokens: int | None = 2048
+    token_count: int | str | None = None
     temperature: float | None = None
     top_p: float | None = None
     top_k: int | None = None
@@ -212,6 +200,8 @@ class TtsSeedttsBenchmarkConfig:
     concurrency: int = DEFAULT_TTS_BENCHMARK_CONCURRENCY
     request_rate: float = float("inf")
     stream: bool = False
+    stream_format: str = "sse"
+    initial_codec_chunk_frames: int | None = None
     disable_tqdm: bool = False
     # Transcribe phase
     lang: str = "en"
@@ -225,6 +215,8 @@ def _build_generation_kwargs(config: TtsSeedttsBenchmarkConfig) -> dict:
     generation_kwargs: dict = {}
     if config.max_new_tokens is not None:
         generation_kwargs["max_new_tokens"] = config.max_new_tokens
+    if config.token_count is not None:
+        generation_kwargs["token_count"] = config.token_count
     if config.temperature is not None:
         generation_kwargs["temperature"] = config.temperature
     if config.top_p is not None:
@@ -249,6 +241,7 @@ def _build_results_config(
         "meta": config.meta,
         "voice_clone": config.voice_clone,
         "ref_format": config.ref_format,
+        "response_format": config.response_format,
         "voice": config.voice,
         "task_type": config.task_type,
         "instructions": config.instructions,
@@ -256,9 +249,12 @@ def _build_results_config(
         "max_samples": config.max_samples,
         "max_new_tokens": config.max_new_tokens,
         "seed": config.seed,
+        "token_count": config.token_count,
         "warmup": config.warmup,
         "concurrency": config.concurrency,
         "request_rate": config.request_rate,
+        "stream_format": config.stream_format if config.stream else None,
+        "initial_codec_chunk_frames": config.initial_codec_chunk_frames,
     }
 
 
@@ -282,7 +278,10 @@ async def run_tts_seedtts_benchmark(
     send_fn = make_tts_send_fn(
         config.model,
         api_url,
+        response_format=config.response_format,
         stream=config.stream,
+        stream_format=config.stream_format,
+        initial_codec_chunk_frames=config.initial_codec_chunk_frames,
         no_ref_audio=not config.voice_clone,
         ref_format=config.ref_format,
         voice=config.voice,
@@ -321,7 +320,9 @@ def run_tts_seedtts_transcribe(
 
     Returns a dict with keys: wer_summary, asr_speed, per_sample.
     """
-    generation_mode = "streaming" if config.stream else "non-streaming"
+    generation_mode = (
+        f"streaming-{config.stream_format}" if config.stream else "non-streaming"
+    )
     wer_config = {
         "model": config.model,
         "tts_model": config.model,
@@ -329,13 +330,17 @@ def run_tts_seedtts_transcribe(
         "meta": config.meta,
         "voice_clone": config.voice_clone,
         "ref_format": config.ref_format,
+        "response_format": config.response_format,
         "voice": config.voice,
         "task_type": config.task_type,
         "instructions": config.instructions,
         "max_new_tokens": config.max_new_tokens,
+        "token_count": config.token_count,
         "temperature": config.temperature,
         "max_samples": config.max_samples,
         "stream": config.stream,
+        "stream_format": config.stream_format if config.stream else None,
+        "initial_codec_chunk_frames": config.initial_codec_chunk_frames,
         "concurrency": config.concurrency,
         "asr_concurrency": config.asr_concurrency,
     }
@@ -351,6 +356,9 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
     # ``--no-ref-audio`` is preserved as a legacy CLI flag; it flips the
     # dataclass default (``voice_clone=True``) to False for plain TTS.
     voice_clone = not args.no_ref_audio
+    response_format = (
+        "pcm" if args.stream and args.stream_format == "audio" else args.response_format
+    )
     return TtsSeedttsBenchmarkConfig(
         base_url=args.base_url,
         host=args.host,
@@ -362,9 +370,11 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         instructions=args.instructions,
         voice_clone=voice_clone,
         ref_format=args.ref_format,
+        response_format=response_format,
         output_dir=args.output_dir,
         max_samples=args.max_samples,
         max_new_tokens=args.max_new_tokens,
+        token_count=args.token_count,
         temperature=args.temperature,
         top_p=args.top_p,
         top_k=args.top_k,
@@ -374,6 +384,8 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         concurrency=args.concurrency,
         request_rate=args.request_rate,
         stream=args.stream,
+        stream_format=args.stream_format,
+        initial_codec_chunk_frames=args.initial_codec_chunk_frames,
         disable_tqdm=args.disable_tqdm,
         lang=args.lang,
         device=args.device,
@@ -381,6 +393,21 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         asr_model_path=args.asr_model_path,
         asr_concurrency=args.asr_concurrency,
     )
+
+
+def _parse_token_count(value: str) -> int | str:
+    normalized = value.strip().lower()
+    if normalized == MOSS_TTS_TOKEN_COUNT_AUTO:
+        return MOSS_TTS_TOKEN_COUNT_AUTO
+    try:
+        token_count = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "token count must be a positive integer or 'auto'"
+        ) from exc
+    if token_count <= 0:
+        raise argparse.ArgumentTypeError("token count must be positive")
+    return token_count
 
 
 async def benchmark(config: TtsSeedttsBenchmarkConfig) -> dict:
@@ -455,9 +482,27 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "and similar models. Use 'references' for Higgs TTS."
         ),
     )
+    parser.add_argument(
+        "--response-format",
+        type=str,
+        default="wav",
+        help=(
+            "Requested audio payload format. SSE can use wav or pcm; raw "
+            "audio streaming always sends response_format=pcm."
+        ),
+    )
     parser.add_argument("--output-dir", type=str, default="results/tts_seedtts")
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--max-new-tokens", type=int, default=2048)
+    parser.add_argument(
+        "--token-count",
+        type=_parse_token_count,
+        default=None,
+        help=(
+            "MOSS-TTS duration token target forwarded as token_count. Pass "
+            "'auto' to estimate per sample using OpenMOSS app defaults."
+        ),
+    )
     parser.add_argument("--temperature", type=float, default=None)
     parser.add_argument("--top-p", type=float, default=None)
     parser.add_argument("--top-k", type=int, default=None)
@@ -486,7 +531,25 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--stream",
         action="store_true",
-        help="Use streaming SSE for TTS generation.",
+        help="Use streaming for TTS generation.",
+    )
+    parser.add_argument(
+        "--stream-format",
+        choices=["sse", "audio"],
+        default="sse",
+        help=(
+            "Streaming transport. 'sse' reads audio chunks from SSE events; "
+            "'audio' requests raw PCM audio streaming."
+        ),
+    )
+    parser.add_argument(
+        "--initial-codec-chunk-frames",
+        type=int,
+        default=None,
+        help=(
+            "Optional model-specific first codec chunk size. With Higgs TTS "
+            "this controls only the first streaming vocoder chunk."
+        ),
     )
     parser.add_argument(
         "--save-audio",
@@ -537,6 +600,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=1200,
         help="Timeout in seconds to wait for server readiness.",
     )
+    parser.add_argument(
+        "--use-existing-server",
+        action="store_true",
+        help=(
+            "Do not start or stop a server; send requests to the configured "
+            "--base-url or --host/--port instead."
+        ),
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
         "--generate-only",
@@ -564,6 +635,18 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = _build_arg_parser()
     args = parser.parse_args()
+    if args.stream_format == "audio" and not args.stream:
+        parser.error("--stream-format audio requires --stream")
+    if (
+        args.initial_codec_chunk_frames is not None
+        and args.initial_codec_chunk_frames < 0
+    ):
+        parser.error("--initial-codec-chunk-frames must be non-negative")
+    if args.use_existing_server and not (args.generate_only or args.transcribe_only):
+        parser.error(
+            "--use-existing-server currently requires --generate-only or "
+            "--transcribe-only"
+        )
     config = _config_from_args(args)
 
     if args.save_audio:
@@ -578,24 +661,30 @@ def main() -> None:
         return
 
     if args.transcribe_only:
-        with managed_omni_server(
-            model_path=config.asr_model_path,
-            port=config.port,
-            host=config.host,
-            log_file=Path(config.output_dir) / "server_logs" / "asr_server.log",
-            timeout=args.server_timeout,
-        ):
+        if args.use_existing_server:
             run_tts_seedtts_transcribe(config, asr_router_port=config.port)
+        else:
+            with managed_omni_server(
+                model_path=config.asr_model_path,
+                port=config.port,
+                host=config.host,
+                log_file=Path(config.output_dir) / "server_logs" / "asr_server.log",
+                timeout=args.server_timeout,
+            ):
+                run_tts_seedtts_transcribe(config, asr_router_port=config.port)
         return
 
-    with managed_omni_server(
-        model_path=config.model,
-        port=config.port,
-        host=config.host,
-        log_file=Path(config.output_dir) / "server_logs" / "tts_server.log",
-        timeout=args.server_timeout,
-    ):
+    if args.use_existing_server:
         asyncio.run(benchmark(config))
+    else:
+        with managed_omni_server(
+            model_path=config.model,
+            port=config.port,
+            host=config.host,
+            log_file=Path(config.output_dir) / "server_logs" / "tts_server.log",
+            timeout=args.server_timeout,
+        ):
+            asyncio.run(benchmark(config))
 
     if args.generate_only:
         return

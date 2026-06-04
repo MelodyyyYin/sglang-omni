@@ -1,6 +1,6 @@
 # TTS Model Usage
 
-This guide uses [Fish Speech S2-Pro](https://huggingface.co/fishaudio/s2-pro) as an example TTS (text-to-speech) model with SGLang-Omni and the OpenAI-compatible API. The same `/v1/audio/speech` endpoint also supports Voxtral TTS and Qwen3-TTS.
+This guide uses [Fish Speech S2-Pro](https://huggingface.co/fishaudio/s2-pro) as an example TTS (text-to-speech) model with SGLang-Omni and the OpenAI-compatible API. The same `/v1/audio/speech` endpoint also supports Voxtral TTS, Qwen3-TTS, and MOSS-TTS.
 
 ## Prerequisites
 
@@ -27,6 +27,7 @@ uv pip install --no-deps qwen-tts==0.1.1
 | [Qwen3-TTS Base](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_0_6b.yaml`, `examples/configs/qwen3_tts_1_7b.yaml` | Requires reference audio through `ref_audio` or `references[0].audio_path`; `language` defaults to `auto` |
 | Qwen3-TTS CustomVoice | `examples/configs/qwen3_tts_0_6b_customvoice.yaml` | Text-only requests use the checkpoint speaker table; missing `voice` defaults to `Vivian` |
 | Qwen3-TTS VoiceDesign | `examples/configs/qwen3_tts_1_7b_voicedesign.yaml` | Requires `task_type="VoiceDesign"` and non-empty `instructions`; no reference audio is required |
+| [MOSS-TTS](../cookbook/moss_tts.md) | `examples/configs/moss_tts.yaml` | Voice cloning via `ref_audio` or `references[0].audio_path` (+ `text`); duration via `${token:N}` or `token_count`; benchmark at `--max-concurrency 8` |
 
 ## Launch the Server
 
@@ -70,6 +71,15 @@ For Qwen3-TTS VoiceDesign:
 sgl-omni serve \
   --model-path Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign \
   --config examples/configs/qwen3_tts_1_7b_voicedesign.yaml \
+  --port 8000
+```
+
+For MOSS-TTS:
+
+```bash
+sgl-omni serve \
+  --model-path OpenMOSS-Team/MOSS-TTS-v1.5 \
+  --config examples/configs/moss_tts.yaml \
   --port 8000
 ```
 
@@ -150,6 +160,22 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
 ```
 
 The server returns a stream of SSE events. Each event contains an `audio.speech.chunk` object with a base64-encoded audio chunk. The stream ends with `data: [DONE]`.
+
+For clients that want a continuous byte stream instead of SSE framing, request raw PCM explicitly:
+
+```bash
+curl -N -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": "Get the trust fund to the bank early.",
+    "stream": true,
+    "stream_format": "audio",
+    "response_format": "pcm"
+  }' \
+  --output output.pcm
+```
+
+Raw audio streaming returns 16-bit mono PCM bytes (`audio/pcm`) with sample-rate metadata in response headers. It does not include in-band SSE events, final usage, or a `[DONE]` sentinel. When the client does not set `initial_codec_chunk_frames`, raw PCM requests default to a 1-frame first vocoder chunk for lower first-audio latency; set `initial_codec_chunk_frames` to `0` to use the model's steady chunk size from the start.
 
 ## Use Python
 
@@ -251,6 +277,8 @@ The table below lists all parameters accepted by the `/v1/audio/speech` endpoint
 | `response_format` | string | `"wav"` | Output audio format |
 | `speed` | float | `1.0` | Playback speed multiplier |
 | `stream` | bool | `false` | Enable streaming via SSE |
+| `stream_format` | string | `"sse"` | Streaming transport. Use `"audio"` with `stream=true` and `response_format="pcm"` for raw PCM bytes; the response headers declare the stream sample rate, channel count, and bit depth |
+| `initial_codec_chunk_frames` | int | `null` | Optional first codec chunk size for streaming TTFA tuning. Higgs TTS currently consumes this parameter first; raw PCM speech requests default this to `1` unless the client sets a value, including `0` |
 | `references` | list | `null` | Reference audio for voice cloning; each item has `audio_path` (local path / remote url) and `text` |
 | `ref_audio` | string | `null` | Reference audio path / URL / base64 string; equivalent to `references[0].audio_path` |
 | `ref_text` | string | `null` | Transcript for `ref_audio`; equivalent to `references[0].text` |
