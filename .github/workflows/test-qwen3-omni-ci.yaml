@@ -424,9 +424,9 @@ jobs:
         with:
           stage-label: Video-AMME Talker (WER + speed)
           artifact-path-globs: |
-            */videoamme_audio/videoamme_results.json
+            */videoamme_audio*/videoamme_results.json
           artifact-upload-name: qwen3-omni-videoamme-talker-results
-          artifact-upload-path: /tmp/**/videoamme_audio/videoamme_results.json
+          artifact-upload-path: /tmp/**/videoamme_audio*/videoamme_results.json
 
   stage-11-thinker-tp2:
     name: stage 11 - FP8 Thinker TP=2 (Video-AMME Talker)
@@ -464,6 +464,6 @@ jobs:
         with:
           stage-label: FP8 Thinker TP=2 (Video-AMME Talker accuracy + WER + speed)
           artifact-path-globs: |
-            */videoamme_audio/videoamme_results.json
+            */videoamme_audio*/videoamme_results.json
           artifact-upload-name: qwen3-omni-thinker-tp2-results
-          artifact-upload-path: /tmp/**/videoamme_audio/videoamme_results.json
+          artifact-upload-path: /tmp/**/videoamme_audio*/videoamme_results.json
