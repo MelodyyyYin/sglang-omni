@@ -42,6 +42,11 @@ should_retry() {
 
 cleanup_between_attempts() {
   echo "Cleaning GPU state before retry..."
+  # ensure_gpus_idle.sh is a strict superset of delete_gpu_process.sh: it first
+  # kills the orphan TP multiprocessing.spawn workers that nvidia-smi misses,
+  # then calls delete_gpu_process.sh. Retries need the stronger scan (TP=2
+  # leaves orphans); the lighter delete_gpu_process.sh is still used directly
+  # by omni-setup / omni-post-stage / cleanup_ci_pr_home.
   if ! bash .github/scripts/ensure_gpus_idle.sh; then
     echo "::error::GPU cleanup failed before retry; not retrying with dirty GPU state"
     return 1

@@ -434,9 +434,15 @@ jobs:
     timeout-minutes: 35
     container:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
-      # TP=2 disaggregated relay passes fds between stage processes via
-      # pidfd_getfd, which needs CAP_SYS_PTRACE (else every request 500s with
-      # "pidfd_getfd: Operation not permitted"). Only stage 11 uses this server.
+      # Stage 11 runs the *disaggregated* server: thinker (tp0/tp1), talker_ar,
+      # code2wav and the encoders are separate OS processes. To pass a tensor
+      # between them the relay duplicates the producer's CUDA/shm fd into the
+      # consumer process via the pidfd_getfd(2) syscall, which requires
+      # CAP_SYS_PTRACE. Docker drops that cap by default, so without
+      # --cap-add=SYS_PTRACE every request fails with
+      # "pidfd_getfd: Operation not permitted" (HTTP 500).
+      # Note (Yin): only stage 11 is disaggregated; the colocated/router stages
+      # are single-process and don't need this cap.
       options: >-
         --gpus all --rm
         --cap-add=SYS_PTRACE
@@ -461,8 +467,9 @@ jobs:
         env:
           HF_ENDPOINT: https://hf-mirror.com
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
-          # Reduce allocator fragmentation on GPU 1, where the TP=2 thinker
-          # rank-1 is co-located with talker_ar + code2wav (issue #765).
+          # cuda:1 is the crowded card (thinker rank-1 + talker_ar + code2wav);
+          # expandable_segments cuts its allocator fragmentation, complementing
+          # the thinker mem-fraction cut (#765).
           PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
 
       - name: Post-stage cleanup
