@@ -53,13 +53,20 @@ _kill_orphan_gpu_processes() {
     done
 }
 
+kill_orphans=0
+for arg in "$@"; do
+    [ "${arg}" = "--kill-orphans" ] && kill_orphans=1
+done
+
 if ! command -v nvidia-smi >/dev/null 2>&1; then
     echo "nvidia-smi not found; skipping GPU cleanup."
     exit 0
 fi
 
-_kill_orphan_gpu_processes
-sleep 2
+if [ "${kill_orphans}" = "1" ]; then
+    _kill_orphan_gpu_processes
+    sleep 2
+fi
 
 echo "=== Checking GPU Utilization ==="
 
