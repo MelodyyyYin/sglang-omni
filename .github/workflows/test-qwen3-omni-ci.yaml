@@ -434,8 +434,12 @@ jobs:
     timeout-minutes: 35
     container:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
+      # TP=2 disaggregated relay passes fds between stage processes via
+      # pidfd_getfd, which needs CAP_SYS_PTRACE (else every request 500s with
+      # "pidfd_getfd: Operation not permitted"). Only stage 11 uses this server.
       options: >-
         --gpus all --rm
+        --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/cache/huggingface:/github/home/.cache/huggingface
         -v /data/cache/huggingface:/root/.cache/huggingface
