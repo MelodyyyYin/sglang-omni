@@ -461,9 +461,9 @@ jobs:
         env:
           HF_ENDPOINT: https://hf-mirror.com
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
-          # Reduce allocator fragmentation on GPU 1, where the TP=2 thinker
-          # rank-1 is co-located with talker_ar + code2wav (issue #765).
-          PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+          # note (Yue Yin): GPU 1 co-locates thinker rank-1 + talker + code2wav under TP=2;
+          # expandable_segments reduces allocator fragmentation (issue #765).
+          PYTORCH_ALLOC_CONF: expandable_segments:True
 
       - name: Post-stage cleanup
         if: always()

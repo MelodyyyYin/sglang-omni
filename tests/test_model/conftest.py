@@ -151,12 +151,8 @@ def qwen3_omni_fp8_talker_server_tp2(tmp_path_factory: pytest.TempPathFactory):
             "1",
             "--gpu-code2wav",
             "1",
-            # 0.40 (not 0.55): under TP=2 the thinker rank-1 shares GPU 1 with
-            # talker_ar + code2wav, so 0.55 left too little headroom for the
-            # thinker's concurrency-16 video-prefill activation spike -> OOM
-            # (issue #765, stage 11). The KV pool is ~94% unused at this size,
-            # so the smaller static reservation costs nothing and restores the
-            # margin the co-located stages need.
+            # note (Yue Yin): 0.40 not 0.55 — GPU 1 co-locates thinker rank-1, talker,
+            # code2wav under TP=2; 0.55 OOMs on concurrency-16 video-prefill (issue #765).
             "--thinker-mem-fraction-static",
             "0.40",
             "--talker-mem-fraction-static",
