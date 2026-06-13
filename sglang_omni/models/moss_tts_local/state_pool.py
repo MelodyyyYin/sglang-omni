@@ -2,9 +2,11 @@
 """Row-indexed decode-state pool for MOSS-TTS Local (v1.5).
 
 Next-step-critical per-request decode state (the next frame's feedback
-embedding and the request-static sampling parameters/seed) lives in stable,
-process-lifetime GPU buffers indexed by a per-request row. Output-only frame
-collection moves to a per-step :class:`MossTTSLocalDecodeJournal`.
+embedding, request-static sampling parameters/seed, repetition penalty state,
+and generation step) lives in stable, process-lifetime GPU buffers indexed by a
+per-request row.
+Output-only frame collection moves to a per-step
+:class:`MossTTSLocalDecodeJournal`.
 
 ``P = max_running_requests + 1`` rows indexed by a per-request row. The last
 row (``padding_row = P - 1``) is reserved — never acquired — as a stable
@@ -36,6 +38,20 @@ class MossTTSLocalDecodeStatePool:
         self.hidden_size = int(weight.shape[1])
         self.device = weight.device
         self.dtype = weight.dtype
+        try:
+            config = model.config
+        except AttributeError:
+            config = None
+        try:
+            n_vq = config.n_vq
+        except AttributeError:
+            n_vq = 12
+        try:
+            audio_vocab_size = config.audio_vocab_size
+        except AttributeError:
+            audio_vocab_size = 1024
+        self.n_vq = int(n_vq or 12)
+        self.audio_vocab_size = int(audio_vocab_size or 1024)
 
         # Feedback embedding for the next decode step; bf16 matches the staging
         # table dtype so before_decode's gather is a plain copy (#736).
@@ -65,9 +81,26 @@ class MossTTSLocalDecodeStatePool:
             self.num_rows, device=self.device, dtype=torch.int64
         )
         self.seeds = torch.zeros(self.num_rows, device=self.device, dtype=torch.int64)
+        self.generation_steps = torch.zeros(
+            self.num_rows, device=self.device, dtype=torch.int64
+        )
+        self.sampling_steps = torch.zeros(
+            self.num_rows, device=self.device, dtype=torch.int64
+        )
+        self.audio_repetition_penalty = torch.zeros(
+            self.num_rows, device=self.device, dtype=torch.float32
+        )
+        self.audio_token_presence = torch.zeros(
+            self.num_rows,
+            self.n_vq,
+            self.audio_vocab_size,
+            device=self.device,
+            dtype=torch.bool,
+        )
 
         self._rid_to_row: dict[str, int] = {}
         self._params_written_rids: set[str] = set()
+        self._audio_repetition_penalty_rows: set[int] = set()
         # Real rows 0..P-2 are assignable; the padding row stays out of the
         # free list so it is never handed to a request.
         self._free_rows: list[int] = list(range(self.padding_row))
@@ -110,6 +143,11 @@ class MossTTSLocalDecodeStatePool:
         self.text_top_k[row_idx] = 0
         self.audio_top_k[row_idx] = 0
         self.seeds[row_idx] = 0
+        self.generation_steps[row_idx] = 0
+        self.sampling_steps[row_idx] = 0
+        self.audio_repetition_penalty[row_idx] = 0.0
+        self.audio_token_presence[row_idx].zero_()
+        self._audio_repetition_penalty_rows.discard(int(row_idx))
 
     def write_params(self, row_idx: int, data: Any) -> None:
         """Write the seven request-static sampling fields into ``row_idx``.
@@ -125,6 +163,15 @@ class MossTTSLocalDecodeStatePool:
         self.text_top_k[row_idx] = int(data.text_top_k)
         self.audio_top_k[row_idx] = int(data.audio_top_k)
         self.seeds[row_idx] = int(data.sampling_seed)
+        try:
+            audio_repetition_penalty = float(data.audio_repetition_penalty)
+        except AttributeError:
+            audio_repetition_penalty = 1.0
+        self.audio_repetition_penalty[row_idx] = audio_repetition_penalty
+        if audio_repetition_penalty == 1.0:
+            self._audio_repetition_penalty_rows.discard(int(row_idx))
+        else:
+            self._audio_repetition_penalty_rows.add(int(row_idx))
 
     def ensure_params(self, row_idx: int, rid: str, data: Any) -> None:
         """Write request-static params once for the current row acquisition."""
@@ -136,7 +183,30 @@ class MossTTSLocalDecodeStatePool:
         """Force params to be rewritten on the next ``ensure_params`` call."""
         self._params_written_rids.discard(rid)
 
-    def reset_for_refill(self, rid: str) -> bool:
+    def commit_generation_step(self, rid: str, generation_steps: int) -> None:
+        """Mirror the request's committed generation step into its pool row."""
+        row_idx = self.row_for(rid)
+        if row_idx is None:
+            return
+        step = int(generation_steps)
+        self.generation_steps[row_idx] = step
+        self.sampling_steps[row_idx] = torch.maximum(
+            self.sampling_steps[row_idx],
+            torch.tensor(step, device=self.device, dtype=torch.int64),
+        )
+
+    def commit_generation_steps(
+        self, row_t: torch.Tensor, generation_steps: torch.Tensor
+    ) -> None:
+        """Mirror committed generation steps into active pool rows in one write."""
+        if row_t.numel() == 0:
+            return
+        steps = generation_steps.to(device=self.device, dtype=torch.int64)
+        row_t = row_t.to(device=self.device, dtype=torch.long)
+        self.generation_steps[row_t] = steps
+        self.sampling_steps[row_t] = torch.maximum(self.sampling_steps[row_t], steps)
+
+    def reset_for_refill(self, rid: str, generation_steps: int = 0) -> bool:
         """Invalidate params and zero ``rid``'s row for a retraction re-prefill.
 
         Returns ``False`` (no-op) when ``rid`` holds no row.
@@ -146,11 +216,78 @@ class MossTTSLocalDecodeStatePool:
             return False
         self.invalidate_params(rid)
         self.reset_row(row_idx)
+        self.generation_steps[row_idx] = int(generation_steps)
+        self.sampling_steps[row_idx] = int(generation_steps)
+        return True
+
+    def rows_have_audio_repetition_penalty(self, pool_rows: list[int]) -> bool:
+        """Return whether any host row has a non-default audio penalty."""
+        return any(int(row) in self._audio_repetition_penalty_rows for row in pool_rows)
+
+    def update_audio_history(self, row_t: torch.Tensor, rows: torch.Tensor) -> None:
+        """Mark generated audio codes as present for future repetition penalty."""
+        if row_t.numel() == 0:
+            return
+        if rows.ndim != 2 or int(rows.shape[1]) != self.n_vq + 1:
+            raise RuntimeError(
+                "MOSS-TTS Local audio history rows must have shape "
+                f"[B, {self.n_vq + 1}], got {tuple(rows.shape)}"
+            )
+        codes = rows[:, 1:].to(device=self.device, dtype=torch.long)
+        row_t = row_t.to(device=self.device, dtype=torch.long)
+        if int(row_t.numel()) != int(codes.shape[0]):
+            raise RuntimeError(
+                "MOSS-TTS Local audio history row index mismatch: "
+                f"{int(row_t.numel())} rows for {int(codes.shape[0])} code rows"
+            )
+        valid = (codes >= 0) & (codes < self.audio_vocab_size)
+        row_idx = row_t.view(-1, 1).expand_as(codes)
+        channel_idx = torch.arange(self.n_vq, device=self.device).view(1, -1)
+        channel_idx = channel_idx.expand_as(codes)
+        self.audio_token_presence[row_idx[valid], channel_idx[valid], codes[valid]] = (
+            True
+        )
+
+    def rebuild_audio_history(self, rid: str, output_rows: list[torch.Tensor]) -> bool:
+        """Rebuild ``rid``'s pool-resident history after retraction re-prefill."""
+        row_idx = self.row_for(rid)
+        if row_idx is None:
+            return False
+        self.audio_token_presence[row_idx].zero_()
+        if not output_rows:
+            return True
+        rows = torch.stack(output_rows, dim=0)
+        row_t = torch.full(
+            (int(rows.shape[0]),),
+            int(row_idx),
+            dtype=torch.long,
+            device=self.device,
+        )
+        self.update_audio_history(row_t, rows)
         return True
 
     def row_for(self, rid: str) -> int | None:
         """Return ``rid``'s row, or ``None`` if it holds no row."""
         return self._rid_to_row.get(rid)
+
+    def prepare_active_rows(
+        self, requests: list[Any]
+    ) -> tuple[torch.Tensor, list[int], bool]:
+        """Acquire active rows and write request-static params for this batch."""
+        pool_rows = []
+        has_audio_repetition_penalty = False
+        for sched_req in requests:
+            rid = sched_req.request_id
+            row_idx = self.acquire_row(rid)
+            pool_rows.append(row_idx)
+            self.ensure_params(row_idx, rid, sched_req.data)
+            if int(row_idx) in self._audio_repetition_penalty_rows:
+                has_audio_repetition_penalty = True
+        return (
+            torch.tensor(pool_rows, dtype=torch.long, device=self.device),
+            pool_rows,
+            has_audio_repetition_penalty,
+        )
 
 
 class MossTTSLocalDecodeJournal:

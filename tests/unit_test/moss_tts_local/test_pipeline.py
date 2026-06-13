@@ -382,28 +382,33 @@ def test_result_adapter_empty_generation():
 # ---------------------------------------------------------------------------
 
 
-def test_audio_repetition_penalty_matches_upstream_semantics():
+def test_audio_repetition_penalty_mask_matches_upstream_semantics():
     from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
 
     logits = torch.tensor(
         [[2.0, -1.0, 0.5, 3.0], [1.0, 1.0, 1.0, 1.0]], dtype=torch.float32
     )
-    history_row0 = torch.tensor([[0, 9], [2, 9]], dtype=torch.long)  # channel 0: {0, 2}
-    histories = [history_row0, None]
+    token_presence = torch.tensor(
+        [
+            [True, False, True, False],
+            [True, True, False, False],
+        ],
+        dtype=torch.bool,
+    )
     expected = logits.clone()
     penalty = 1.5
     expected[0, 0] = expected[0, 0] / penalty  # positive -> divide
     expected[0, 2] = expected[0, 2] / penalty
 
-    MossTTSLocalModelRunner._apply_audio_repetition_penalty(
-        logits, histories, [penalty, 1.0], channel=0
+    MossTTSLocalModelRunner._apply_audio_repetition_penalty_mask(
+        logits, token_presence, torch.tensor([penalty, 1.0])
     )
     torch.testing.assert_close(logits, expected)
 
     # Negative scores multiply.
     logits2 = torch.tensor([[-2.0, 1.0]], dtype=torch.float32)
-    MossTTSLocalModelRunner._apply_audio_repetition_penalty(
-        logits2, [torch.tensor([[0]], dtype=torch.long)], [2.0], channel=0
+    MossTTSLocalModelRunner._apply_audio_repetition_penalty_mask(
+        logits2, torch.tensor([[True, False]]), torch.tensor([2.0])
     )
     torch.testing.assert_close(
         logits2, torch.tensor([[-4.0, 1.0]], dtype=torch.float32)
@@ -435,32 +440,30 @@ def test_row_radix_token_ids_hash_rows_and_keep_eos():
     assert all(0 <= int(v) < 151936 for v in out)
 
 
-def test_gather_rep_histories_excludes_prompt_and_inactive_rows():
-    from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
+def test_audio_history_presence_mask_excludes_prompt_rows():
+    from types import SimpleNamespace
 
-    class _Data:
-        def __init__(self, rows):
-            self.output_rows = rows
+    from sglang_omni.models.moss_tts_local.state_pool import MossTTSLocalDecodeStatePool
 
-    row = torch.cat([torch.tensor([151656]), torch.arange(N_VQ, dtype=torch.long)])
-    active = _Data([row, row + 0])
-    inactive = _Data([row])
-    empty = _Data([])
-
-    histories = MossTTSLocalModelRunner._gather_rep_histories(
-        [active, inactive, empty], [1.5, 1.0, 1.5], torch.device("cpu")
+    model = SimpleNamespace(
+        _decode_input_embedding=SimpleNamespace(
+            weight=torch.zeros(2, 4, dtype=torch.bfloat16)
+        ),
+        config=SimpleNamespace(n_vq=N_VQ, audio_vocab_size=1024),
     )
-    assert histories is not None
-    assert histories[0].shape == (2, N_VQ)  # generated frames only, channel cols
-    assert histories[1] is None  # unit penalty -> skipped
-    assert histories[2] is None  # no frames yet
-    # All penalties at 1.0 -> no history gathering at all.
-    assert (
-        MossTTSLocalModelRunner._gather_rep_histories(
-            [active], [1.0], torch.device("cpu")
-        )
-        is None
+    pool = MossTTSLocalDecodeStatePool(model)
+    row = pool.acquire_row("rid")
+    prompt_row = torch.cat(
+        [torch.tensor([151656]), torch.full((N_VQ,), 99, dtype=torch.long)]
     )
+    generated_row = torch.cat(
+        [torch.tensor([151656]), torch.arange(N_VQ, dtype=torch.long)]
+    )
+
+    pool.update_audio_history(torch.tensor([row]), generated_row.reshape(1, -1))
+
+    assert bool(pool.audio_token_presence[row, 0, 0])
+    assert not bool(pool.audio_token_presence[row, 0, int(prompt_row[1])])
 
 
 def test_build_generation_kwargs_precedence():
@@ -1276,3 +1279,306 @@ def test_chunked_prefill_generation_steps_matches_single_shot():
         data.req.is_chunked = is_chunked
         _finalize_once(runner, sched_req)
     assert data.generation_steps == 1
+
+
+def test_lookahead_eligible_routes_eager_batches_to_sync():
+    """Lookahead is eligible only when bs <= frame_graph_max_bs AND every
+    request has audio_repetition_penalty == 1.0; a rep-penalty request or a
+    batch over the graph cap forces the eager path and must route to sync.
+    """
+    pytest.importorskip("sglang")
+    import types
+
+    from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
+
+    runner = MossTTSLocalModelRunner.__new__(MossTTSLocalModelRunner)
+    runner.model = types.SimpleNamespace(frame_graph_max_bs=16)
+
+    def _batch(penalties):
+        return types.SimpleNamespace(
+            reqs=[
+                types.SimpleNamespace(
+                    _omni_data=types.SimpleNamespace(audio_repetition_penalty=p)
+                )
+                for p in penalties
+            ]
+        )
+
+    assert runner.lookahead_eligible(_batch([1.0, 1.0])) is True
+    assert runner.lookahead_eligible(_batch([1.0, 1.3])) is False  # rep-penalty eager
+    assert runner.lookahead_eligible(_batch([1.0] * 17)) is False  # bs over graph cap
+
+
+def test_async_launch_resolve_matches_sync_collect():
+    """post_decode_launch + post_decode_resolve must yield the same published
+    next_token_ids and the same output_rows append as synchronous _collect_frame.
+    The launch hands resolve a device snapshot of the published ids so they
+    survive the next step clobbering the aliased output_ids tensor in place; CPU
+    stub: eager decode (no CUDA graph).
+    """
+    pytest.importorskip("sglang")
+    import types
+
+    from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
+    from sglang_omni.models.moss_tts_local.state_pool import MossTTSLocalDecodeStatePool
+
+    hidden_size = 4
+
+    def _make_runner():
+        weight = torch.zeros(2, hidden_size, dtype=torch.bfloat16)
+        model = types.SimpleNamespace(
+            _decode_input_embedding=types.SimpleNamespace(weight=weight),
+            _state_pool=None,
+            config=types.SimpleNamespace(
+                n_vq=12, audio_assistant_slot_token_id=1000, audio_end_token_id=1001
+            ),
+            frame_graph_max_bs=0,  # eager path
+            device=torch.device("cpu"),
+        )
+        pool = MossTTSLocalDecodeStatePool(model)
+        model._state_pool = pool
+        model.acquire_row = pool.acquire_row
+        model.decode_frame = lambda hidden, *, sample_text, sample_audio: (
+            torch.zeros(1, dtype=torch.long),  # stop_choice=0 -> continue (slot)
+            torch.arange(12, dtype=torch.long).reshape(1, 12),
+        )
+        model._prepare_multi_modal_inputs = lambda rows: torch.full(
+            (1, hidden_size), 3, dtype=torch.bfloat16
+        )
+        runner = MossTTSLocalModelRunner.__new__(MossTTSLocalModelRunner)
+        runner.model = model
+        return runner
+
+    def _sched_req():
+        data = types.SimpleNamespace(
+            req=None,
+            text_temperature=1.0,
+            text_top_p=1.0,
+            text_top_k=50,
+            audio_temperature=1.0,
+            audio_top_p=1.0,
+            audio_top_k=50,
+            sampling_seed=0,
+            generation_steps=0,
+            audio_repetition_penalty=1.0,
+            output_rows=[],
+        )
+        return types.SimpleNamespace(request_id="rid", data=data)
+
+    def _result():
+        return types.SimpleNamespace(
+            logits_output=types.SimpleNamespace(
+                hidden_states=torch.zeros(1, hidden_size)
+            )
+        )
+
+    # Synchronous collect.
+    rs = _make_runner()
+    req_s, res_s, sb_s = _sched_req(), _result(), types.SimpleNamespace()
+    rs._collect_frame(res_s, None, sb_s, [req_s])
+
+    # Async launch + resolve (separate runner/pool to avoid cross-overwrite).
+    ra = _make_runner()
+    req_a, res_a = _sched_req(), _result()
+    host_buf = ra.post_decode_launch(res_a, None, [req_a])
+    # Launch hands resolve a private device snapshot of the published ids.
+    assert host_buf is not None
+    assert torch.equal(host_buf, res_a.next_token_ids)
+    # Simulate the next decode step overwriting the aliased published tensor in
+    # place (the output_ids -> input_ids clobber): resolve must still recover the
+    # real ids from the snapshot.
+    res_a.next_token_ids.zero_()
+    ra.post_decode_resolve(host_buf, res_a, None, None, [req_a])
+
+    # Resolve restored the snapshot, so async and sync yield identical ids.
+    assert torch.equal(res_s.next_token_ids, res_a.next_token_ids)
+    assert torch.equal(sb_s.output_ids, res_s.next_token_ids)  # sync still publishes
+
+    # output_rows append parity through the shared post_process_outputs tail.
+    rs.post_process_outputs(
+        res_s,
+        types.SimpleNamespace(requests=[req_s]),
+        {"rid": types.SimpleNamespace(data=int(res_s.next_token_ids[0]))},
+    )
+    ra.post_process_outputs(
+        res_a,
+        types.SimpleNamespace(requests=[req_a]),
+        {"rid": types.SimpleNamespace(data=int(res_a.next_token_ids[0]))},
+    )
+    assert len(req_s.data.output_rows) == len(req_a.data.output_rows) == 1
+    assert torch.equal(req_s.data.output_rows[0], req_a.data.output_rows[0])
+
+
+def test_async_resolve_preserves_stop_id_through_output_ids_clobber():
+    """bs=1 stop-boundary regression. A stop frame publishes end_id as
+    next_token_ids; the base aliases it onto schedule_batch.output_ids, which the
+    next decode step overwrites in place. Under lookahead that clobber races ahead
+    of this step's resolve, so post_decode_launch must snapshot the ids and resolve
+    must restore them — otherwise the eos finish never reaches process_batch_result
+    and a bs=1 request never stops (the 4096-frame runaway)."""
+    pytest.importorskip("sglang")
+    import types
+
+    from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
+    from sglang_omni.models.moss_tts_local.state_pool import MossTTSLocalDecodeStatePool
+
+    hidden_size = 4
+    end_id = 1001
+
+    weight = torch.zeros(2, hidden_size, dtype=torch.bfloat16)
+    model = types.SimpleNamespace(
+        _decode_input_embedding=types.SimpleNamespace(weight=weight),
+        _state_pool=None,
+        config=types.SimpleNamespace(
+            n_vq=12, audio_assistant_slot_token_id=1000, audio_end_token_id=end_id
+        ),
+        frame_graph_max_bs=0,  # eager path
+        device=torch.device("cpu"),
+    )
+    pool = MossTTSLocalDecodeStatePool(model)
+    model._state_pool = pool
+    model.acquire_row = pool.acquire_row
+    model.decode_frame = lambda hidden, *, sample_text, sample_audio: (
+        torch.ones(1, dtype=torch.long),  # stop_choice=1 -> stop (end_id)
+        torch.arange(12, dtype=torch.long).reshape(1, 12),
+    )
+    model._prepare_multi_modal_inputs = lambda rows: torch.full(
+        (1, hidden_size), 3, dtype=torch.bfloat16
+    )
+    runner = MossTTSLocalModelRunner.__new__(MossTTSLocalModelRunner)
+    runner.model = model
+
+    data = types.SimpleNamespace(
+        req=None,
+        text_temperature=1.0,
+        text_top_p=1.0,
+        text_top_k=50,
+        audio_temperature=1.0,
+        audio_top_p=1.0,
+        audio_top_k=50,
+        sampling_seed=0,
+        generation_steps=0,
+        audio_repetition_penalty=1.0,
+        output_rows=[],
+    )
+    req = types.SimpleNamespace(request_id="rid", data=data)
+    res = types.SimpleNamespace(
+        logits_output=types.SimpleNamespace(hidden_states=torch.zeros(1, hidden_size))
+    )
+
+    host_buf = runner.post_decode_launch(res, None, [req])
+    # The stop frame's published id is the raw end_id (eos detection keys on it).
+    assert int(res.next_token_ids[0]) == end_id
+    assert host_buf is not None
+    # The next step clobbers the aliased published tensor in place.
+    res.next_token_ids.zero_()
+    assert int(res.next_token_ids[0]) != end_id
+    # Resolve must restore the stop id so the eos finish still fires.
+    runner.post_decode_resolve(host_buf, res, None, None, [req])
+    assert int(res.next_token_ids[0]) == end_id
+
+
+def test_chunked_rows_do_not_advance_sampling_steps():
+    """A non-final chunked-prefill row's garbage frame must not advance the
+    launch-side sampling counter, so the final chunk samples at the same RNG
+    position as a single-shot prefill (mirrors D1's generation_steps handling).
+    """
+    pytest.importorskip("sglang")
+    import types
+
+    from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
+    from sglang_omni.models.moss_tts_local.state_pool import MossTTSLocalDecodeStatePool
+
+    hidden_size = 4
+
+    def _make_runner():
+        weight = torch.zeros(2, hidden_size, dtype=torch.bfloat16)
+        model = types.SimpleNamespace(
+            _decode_input_embedding=types.SimpleNamespace(weight=weight),
+            _state_pool=None,
+            config=types.SimpleNamespace(
+                n_vq=12, audio_assistant_slot_token_id=1000, audio_end_token_id=1001
+            ),
+            frame_graph_max_bs=0,
+            device=torch.device("cpu"),
+        )
+        pool = MossTTSLocalDecodeStatePool(model)
+        model._state_pool = pool
+        model.acquire_row = pool.acquire_row
+        model.decode_frame = lambda hidden, *, sample_text, sample_audio: (
+            torch.zeros(1, dtype=torch.long),
+            torch.arange(12, dtype=torch.long).reshape(1, 12),
+        )
+        model._prepare_multi_modal_inputs = lambda rows: torch.full(
+            (1, hidden_size), 3, dtype=torch.bfloat16
+        )
+        runner = MossTTSLocalModelRunner.__new__(MossTTSLocalModelRunner)
+        runner.model = model
+        return runner
+
+    def _result():
+        return types.SimpleNamespace(
+            logits_output=types.SimpleNamespace(
+                hidden_states=torch.zeros(1, hidden_size)
+            )
+        )
+
+    def _data(is_chunked):
+        return types.SimpleNamespace(
+            req=types.SimpleNamespace(is_chunked=is_chunked),
+            text_temperature=1.0,
+            text_top_p=1.0,
+            text_top_k=50,
+            audio_temperature=1.0,
+            audio_top_p=1.0,
+            audio_top_k=50,
+            sampling_seed=0,
+            generation_steps=0,
+            sampling_steps=None,
+            audio_repetition_penalty=1.0,
+            output_rows=[],
+        )
+
+    def _pool_sampling_steps(runner, rid):
+        pool = runner.model._state_pool
+        row = pool.row_for(rid)
+        assert row is not None
+        return int(pool.sampling_steps[row])
+
+    # Single-shot prefill: the only chunk is final, advances sampling_steps to 1.
+    r = _make_runner()
+    single = types.SimpleNamespace(request_id="r", data=_data(is_chunked=0))
+    r._run_frame_decode(_result(), types.SimpleNamespace(), [single])
+    assert _pool_sampling_steps(r, "r") == 1
+
+    # Three-chunk prefill on the same request: the mid chunks do not advance, the
+    # final chunk does, so the end state matches the single-shot path.
+    r = _make_runner()
+    data = _data(is_chunked=2)
+    sched = types.SimpleNamespace(request_id="r", data=data)
+    for is_chunked, expected_steps in ((2, 0), (1, 0), (0, 1)):
+        data.req.is_chunked = is_chunked
+        r._run_frame_decode(_result(), types.SimpleNamespace(), [sched])
+        assert _pool_sampling_steps(r, "r") == expected_steps
+
+
+def test_async_decode_cli_accepts_moss_local():
+    """The decode-mode CLI gate accepts the MOSS-TTS-Local engine
+    factory (no BadParameter) and writes the flags onto its tts_engine stage.
+    Default stays OFF (config sets no key); only an explicit --decode-mode async
+    turns it on, pending the Phase-3 flag-flip PR.
+    """
+    pytest.importorskip("sglang")
+
+    from sglang_omni.cli.serve import apply_decode_mode_cli_overrides
+    from sglang_omni.config import resolve_stage_factory_args
+    from sglang_omni.models.moss_tts_local.config import MossTTSLocalPipelineConfig
+
+    config = MossTTSLocalPipelineConfig(model_path="dummy")
+    apply_decode_mode_cli_overrides(
+        config, decode_mode="async", async_lookahead_min_batch_size=4
+    )
+    stage = next(s for s in config.stages if s.name == "tts_engine")
+    args = resolve_stage_factory_args(stage, config)
+    assert args["enable_async_decode"] is True
+    assert args["async_decode_min_batch_size"] == 4

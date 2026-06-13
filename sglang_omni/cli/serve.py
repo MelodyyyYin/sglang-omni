@@ -14,8 +14,12 @@ logger = logging.getLogger(__name__)
 
 _STAGE_TOGGLE_MODE = Literal["default", "on", "off"]
 _QWEN_COLOCATED_CONFIG_CLASS = "Qwen3OmniSpeechColocatedPipelineConfig"
-_HIGGS_ASYNC_DECODE_FACTORY = (
-    "sglang_omni.models.higgs_tts.stages.create_sglang_tts_engine_executor"
+_DECODE_MODE = Literal["async", "sync"]
+_ASYNC_DECODE_FACTORIES = frozenset(
+    {
+        "sglang_omni.models.higgs_tts.stages.create_sglang_tts_engine_executor",
+        "sglang_omni.models.moss_tts_local.stages.create_sglang_tts_engine_executor",
+    }
 )
 _QWEN_PARTIAL_START_TALKER_FACTORY = (
     "sglang_omni.models.qwen3_omni.stages.create_talker_ar_executor_from_config"
@@ -32,6 +36,13 @@ def _normalize_stage_toggle_mode(flag_name: str, value: str) -> _STAGE_TOGGLE_MO
     normalized = value.strip().lower()
     if normalized not in {"default", "on", "off"}:
         raise typer.BadParameter(f"{flag_name} must be one of: default, on, off")
+    return normalized  # type: ignore[return-value]
+
+
+def _normalize_decode_mode(value: str) -> _DECODE_MODE:
+    normalized = value.strip().lower()
+    if normalized not in {"async", "sync"}:
+        raise typer.BadParameter("--decode-mode must be one of: async, sync")
     return normalized  # type: ignore[return-value]
 
 
@@ -694,7 +705,7 @@ def _apply_stage_factory_args_override(
     stage_name: str,
     updates: dict[str, object],
     reason: str,
-    supported_factory: str | None = None,
+    supported_factories: frozenset[str] | None = None,
     flag_name: str | None = None,
 ) -> None:
     matching_stages = _find_matching_stages(
@@ -703,11 +714,12 @@ def _apply_stage_factory_args_override(
         reason=reason,
     )
     for stage in matching_stages:
-        if supported_factory is not None and stage.factory != supported_factory:
+        if supported_factories is not None and stage.factory not in supported_factories:
             display_flag = flag_name or reason
             raise typer.BadParameter(
-                f"{display_flag} currently supports only Higgs TTS; "
-                f"stage {stage.name!r} uses factory {stage.factory!r}"
+                f"{display_flag} currently supports only Higgs TTS and "
+                f"MOSS-TTS-Local; stage {stage.name!r} uses factory "
+                f"{stage.factory!r}"
             )
         factory_args = dict(stage.factory_args or {})
         factory_args.update(updates)
@@ -718,43 +730,35 @@ def _apply_stage_factory_args_override(
             stage_runtime_overrides.update(updates)
 
 
-def _resolve_async_decode_flag(async_decode: str, enable_async_decode: bool) -> str:
-    """Map the deprecated bool ``--enable-async-decode`` onto the ``--async-decode``
-    tri-state. The legacy flag only expressed "on", so reject it against an
-    explicit ``--async-decode off``."""
-    if not enable_async_decode:
-        return async_decode
-    if async_decode == "off":
-        raise typer.BadParameter(
-            "--enable-async-decode cannot be combined with --async-decode off"
-        )
-    logger.warning("--enable-async-decode is deprecated; use --async-decode on.")
-    return "on"
-
-
-def apply_async_decode_cli_overrides(
+def apply_decode_mode_cli_overrides(
     pipeline_config: PipelineConfig,
     *,
-    async_decode: str,
-    async_decode_min_batch_size: int | None,
+    decode_mode: str | None,
+    async_lookahead_min_batch_size: int | None,
 ) -> PipelineConfig:
-    mode = _normalize_stage_toggle_mode("async_decode", async_decode)
     updates: dict[str, object] = {}
-    if mode != "default":
-        updates["enable_async_decode"] = mode == "on"
-    if async_decode_min_batch_size is not None:
-        if int(async_decode_min_batch_size) < 1:
-            raise typer.BadParameter("--async-decode-min-batch-size must be >= 1")
-        updates["async_decode_min_batch_size"] = int(async_decode_min_batch_size)
+    mode: _DECODE_MODE | None = None
+    if decode_mode is not None:
+        mode = _normalize_decode_mode(decode_mode)
+        updates["enable_async_decode"] = mode == "async"
+    if async_lookahead_min_batch_size is not None:
+        if mode == "sync":
+            raise typer.BadParameter(
+                "--async-lookahead-min-batch-size cannot be combined with "
+                "--decode-mode sync"
+            )
+        if int(async_lookahead_min_batch_size) < 1:
+            raise typer.BadParameter("--async-lookahead-min-batch-size must be >= 1")
+        updates["async_decode_min_batch_size"] = int(async_lookahead_min_batch_size)
     if not updates:
         return pipeline_config
     _apply_stage_factory_args_override(
         pipeline_config,
         stage_name="tts_engine",
         updates=updates,
-        reason="async decode override",
-        supported_factory=_HIGGS_ASYNC_DECODE_FACTORY,
-        flag_name="--async-decode/--async-decode-min-batch-size",
+        reason="decode mode override",
+        supported_factories=_ASYNC_DECODE_FACTORIES,
+        flag_name="--decode-mode/--async-lookahead-min-batch-size",
     )
     return pipeline_config
 
@@ -1014,36 +1018,29 @@ def serve(
             help="Mount the OpenAI Realtime WebSocket endpoint at /v1/realtime.",
         ),
     ] = False,
-    async_decode: Annotated[
-        str,
+    decode_mode: Annotated[
+        str | None,
         typer.Option(
-            "--async-decode",
-            "--async_decode",
+            "--decode-mode",
+            "--decode_mode",
             help=(
-                "One-step-lookahead async decode for the tts_engine stage: "
-                "default|on|off. When on, per-step host collect overlaps the "
-                "next GPU forward. 'default' uses the pipeline config default "
-                "(on for Higgs TTS). Currently supported by Higgs TTS."
+                "Decode execution mode for the tts_engine stage: "
+                "async|sync. Omit this flag to use the pipeline config default "
+                "(async for Higgs TTS). Async mode enables one-step lookahead, "
+                "which can overlap the previous step's host-side collect with "
+                "the next GPU forward. Available for Higgs TTS and "
+                "MOSS-TTS-Local."
             ),
         ),
-    ] = "default",
-    enable_async_decode: Annotated[
-        bool,
-        typer.Option(
-            "--enable-async-decode",
-            "--enable_async_decode",
-            hidden=True,
-            help="Deprecated alias for '--async-decode on'.",
-        ),
-    ] = False,
-    async_decode_min_batch_size: Annotated[
+    ] = None,
+    async_lookahead_min_batch_size: Annotated[
         int | None,
         typer.Option(
-            "--async-decode-min-batch-size",
-            "--async_decode_min_batch_size",
+            "--async-lookahead-min-batch-size",
+            "--async_lookahead_min_batch_size",
             help=(
-                "Decode batches smaller than this bypass the async-decode "
-                "lookahead and run synchronously (fast path). Default 2."
+                "Decode batches smaller than this bypass async lookahead and "
+                "run synchronously (fast path). Default 2."
             ),
         ),
     ] = None,
@@ -1118,10 +1115,10 @@ def serve(
         thinker_torch_compile_max_bs=thinker_torch_compile_max_bs,
         talker_torch_compile_max_bs=talker_torch_compile_max_bs,
     )
-    merged_config = apply_async_decode_cli_overrides(
+    merged_config = apply_decode_mode_cli_overrides(
         merged_config,
-        async_decode=_resolve_async_decode_flag(async_decode, enable_async_decode),
-        async_decode_min_batch_size=async_decode_min_batch_size,
+        decode_mode=decode_mode,
+        async_lookahead_min_batch_size=async_lookahead_min_batch_size,
     )
     merged_config = apply_partial_start_cli_overrides(
         merged_config,

@@ -129,7 +129,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         self._decode_input_embedding.weight.requires_grad_(False)
 
         # Row-indexed decode-state pool: next-step-critical per-request state
-        # (next-frame feedback embedding, request-static sampling params/seed)
+        # (next-frame feedback embedding, sampling params/seed, generation step)
         # lives in process-lifetime GPU buffers sized off the staging table
         # above. Allocated here, before any frame/backbone graph capture, so
         # its addresses are fixed for the process lifetime.

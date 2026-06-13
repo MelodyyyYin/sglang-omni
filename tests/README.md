@@ -63,11 +63,17 @@ tests/
     ├── higgs_tts/
     │   ├── test_async_decode_runner.py
     │   ├── test_batched_step.py
-    │   ├── test_cli_async_decode.py
+    │   ├── test_cli_decode_mode.py
     │   ├── test_pipeline.py
     │   └── test_request_builders.py
     ├── moss_tts/
     │   └── test_pipeline.py
+    ├── moss_tts_local/
+    │   ├── test_pipeline.py
+    │   ├── test_radix_hash.py
+    │   ├── test_s0_gate.py
+    │   ├── test_state_pool.py
+    │   └── test_streaming_vocoder.py
     ├── router/
     │   ├── test_app.py
     │   └── test_core.py
@@ -304,7 +310,7 @@ that happened to contain an older version of the test.
   - request builder sampling normalization and server-side token caps
   - model slot cleanup and engine timing in scheduler result adapters
   - async-decode one-step-lookahead parity with the synchronous collect path
-  - async-decode default-on config + `--async-decode` tri-state CLI override.
+  - async-decode default-on config + `--decode-mode async|sync` CLI override.
 
 - `unit_test/moss_tts/`: MOSS-TTS unit tests:
   - pipeline config and registry contracts
@@ -315,9 +321,11 @@ that happened to contain an older version of the test.
 
 - `unit_test/moss_tts_local/`: MOSS-TTS Local unit tests:
   - pipeline config, request builders, and scheduler adapter contracts
-  - decode-state pool acquisition, cleanup, and resume/retraction lifecycle
+  - decode-state pool acquisition, launch-state gathers, repetition-penalty history, cleanup, and resume/retraction lifecycle
   - chunked prefill feedback/journal suppression and postprocess alignment checks
-  - synchronous frame-decode parity harness and S0 gate coverage.
+  - synchronous frame-decode parity harness and S0 gate coverage
+  - streaming vocoder session lifecycle, per-request chunk-threshold and
+    coalescing contracts, and decode-failure isolation.
 
 - `unit_test/router/`: SGLang-Omni Router unit tests:
   - router CLI/config behavior
