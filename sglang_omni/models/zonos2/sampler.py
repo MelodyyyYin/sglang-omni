@@ -85,12 +85,12 @@ def sample_tts(
     if params.min_p > 0.0:
         probs = _apply_min_p(probs, params.min_p)
 
-    invalid = probs.sum(dim=-1) <= 0
-    if bool(invalid.any()):
-        greedy = flat.argmax(dim=-1)
-        fb = torch.zeros_like(probs)
-        fb.scatter_(-1, greedy.unsqueeze(-1), 1.0)
-        probs = torch.where(invalid.unsqueeze(-1), fb, probs)
+    # Fall back to greedy on any all-zero row. Done unconditionally (no
+    # host sync on invalid.any()): where() is a no-op when nothing is invalid.
+    invalid = (probs.sum(dim=-1) <= 0).unsqueeze(-1)
+    fb = torch.zeros_like(probs)
+    fb.scatter_(-1, flat.argmax(dim=-1, keepdim=True), 1.0)
+    probs = torch.where(invalid, fb, probs)
 
     nxt = torch.multinomial(probs, num_samples=1, generator=generator)
     return nxt.view(B, C)
