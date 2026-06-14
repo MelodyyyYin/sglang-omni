@@ -89,7 +89,7 @@ def create_sglang_omni_tts_engine_executor(
         cuda_graph_bs=[1, 2, 4, 8, 16],
         cuda_graph_max_bs=16,
         disable_overlap_schedule=True,
-        enable_torch_compile=False,
+        enable_torch_compile=True,
         max_running_requests=16,
         mem_fraction_static=mem_fraction_static,
         sampling_backend="pytorch",
