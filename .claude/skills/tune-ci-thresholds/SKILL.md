@@ -647,11 +647,11 @@ bash .github/scripts/run_flaky_pytest.sh \
 - **Between sequential pytest stages on the repro host**: `delete_gpu_process.sh`
   alone is **not enough** — orphan `multiprocessing.spawn` children can hold
   ~70–85 GiB while `nvidia-smi` shows "No running processes". Always run
-  `.github/scripts/ensure_gpus_idle.sh` (kills orphans + scans `/proc/*/fd`
+  `.github/scripts/delete_gpu_process.sh --kill-orphans` (kills orphans + scans `/proc/*/fd`
   for nvidia + waits until **every** GPU `< 2048 MiB`) **before and after**
   each heavy benchmark. Do **not** start the next pytest until cleanup succeeds.
 - **Starting pytest while the previous server is still tearing down** causes
-  colocated-router OOM on the second worker — wait for `ensure_gpus_idle`, then
+  colocated-router OOM on the second worker — wait for `delete_gpu_process`, then
   `sleep 3–5` before launch.
 
 After alignment fixes, rerun `tune.py precheck` and the smoke test before resuming calibration.
@@ -725,7 +725,7 @@ Only the Qwen3-ASR router stage needs 2 free GPUs after `delete_gpu_process.sh`.
   has been observed from stale exports).
 - **One GPU consumer at a time** on the repro host: do not overlap `tune.py
   run` with full talker/WER pytest — they fight for the same 2× H20.
-- **GPU idle gate before every stage** — run `.github/scripts/ensure_gpus_idle.sh`
+- **GPU idle gate before every stage** — run `.github/scripts/delete_gpu_process.sh --kill-orphans`
   (not `delete_gpu_process.sh` alone); abort if VRAM not below 2048 MiB on
   **both** GPUs before starting the next pytest.
 
