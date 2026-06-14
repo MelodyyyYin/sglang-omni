@@ -183,9 +183,9 @@ jobs:
         with:
           stage-label: MMMU Talker (WER + speed)
           artifact-path-globs: |
-            */mmmu_audio/mmmu_results.json
+            */mmmu_audio*/mmmu_results.json
           artifact-upload-name: qwen3-omni-mmmu-talker-results
-          artifact-upload-path: /tmp/**/mmmu_audio/mmmu_results.json
+          artifact-upload-path: /tmp/**/mmmu_audio*/mmmu_results.json
 
   stage-5-mmsu:
     name: stage 5 - MMSU accuracy + speed
@@ -264,9 +264,9 @@ jobs:
         with:
           stage-label: MMSU Talker (WER + speed)
           artifact-path-globs: |
-            */mmsu_audio/mmsu_results.json
+            */mmsu_audio*/mmsu_results.json
           artifact-upload-name: qwen3-omni-mmsu-talker-results
-          artifact-upload-path: /tmp/**/mmsu_audio/mmsu_results.json
+          artifact-upload-path: /tmp/**/mmsu_audio*/mmsu_results.json
 
   stage-7-videomme:
     name: stage 7 - Video-MME accuracy + speed
@@ -344,9 +344,9 @@ jobs:
         with:
           stage-label: Video-MME Talker (WER + speed)
           artifact-path-globs: |
-            */videomme_audio/videomme_results.json
+            */videomme_audio*/videomme_results.json
           artifact-upload-name: qwen3-omni-videomme-talker-results
-          artifact-upload-path: /tmp/**/videomme_audio/videomme_results.json
+          artifact-upload-path: /tmp/**/videomme_audio*/videomme_results.json
 
   stage-9-videoamme:
     name: stage 9 - Video-AMME accuracy + speed
