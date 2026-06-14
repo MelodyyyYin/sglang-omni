@@ -85,7 +85,9 @@ def create_sglang_omni_tts_engine_executor(
         shim,
         context_length=cfg.max_seqlen,
         dtype=dtype,
-        disable_cuda_graph=True,  # O3 adds graph capture
+        disable_cuda_graph=False,
+        cuda_graph_bs=[1, 2, 4, 8, 16],
+        cuda_graph_max_bs=16,
         disable_overlap_schedule=True,
         enable_torch_compile=False,
         max_running_requests=16,
@@ -93,6 +95,11 @@ def create_sglang_omni_tts_engine_executor(
         sampling_backend="pytorch",
         trust_remote_code=True,
     )
+
+    # Defer graph capture until weights are loaded and the runner is wired.
+    want_cuda_graph = not bool(getattr(server_args, "disable_cuda_graph", False))
+    if want_cuda_graph:
+        server_args.disable_cuda_graph = True
 
     (
         model_worker,
@@ -107,6 +114,9 @@ def create_sglang_omni_tts_engine_executor(
     )
 
     model = model_worker.model_runner.model
+    if want_cuda_graph:
+        server_args.disable_cuda_graph = False
+        model_worker.model_runner.init_device_graphs()
     output_proc = SGLangOutputProcessor(
         capture_hidden=False, capture_hidden_layers=None, model=model
     )

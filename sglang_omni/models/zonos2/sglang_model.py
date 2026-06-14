@@ -280,11 +280,18 @@ class Zonos2SGLangModel(nn.Module):
         input_embeds: Optional[torch.Tensor] = None,
         **kwargs: Any,
     ) -> LogitsProcessorOutput:
-        # The runner stages the summed (speaker-injected, pre-norm) embedding on
-        # forward_batch for both prefill and decode.
+        # Prefill: the runner stages the summed (speaker-injected) embedding on
+        # forward_batch. Decode: input_ids are row indices into the fixed feedback
+        # buffer the runner wrote in-place, so the graph replays a stable input.
         if input_embeds is None:
             input_embeds = getattr(forward_batch, "input_embeds", None)
-        x = input_embeds if input_embeds is not None else self._warmup_embed(input_ids)
+        if input_embeds is None:
+            fm = getattr(forward_batch, "forward_mode", None)
+            if fm is not None and fm.is_decode():
+                input_embeds = self._decode_input_embedding(input_ids)
+            else:
+                input_embeds = self._warmup_embed(input_ids)
+        x = input_embeds
         x = F.rms_norm(x, (x.shape[-1],), None, self.emb_norm_eps)
 
         residual = None
