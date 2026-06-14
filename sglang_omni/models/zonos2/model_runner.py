@@ -172,8 +172,9 @@ class Zonos2ModelRunner(ModelRunner):
         feedback = model.embed_frames(rows)  # [B, dim]
         keys = poly_row_hash(rows)  # [B] (< RADIX_HASH_SPACE)
 
-        next_ids = torch.empty(b, dtype=torch.long, device=logits.device)
         codes_cpu = codes.to("cpu")
+        keys_cpu = keys.tolist()  # one D2H, not B per-row int(keys[i]) syncs
+        next_ids = [0] * b
         for i, sr in enumerate(requests):
             data = sr.data
             frame = codes_cpu[i].tolist()
@@ -195,8 +196,9 @@ class Zonos2ModelRunner(ModelRunner):
                     data.eos_countdown -= 1
                 finished = data.eos_countdown <= 0
             data.generation_step += 1
-            next_ids[i] = EOS_SENTINEL if finished else int(keys[i])
+            next_ids[i] = EOS_SENTINEL if finished else keys_cpu[i]
 
+        next_ids = torch.tensor(next_ids, dtype=torch.long, device=logits.device)
         result.next_token_ids = next_ids
         schedule_batch.output_ids = next_ids
 
