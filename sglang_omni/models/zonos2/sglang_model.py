@@ -10,6 +10,7 @@ backbone hidden states and exposes the head via :meth:`compute_logits`.
 
 from __future__ import annotations
 
+import os
 from typing import Any, Iterable, Optional, Tuple
 
 import torch
@@ -34,6 +35,38 @@ def softcap(x: torch.Tensor, cap: float) -> torch.Tensor:
     return cap * torch.tanh(x / cap)
 
 
+# note (Yue Yin): opt-in dynamic FP8 on the custom nn.Parameter GEMMs (attention
+# wq/wkv/wo, dense FFN, output head) -- the big bf16 weight reads the server-arg
+# `quantization="fp8"` path (MoE experts only) doesn't touch. bs=1 decode is
+# weight-bandwidth bound, so halving these bytes is the largest remaining RTF
+# lever. Default OFF -> the bf16 path below is byte-identical. ZONOS2_FP8 turns on
+# the whole FP8 config (experts + these GEMMs); ZONOS2_FP8_GEMM overrides just
+# these for isolated A/B + WER validation.
+_FP8_GEMM = os.environ.get(
+    "ZONOS2_FP8_GEMM", os.environ.get("ZONOS2_FP8", "")
+).lower() in ("1", "true", "yes", "on")
+
+
+def _fp8_quantize_weight(w: torch.Tensor):
+    """Per-output-channel FP8 (e4m3) quant of a ``[out, in]`` weight.
+
+    Per-channel weight scale + per-token dynamic activation scale (at call time)
+    is the accuracy-safe W8A8 path: it halves the weight bytes/step while holding
+    WER. Returns ``(fp8_weight, scale)``.
+    """
+    from sglang.srt.layers.quantization.fp8_kernel import scaled_fp8_quant
+
+    return scaled_fp8_quant(w.contiguous(), use_per_token_if_dynamic=True)
+
+
+def _fp8_linear(
+    x: torch.Tensor, qw: torch.Tensor, scale: torch.Tensor
+) -> torch.Tensor:
+    from sglang.srt.layers.quantization.fp8_utils import apply_fp8_linear
+
+    return apply_fp8_linear(x, qw, scale, use_per_token_if_dynamic=True)
+
+
 class Zonos2Attention(nn.Module):
     """GQA with QK-norm, learnable per-head temp, interleaved RoPE, headwise gate."""
 
@@ -56,15 +89,29 @@ class Zonos2Attention(nn.Module):
         self.attn = RadixAttention(
             self.nq, self.hd, self.hd**-0.5, self.nkv, layer_id=layer_id
         )
+        self._fp8 = _FP8_GEMM
+        self._fp8_ready = False
+
+    def quantize_fp8(self) -> None:
+        self.wq_q, self.wq_s = _fp8_quantize_weight(self.wq)
+        self.wkv0_q, self.wkv0_s = _fp8_quantize_weight(self.wkv[0])
+        self.wkv1_q, self.wkv1_s = _fp8_quantize_weight(self.wkv[1])
+        self.wo_q, self.wo_s = _fp8_quantize_weight(self.wo)
+        self._fp8_ready = True
 
     def forward(
         self, x: torch.Tensor, positions: torch.Tensor, forward_batch: ForwardBatch
     ) -> torch.Tensor:
         t = x.shape[0]
         gate = torch.sigmoid(F.linear(x, self.gater))
-        q = F.linear(x, self.wq).view(t, self.nq, self.hd)
-        k = F.linear(x, self.wkv[0]).view(t, self.nkv, self.hd)
-        v = F.linear(x, self.wkv[1]).view(t, self.nkv, self.hd)
+        if self._fp8 and self._fp8_ready:
+            q = _fp8_linear(x, self.wq_q, self.wq_s).view(t, self.nq, self.hd)
+            k = _fp8_linear(x, self.wkv0_q, self.wkv0_s).view(t, self.nkv, self.hd)
+            v = _fp8_linear(x, self.wkv1_q, self.wkv1_s).view(t, self.nkv, self.hd)
+        else:
+            q = F.linear(x, self.wq).view(t, self.nq, self.hd)
+            k = F.linear(x, self.wkv[0]).view(t, self.nkv, self.hd)
+            v = F.linear(x, self.wkv[1]).view(t, self.nkv, self.hd)
         q = F.rms_norm(q, (self.hd,), None, _QK_NORM_EPS) * self.temp.abs().to(q.dtype)
         k = F.rms_norm(k, (self.hd,), None, _QK_NORM_EPS)
         q = q.reshape(t, self.nq * self.hd)
@@ -75,6 +122,8 @@ class Zonos2Attention(nn.Module):
         o = (o.view(t, self.nq, self.hd) * gate.unsqueeze(-1)).reshape(
             t, self.nq * self.hd
         )
+        if self._fp8 and self._fp8_ready:
+            return _fp8_linear(o, self.wo_q, self.wo_s)
         return F.linear(o, self.wo)
 
 
@@ -83,8 +132,20 @@ class Zonos2DenseFFN(nn.Module):
         super().__init__()
         self.w_in = nn.Parameter(torch.empty(2, cfg.intermediate_size, cfg.dim))
         self.w_out = nn.Parameter(torch.empty(cfg.dim, cfg.intermediate_size))
+        self._fp8 = _FP8_GEMM
+        self._fp8_ready = False
+
+    def quantize_fp8(self) -> None:
+        self.w_in0_q, self.w_in0_s = _fp8_quantize_weight(self.w_in[0])
+        self.w_in1_q, self.w_in1_s = _fp8_quantize_weight(self.w_in[1])
+        self.w_out_q, self.w_out_s = _fp8_quantize_weight(self.w_out)
+        self._fp8_ready = True
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self._fp8 and self._fp8_ready:
+            up = _fp8_linear(x, self.w_in0_q, self.w_in0_s)
+            gate = _fp8_linear(x, self.w_in1_q, self.w_in1_s)
+            return _fp8_linear(up * F.silu(gate), self.w_out_q, self.w_out_s)
         up = F.linear(x, self.w_in[0])
         gate = F.linear(x, self.w_in[1])
         return F.linear(up * F.silu(gate), self.w_out)
@@ -250,6 +311,8 @@ class Zonos2SGLangModel(nn.Module):
         self.requires_grad_(
             False
         )  # inference-only; sglang in-place ops reject grad tensors
+        self._fp8 = _FP8_GEMM
+        self._fp8_ready = False
 
     @property
     def device(self) -> torch.device:
@@ -317,9 +380,24 @@ class Zonos2SGLangModel(nn.Module):
 
     def compute_logits(self, hidden: torch.Tensor) -> torch.Tensor:
         """Backbone hidden → per-codebook soft-capped logits ``(..., 9, 1026)``."""
-        logits = F.linear(hidden, self.multi_output)
+        if self._fp8 and self._fp8_ready:
+            logits = _fp8_linear(hidden, self.multi_output_q, self.multi_output_s)
+        else:
+            logits = F.linear(hidden, self.multi_output)
         logits = logits.view(*logits.shape[:-1], self.n_codebooks, self.audio_vocab)
         return softcap(logits, self.config.loss_softcap)
+
+    def _apply_fp8_gemm(self) -> None:
+        """Quantize the custom nn.Parameter GEMMs to FP8 after weight load (before
+        CUDA-graph capture). MoE experts are handled by the server-arg fp8 path."""
+        for layer in self.layers:
+            layer.attention.quantize_fp8()
+            if not layer.is_moe:
+                layer.feed_forward.quantize_fp8()
+        self.multi_output_q, self.multi_output_s = _fp8_quantize_weight(
+            self.multi_output
+        )
+        self._fp8_ready = True
 
     @torch.no_grad()
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> None:
@@ -487,6 +565,9 @@ class Zonos2SGLangModel(nn.Module):
         leftover = set(fixed) - used
         if leftover:
             raise RuntimeError(f"Unconsumed checkpoint keys: {sorted(leftover)[:12]}")
+
+        if _FP8_GEMM:
+            self._apply_fp8_gemm()
 
 
 EntryClass = Zonos2SGLangModel
