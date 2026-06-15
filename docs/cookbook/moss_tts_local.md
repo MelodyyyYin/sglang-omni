@@ -149,7 +149,6 @@ to let the model infer from the text):
   "input": "今天天气不错 [pause 0.5s] 就该出去晒晒太阳。",
   "ref_audio": "...", "ref_text": "...",
   "language": "Chinese",
-  "instructions": "Speak slowly and warmly."
 }
 ```
 
@@ -203,6 +202,17 @@ Use `--lang zh` for the Chinese split. See `benchmarks/README.md` for the full w
 
 ## Evaluation Benchmarks
 
+### Seed-TTS-Eval Reference Performance
+
+Seed-TTS-Eval full set (EN = 1088, ZH = 2020) on 2× H100, concurrency 16,
+`--token-count auto`. These are reference inference-performance numbers reported
+in PR #728 — reproducible references, not CI thresholds.
+
+| Split | Latency mean / p95 (s) | RTF mean | Throughput (req/s) |
+|---|---:|---:|---:|
+| EN | 1.538 / 1.989 | 0.3682 | 10.355 |
+| ZH | — | 0.3306 | 8.62 |
+
 ### Multilingual Voice Clone
 
 We evaluate MOSS-TTS-Local-Transformer-v1.5 on public multilingual TTS suites and
@@ -214,10 +224,10 @@ means the benchmark is speaker-similarity only and does not report WER.
 
 | Benchmark | WER ↓ | SIM ↑ |
 |---|---:|---:|
-| `seed_tts` (excluding hard-zh) | 2.0350 | 68.9850 |
-| `cv3` | 7.4800 | 61.5871 |
-| `minimax_multilingual` | 6.3692 | 75.3121 |
-| `x_voice` | 20.4787 | 63.0023 |
+| `Seed-TTS-Eval` (excluding hard-zh) | 2.0350 | 68.9850 |
+| `CV3-Eval` | 7.4800 | 61.5871 |
+| `MiniMax Multilingual` | 6.3692 | 75.3121 |
+| `X Voice` | 20.4787 | 63.0023 |
 
 These results were measured with audio sampling parameters `temperature=1.7`,
 `top_p=0.8`, and `top_k=25`. In tests from MOSI.AI, `temperature=0.6`, `top_p=0.95`,
