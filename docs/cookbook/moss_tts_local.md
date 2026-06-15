@@ -2,6 +2,8 @@
 
 [MOSS-TTS-Local-Transformer-v1.5](https://huggingface.co/OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5) is a text-to-speech model from MOSI.AI and the OpenMOSS team. It generates native **48 kHz stereo** speech with [MOSS-Audio-Tokenizer-v2](https://huggingface.co/OpenMOSS-Team/MOSS-Audio-Tokenizer-v2) and supports zero-shot voice cloning from reference audio, reference-less synthesis, long-form speech generation, streaming, token-level duration control, Pinyin/IPA pronunciation control, multilingual synthesis, and code-switching. The model supports **31 languages**, accepts language tags to guide multilingual generation, and supports inline pause markers such as `[pause 3.2s]` for explicit prosody control.
 
+![MOSS-TTS-Local architecture](../_static/image/moss-tts-arch-local.png)
+
 Architecturally, MOSS-TTS-Local-Transformer-v1.5 is the `local-transformer` counterpart to the `delay-pattern` [MOSS-TTS-v1.5](moss_tts.md). Instead of staggering RVQ streams across time, the Qwen3-4B backbone emits a global latent for each aligned audio frame, and a lightweight frame-local transformer expands that latent into a fixed 12-codebook RVQ block. In SGLang-Omni it runs as a `preprocessing → tts_engine → vocoder` pipeline served through the OpenAI-compatible `/v1/audio/speech` endpoint.
 
 | Component | Spec |
@@ -199,19 +201,27 @@ python -m benchmarks.eval.benchmark_tts_seedtts \
 
 Use `--lang zh` for the Chinese split. See `benchmarks/README.md` for the full workflow.
 
-## Benchmark Results
+## Evaluation Benchmarks
 
-Seed-TTS-Eval full set (EN = 1088, ZH = 2020) on 2× H100, concurrency 16, `--token-count auto`.
-EN is scored as WER, ZH as CER. These are the reference numbers reported in PR #728 — reproducible
-references, not CI thresholds.
+### Multilingual Voice Clone
 
-| Lang | Error (corpus) | Error (excl. >50%) | Latency mean / p95 (s) | RTF mean | Throughput (req/s) |
-|---|---|---|---|---|---|
-| EN (WER) | 2.67% | 1.78% | 1.538 / 1.989 | 0.3682 | 10.355 |
-| ZH (CER) | 1.30% | 1.17% | — | 0.3306 | 8.62 |
+We evaluate MOSS-TTS-Local-Transformer-v1.5 on public multilingual TTS suites and
+internal voice-cloning stress sets, covering multilingual synthesis, speaker
+similarity, and hard speaker-stability cases.
 
-A handful of utterances run away into a repetition loop (> 50% error) and inflate the raw
-micro-average; excluding them, corpus error is ~1.8% (EN) / ~1.2% (ZH).
+WER (↓) and SIM (↑) are macro-averaged and reported in percentage points. `N/A`
+means the benchmark is speaker-similarity only and does not report WER.
+
+| Benchmark | WER ↓ | SIM ↑ |
+|---|---:|---:|
+| `seed_tts` (excluding hard-zh) | 2.0350 | 68.9850 |
+| `cv3` | 7.4800 | 61.5871 |
+| `minimax_multilingual` | 6.3692 | 75.3121 |
+| `x_voice` | 20.4787 | 63.0023 |
+
+These results were measured with audio sampling parameters `temperature=1.7`,
+`top_p=0.8`, and `top_k=25`. In tests from MOSI.AI, `temperature=0.6`, `top_p=0.95`,
+`top_k=25`, and `audio_repetition_penalty=1.2` may produce better quality.
 
 ## Known Limitations
 
