@@ -1,13 +1,18 @@
 # MOSS-TTS-Local
 
-[MOSS-TTS-Local-Transformer-v1.5](https://huggingface.co/OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5)
-is a discrete multi-codebook text-to-speech model from the OpenMOSS team and the local-transformer
-sibling of [MOSS-TTS](moss_tts.md). A Qwen3 backbone with a frame-local transformer decodes audio
-frame by frame (no delay pattern), which keeps it under RTF 1 at concurrency 16, and the codec
-outputs **48 kHz** speech. It supports voice cloning from a short reference clip, reference-less
-synthesis, duration control, and streaming. In SGLang-Omni it runs as a
-`preprocessing → tts_engine → vocoder` pipeline served through the OpenAI-compatible
-`/v1/audio/speech` endpoint.
+[MOSS-TTS-Local-Transformer-v1.5](https://huggingface.co/OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5) is a text-to-speech model from MOSI.AI and the OpenMOSS team. It generates native **48 kHz stereo** speech with [MOSS-Audio-Tokenizer-v2](https://huggingface.co/OpenMOSS-Team/MOSS-Audio-Tokenizer-v2) and supports zero-shot voice cloning from reference audio, reference-less synthesis, long-form speech generation, streaming, token-level duration control, Pinyin/IPA pronunciation control, multilingual synthesis, and code-switching. The model supports **31 languages**, accepts language tags to guide multilingual generation, and supports inline pause markers such as `[pause 3.2s]` for explicit prosody control.
+
+Architecturally, MOSS-TTS-Local-Transformer-v1.5 is the `local-transformer` counterpart to the `delay-pattern` [MOSS-TTS-v1.5](moss_tts.md). Instead of staggering RVQ streams across time, the Qwen3-4B backbone emits a global latent for each aligned audio frame, and a lightweight frame-local transformer expands that latent into a fixed 12-codebook RVQ block. In SGLang-Omni it runs as a `preprocessing → tts_engine → vocoder` pipeline served through the OpenAI-compatible `/v1/audio/speech` endpoint.
+
+| Component | Spec |
+|---|---|
+| Architecture | `MossTTSLocalModel` (`moss_tts_local`) |
+| Backbone | Qwen3-4B autoregressive decoder (36 L, hidden=2560, GQA 32/8) |
+| Audio tokenizer | MOSS-Audio-Tokenizer-v2 |
+| Audio tokens | Fixed 12-codebook RVQ depth |
+| Output audio | 48 kHz stereo |
+| Languages | 31 languages with optional language tags |
+| Controls | Voice reference, target duration tokens, Pinyin/IPA, pause markers, style instructions |
 
 ## Prerequisites
 
