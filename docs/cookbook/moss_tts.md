@@ -144,7 +144,6 @@ to let the model infer from the text):
   "input": "今天天气不错 [pause 0.5s] 就该出去晒晒太阳。",
   "ref_audio": "...", "ref_text": "...",
   "language": "Chinese",
-  "instructions": "Speak slowly and warmly."
 }
 ```
 
