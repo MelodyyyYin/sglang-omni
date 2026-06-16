@@ -20,6 +20,7 @@ from typing import Any, Callable, Literal
 from sglang_omni.pipeline import relay_io
 from sglang_omni.pipeline.stage.input import DirectInput, InputHandler
 from sglang_omni.pipeline.stage.stream_queue import StreamItem, StreamQueue
+from sglang_omni.pipeline.tensor_ref import TensorRefPolicy, tensor_refs_enabled
 from sglang_omni.pipeline.tp_control import TPLeaderFanout, TPWorkMessage
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.profiler.event_recorder import get_recorder as _get_recorder
@@ -659,9 +660,20 @@ class Stage:
             and self._tp_fanout is not None
             and getattr(self.scheduler, "requires_tp_work_fanout", False)
         ):
+            # Fan out the *unresolved* payload before materializing any
+            # tensor refs below — followers materialize refs themselves,
+            # on their own relay/device, rather than receiving an already
+            # resolved large CUDA tensor over the cross-process work queue.
             self._tp_fanout.fanout_work(payload)
+        payload_for_scheduler = payload
+        if tensor_refs_enabled():
+            payload_for_scheduler = await relay_io.materialize_payload_tensor_refs(
+                self.relay, payload, current_stage=self.name
+            )
         self.scheduler.inbox.put(
-            IncomingMessage(request_id=request_id, type="new_request", data=payload)
+            IncomingMessage(
+                request_id=request_id, type="new_request", data=payload_for_scheduler
+            )
         )
 
     async def _on_admin(self, msg: AdminMessage) -> None:
@@ -973,8 +985,16 @@ class Stage:
             )
             return
 
+        tensor_ref_policy = TensorRefPolicy.from_env(
+            from_stage=self.name, to_stage=target
+        )
         metadata, op = await relay_io.write_payload(
-            self.relay, request_id, projected_payload
+            self.relay,
+            request_id,
+            projected_payload,
+            from_stage=self.name,
+            to_stage=target,
+            tensor_ref_policy=tensor_ref_policy,
         )
         msg = DataReadyMessage(
             request_id=request_id,
@@ -982,11 +1002,15 @@ class Stage:
             to_stage=target,
             shm_metadata=metadata,
         )
+        hop_metadata: dict[str, Any] = {"to_stage": target}
+        tensor_ref_stats = metadata.get("tensor_ref_stats")
+        if tensor_ref_stats is not None:
+            hop_metadata.update(tensor_ref_stats)
         _emit_event(
             request_id=request_id,
             stage=self.name,
             event_name="stage_hop_sent",
-            metadata={"to_stage": target},
+            metadata=hop_metadata,
         )
         await self.control_plane.send_to_stage(target, endpoint, msg)
         await op.wait_for_completion()

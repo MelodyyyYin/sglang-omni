@@ -8,16 +8,26 @@ Extracted from worker/data_plane.py and worker/runtime.py.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
+import logging
 import pickle
 from multiprocessing.reduction import ForkingPickler
 from typing import Any
+from uuid import uuid4
 
 import torch
 
+from sglang_omni.pipeline.tensor_ref import (
+    TensorRef,
+    TensorRefPolicy,
+    is_tensor_ref_dict,
+)
 from sglang_omni.proto import DataReadyMessage, StagePayload
 from sglang_omni.relay.base import Relay
+
+logger = logging.getLogger(__name__)
 
 
 def _dtype_alignment(dtype: torch.dtype) -> int:
@@ -86,6 +96,247 @@ def restore_tensors(obj: Any, tensor_dict: dict[str, torch.Tensor]) -> Any:
 
 
 # ---------------------------------------------------------------------------
+# Lazy TensorRef: externalize large allowlisted tensors instead of inlining
+# them into the payload buffer. Intermediate stages forward the small ref
+# dict untouched; only the declared consumer stage resolves it.
+# ---------------------------------------------------------------------------
+
+_BACKGROUND_REF_TASKS: set[asyncio.Task] = set()
+_LOGGED_REF_EDGES: set[tuple[str, str]] = set()
+
+
+def _track_background_op(op: Any, ref_id: str) -> None:
+    async def _wait() -> None:
+        try:
+            await op.wait_for_completion()
+        except Exception:
+            logger.warning(
+                "tensor_ref relay op failed or timed out for %s", ref_id, exc_info=True
+            )
+
+    task = asyncio.create_task(_wait())
+    _BACKGROUND_REF_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_REF_TASKS.discard)
+
+
+async def publish_tensor_ref(
+    relay: Relay,
+    *,
+    request_id: str,
+    tensor: torch.Tensor,
+    path: str,
+    from_stage: str,
+    to_stage: str,
+    consumer_stage: str,
+) -> TensorRef:
+    """Externalize ``tensor`` to the relay and return a small reference to it.
+
+    The blob write is awaited (the bytes must be copied before this hop's
+    small envelope is sent), but its relay op is tracked in the background —
+    the consumer stage, not this hop, is the one that actually reads it.
+    """
+    edge = (from_stage, to_stage)
+    if edge not in _LOGGED_REF_EDGES:
+        _LOGGED_REF_EDGES.add(edge)
+        logger.info(
+            "tensor_ref active: externalizing %s (%.1f MiB) on edge %s->%s, "
+            "consumer=%s",
+            path,
+            tensor.numel() * tensor.element_size() / 1024**2,
+            from_stage,
+            to_stage,
+            consumer_stage,
+        )
+    blob_key = f"{request_id}:tensor_ref:{from_stage}:{to_stage}:{uuid4().hex}:{path}"
+    blob_metadata, op = await write_blob(relay, blob_key, tensor)
+    ref = TensorRef(
+        ref_id=blob_key,
+        request_id=request_id,
+        producer_stage=from_stage,
+        consumer_stage=consumer_stage,
+        path=path,
+        shape=tuple(tensor.shape),
+        dtype=str(tensor.dtype),
+        device=str(tensor.device),
+        nbytes=tensor.numel() * tensor.element_size(),
+        blob_key=blob_key,
+        blob_metadata=blob_metadata,
+    )
+    _track_background_op(op, ref.ref_id)
+    return ref
+
+
+async def extract_tensors_for_payload(
+    obj: Any,
+    *,
+    relay: Relay,
+    request_id: str,
+    from_stage: str | None,
+    to_stage: str | None,
+    tensor_ref_policy: TensorRefPolicy,
+    stats: dict[str, int],
+    path: str = "",
+) -> tuple[Any, dict[str, torch.Tensor]]:
+    """Like ``extract_tensors``, but allowlisted large tensors are published
+    as ``TensorRef`` dicts instead of being flattened into the relay buffer.
+    Leaves that are already a ``TensorRef`` dict are passed through as-is.
+    """
+    tensors: dict[str, torch.Tensor] = {}
+
+    if is_tensor_ref_dict(obj):
+        return obj, tensors
+
+    if isinstance(obj, torch.Tensor):
+        if tensor_ref_policy.should_externalize(path, obj):
+            ref = await publish_tensor_ref(
+                relay,
+                request_id=request_id,
+                tensor=obj,
+                path=path,
+                from_stage=from_stage or "",
+                to_stage=to_stage or "",
+                consumer_stage=tensor_ref_policy.consumer_stage,
+            )
+            stats["ref_count"] += 1
+            stats["ref_bytes"] += ref.nbytes
+            return ref.to_dict(), tensors
+
+        stats["inline_tensor_bytes"] += obj.numel() * obj.element_size()
+        placeholder = {
+            "_tensor_placeholder": path,
+            "shape": list(obj.shape),
+            "dtype": str(obj.dtype),
+            "device": str(obj.device),
+        }
+        tensors[path] = obj
+        return placeholder, tensors
+
+    elif isinstance(obj, dict):
+        new_dict = {}
+        for key, value in obj.items():
+            new_path = f"{path}.{key}" if path else key
+            new_value, sub_tensors = await extract_tensors_for_payload(
+                value,
+                relay=relay,
+                request_id=request_id,
+                from_stage=from_stage,
+                to_stage=to_stage,
+                tensor_ref_policy=tensor_ref_policy,
+                stats=stats,
+                path=new_path,
+            )
+            new_dict[key] = new_value
+            tensors.update(sub_tensors)
+        return new_dict, tensors
+
+    elif isinstance(obj, (list, tuple)):
+        new_list = []
+        for i, item in enumerate(obj):
+            new_path = f"{path}[{i}]"
+            new_item, sub_tensors = await extract_tensors_for_payload(
+                item,
+                relay=relay,
+                request_id=request_id,
+                from_stage=from_stage,
+                to_stage=to_stage,
+                tensor_ref_policy=tensor_ref_policy,
+                stats=stats,
+                path=new_path,
+            )
+            new_list.append(new_item)
+            tensors.update(sub_tensors)
+        return (type(obj)(new_list), tensors)
+
+    else:
+        return obj, tensors
+
+
+async def read_tensor_ref(relay: Relay, ref: TensorRef) -> torch.Tensor:
+    tensor = await read_blob(relay, ref.blob_key, ref.blob_metadata)
+    if tuple(tensor.shape) != ref.shape:
+        raise RuntimeError(
+            f"tensor_ref {ref.ref_id} shape mismatch: expected {ref.shape}, "
+            f"got {tuple(tensor.shape)}"
+        )
+    expected_dtype = getattr(torch, ref.dtype.replace("torch.", ""))
+    if tensor.dtype != expected_dtype:
+        raise RuntimeError(
+            f"tensor_ref {ref.ref_id} dtype mismatch: expected {ref.dtype}, "
+            f"got {tensor.dtype}"
+        )
+    return tensor
+
+
+async def materialize_tensor_refs(
+    relay: Relay,
+    obj: Any,
+    *,
+    current_stage: str,
+    materialize_all: bool = False,
+) -> Any:
+    """Recursively resolve ``TensorRef`` leaves whose ``consumer_stage``
+    matches ``current_stage`` (or all of them, if ``materialize_all``).
+    Refs belonging to a different consumer stage pass through unresolved.
+    """
+    if is_tensor_ref_dict(obj):
+        ref = TensorRef.from_dict(obj)
+        if materialize_all or ref.consumer_stage == current_stage:
+            return await read_tensor_ref(relay, ref)
+        return obj
+
+    # Containers are rebuilt only when a descendant ref was actually resolved;
+    # otherwise the original object is returned unchanged so ref-free payloads
+    # (every non-consumer stage) skip per-request container churn.
+    if isinstance(obj, dict):
+        new_dict = {}
+        changed = False
+        for key, value in obj.items():
+            new_value = await materialize_tensor_refs(
+                relay,
+                value,
+                current_stage=current_stage,
+                materialize_all=materialize_all,
+            )
+            changed = changed or new_value is not value
+            new_dict[key] = new_value
+        return new_dict if changed else obj
+
+    if isinstance(obj, (list, tuple)):
+        new_items = []
+        changed = False
+        for item in obj:
+            new_item = await materialize_tensor_refs(
+                relay,
+                item,
+                current_stage=current_stage,
+                materialize_all=materialize_all,
+            )
+            changed = changed or new_item is not item
+            new_items.append(new_item)
+        return type(obj)(new_items) if changed else obj
+
+    return obj
+
+
+async def materialize_payload_tensor_refs(
+    relay: Relay,
+    payload: StagePayload,
+    *,
+    current_stage: str,
+) -> StagePayload:
+    new_data = await materialize_tensor_refs(
+        relay, payload.data, current_stage=current_stage
+    )
+    if new_data is payload.data:
+        return payload
+    return StagePayload(
+        request_id=payload.request_id,
+        request=payload.request,
+        data=new_data,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Payload read/write (full StagePayload via relay)
 # ---------------------------------------------------------------------------
 
@@ -94,12 +345,30 @@ async def write_payload(
     relay: Relay,
     request_id: str,
     payload: StagePayload,
+    *,
+    from_stage: str | None = None,
+    to_stage: str | None = None,
+    tensor_ref_policy: TensorRefPolicy | None = None,
 ) -> tuple[dict[str, Any], Any]:
     """Write a StagePayload to relay. Returns (control_plane_metadata, relay_op)."""
     device = getattr(relay, "device", "cpu")
     transport_device = torch.device(device)
 
-    modified_data, tensor_dict = extract_tensors(payload.data)
+    stats: dict[str, int] | None = None
+    if tensor_ref_policy is not None:
+        stats = {"ref_count": 0, "ref_bytes": 0, "inline_tensor_bytes": 0}
+        modified_data, tensor_dict = await extract_tensors_for_payload(
+            payload.data,
+            relay=relay,
+            request_id=request_id,
+            from_stage=from_stage,
+            to_stage=to_stage,
+            tensor_ref_policy=tensor_ref_policy,
+            stats=stats,
+        )
+    else:
+        modified_data, tensor_dict = extract_tensors(payload.data)
+
     payload_no_tensors = StagePayload(
         request_id=payload.request_id,
         request=payload.request,
@@ -139,11 +408,14 @@ async def write_payload(
 
     op = await relay.put_async(all_tensors, request_id=request_id)
 
-    return {
+    metadata: dict[str, Any] = {
         "relay_info": op.metadata,
         "payload_pickle": base64.b64encode(metadata_bytes).decode("ascii"),
         "tensor_info": tensor_info,
-    }, op
+    }
+    if stats is not None:
+        metadata["tensor_ref_stats"] = stats
+    return metadata, op
 
 
 async def read_payload(

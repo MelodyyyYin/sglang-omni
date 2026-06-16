@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import queue
 
 import pytest
 import torch
@@ -13,6 +14,8 @@ from sglang_omni.pipeline.local_dispatch import LocalStageDispatcher
 from sglang_omni.pipeline.stage.input import AggregatedInput
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, _construct_stage
+from sglang_omni.pipeline.tensor_ref import TensorRef, is_tensor_ref_dict
+from sglang_omni.pipeline.tp_control import TPLeaderFanout
 from sglang_omni.proto import DataReadyMessage
 from tests.unit_test.fixtures.pipeline_fakes import (
     EventLog,
@@ -270,6 +273,113 @@ def test_relay_payload_and_cross_gpu_stream_contracts() -> None:
         msg = control_plane.sent_to_stage[0][2]
         assert msg.shm_metadata["chunk_metadata"]["token_id"] == 1
         assert "hidden" in msg.shm_metadata["chunk_metadata_tensors"]
+
+    asyncio.run(_run())
+
+
+def test_stage_execute_fanouts_unresolved_payload_before_materializing_refs(
+    monkeypatch,
+) -> None:
+    """TP followers get the unresolved ref; the local scheduler gets the resolved tensor."""
+    monkeypatch.setenv("SGLANG_OMNI_ENABLE_TENSOR_REFS", "1")
+
+    async def _run() -> None:
+        relay = FakeRelay()
+        tensor = torch.arange(6, dtype=torch.float32)
+        blob_metadata, blob_op = await relay_io.write_blob(relay, "req-1:blob", tensor)
+        await blob_op.wait_for_completion()
+        ref = TensorRef(
+            ref_id="req-1:blob",
+            request_id="req-1",
+            producer_stage="image_encoder",
+            consumer_stage="thinker",
+            path="video_embeds",
+            shape=tuple(tensor.shape),
+            dtype=str(tensor.dtype),
+            device=str(tensor.device),
+            nbytes=tensor.numel() * tensor.element_size(),
+            blob_key="req-1:blob",
+            blob_metadata=blob_metadata,
+        )
+        payload = make_stage_payload(
+            request_id="req-1", data={"video_embeds": ref.to_dict()}
+        )
+
+        scheduler = FakeScheduler()
+        scheduler.requires_tp_work_fanout = True
+        follower_queue: queue.Queue = queue.Queue()
+        tp_fanout = TPLeaderFanout(
+            "thinker",
+            follower_work_queues=[follower_queue],
+            follower_abort_queues=[],
+        )
+        stage_obj = make_stage(
+            name="thinker",
+            role="leader",
+            scheduler=scheduler,
+            relay=relay,
+            tp_fanout=tp_fanout,
+        )
+
+        await stage_obj._execute(payload)
+
+        follower_msg = follower_queue.get_nowait()
+        assert is_tensor_ref_dict(follower_msg.data.data["video_embeds"])
+
+        scheduled = scheduler.inbox.get_nowait()
+        assert torch.equal(scheduled.data.data["video_embeds"], tensor)
+
+    asyncio.run(_run())
+
+
+def test_send_to_stage_does_not_block_on_externalized_tensor_ref_blob(
+    monkeypatch,
+) -> None:
+    """The small envelope op completes without waiting on the deferred blob op."""
+    monkeypatch.setenv("SGLANG_OMNI_ENABLE_TENSOR_REFS", "1")
+    monkeypatch.setenv(
+        "SGLANG_OMNI_TENSOR_REF_EDGES", "image_encoder:mm_aggregate:thinker"
+    )
+    monkeypatch.setenv("SGLANG_OMNI_TENSOR_REF_PATHS", "big")
+    monkeypatch.setenv("SGLANG_OMNI_TENSOR_REF_THRESHOLD_MB", "0")
+
+    async def _run() -> None:
+        gate = asyncio.Event()
+
+        class GatedRelay(FakeRelay):
+            async def put_async(self, tensor, request_id=None, dst_rank=None):
+                op = await super().put_async(
+                    tensor, request_id=request_id, dst_rank=dst_rank
+                )
+                if request_id and ":tensor_ref:" in request_id:
+                    real_wait = op.wait_for_completion
+
+                    async def gated_wait(timeout: float = 30.0):
+                        await gate.wait()
+                        await real_wait(timeout=timeout)
+
+                    op.wait_for_completion = gated_wait
+                return op
+
+        relay = GatedRelay()
+        stage_obj = make_stage(
+            name="image_encoder",
+            endpoints={"mm_aggregate": "inproc://mm"},
+            relay=relay,
+        )
+        payload = make_stage_payload(request_id="req-1", data={"big": torch.randn(4)})
+
+        await asyncio.wait_for(
+            stage_obj._send_to_stage("req-1", "mm_aggregate", payload),
+            timeout=1.0,
+        )
+
+        assert len(relay_io._BACKGROUND_REF_TASKS) == 1
+        task = next(iter(relay_io._BACKGROUND_REF_TASKS))
+        gate.set()
+        await asyncio.wait_for(task, timeout=1.0)
+        await asyncio.sleep(0)
+        assert relay_io._BACKGROUND_REF_TASKS == set()
 
     asyncio.run(_run())
 
