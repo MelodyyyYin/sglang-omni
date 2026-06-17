@@ -279,10 +279,6 @@ class PipelineConfig(BaseModel):
         """Return whether uploaded voices can be lowered as reference audio."""
         return False
 
-    def default_allowed_media_domains(self) -> list[str]:
-        """Return model-specific remote media domains allowed by default."""
-        return []
-
     @property
     def gpu_placement(self) -> dict[str, int | list[int]]:
         out: dict[str, int | list[int]] = {}

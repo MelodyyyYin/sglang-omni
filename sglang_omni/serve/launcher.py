@@ -98,21 +98,6 @@ def _stage_runtime_log_summary(pipeline_config: PipelineConfig) -> dict[str, Any
     return summary
 
 
-def _merge_allowed_media_domains(
-    pipeline_config: PipelineConfig,
-    allowed_media_domains: list[str] | None,
-) -> list[str]:
-    domains: list[str] = []
-    for domain in [
-        *pipeline_config.default_allowed_media_domains(),
-        *(allowed_media_domains or []),
-    ]:
-        normalized = domain.strip().rstrip(".").lower()
-        if normalized and normalized not in domains:
-            domains.append(normalized)
-    return domains
-
-
 def _format_gpu_device_info(info: GpuDeviceInfo) -> dict[str, Any]:
     return {
         "device_id": info.device_id,
@@ -359,10 +344,7 @@ async def _run_server(
             ),
             enable_realtime=enable_realtime,
             allowed_local_media_path=allowed_local_media_path,
-            allowed_media_domains=_merge_allowed_media_domains(
-                pipeline_config,
-                allowed_media_domains,
-            ),
+            allowed_media_domains=allowed_media_domains,
         )
         profiler_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
         profiler_ctl = ProfilerControlClient(mp_runner.stage_control_endpoints)

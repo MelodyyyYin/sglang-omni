@@ -282,6 +282,30 @@ def test_reference_audio_accepts_allowed_https(
     }
 
 
+def test_reference_audio_accepts_public_https_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = SpeechRequestValidator(default_model="tts")
+    monkeypatch.setattr(
+        resource_connector,
+        "_resolve_remote_addresses",
+        _public_test_addresses,
+    )
+    service.reference_connector.connection = _MockHTTPConnection(
+        lambda request: httpx.Response(
+            200,
+            headers={"content-type": "audio/wav"},
+            content=b"RIFF",
+        )
+    )
+
+    request = service.parse_request(
+        {"input": "hello", "ref_audio": "https://example.com/reference.wav"}
+    )
+
+    assert request.ref_audio == "data:audio/wav;base64,UklGRg=="
+
+
 def test_reference_audio_accepts_local_path_by_default(tmp_path: Path) -> None:
     ref_audio = tmp_path / "reference.wav"
     ref_audio.write_bytes(b"RIFF")
@@ -346,19 +370,6 @@ def test_reference_audio_honors_allowed_media_domains() -> None:
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.param == "ref_audio"
-
-
-def test_reference_audio_requires_allowed_media_domain() -> None:
-    service = SpeechRequestValidator(default_model="tts")
-
-    with pytest.raises(SpeechAPIError) as exc_info:
-        service.parse_request(
-            {"input": "hello", "ref_audio": "https://example.com/reference.wav"}
-        )
-
-    assert exc_info.value.status_code == 400
-    assert exc_info.value.param == "ref_audio"
-    assert "allowed-media-domain" in exc_info.value.message
 
 
 def test_reference_audio_rejects_private_remote_addresses() -> None:

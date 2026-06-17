@@ -134,9 +134,6 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
     def supports_uploaded_voice_references(self) -> bool:
         return True
 
-    def default_allowed_media_domains(self) -> list[str]:
-        return ["huggingface.co", ".hf.co"]
-
 
 class MossTTSLocalColocatedPipelineConfig(MossTTSLocalPipelineConfig):
     """Backward-compatible alias for the default single-GPU pipeline."""

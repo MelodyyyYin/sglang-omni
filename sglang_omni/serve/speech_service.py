@@ -79,7 +79,7 @@ class SpeechRequestValidator:
         self.reference_connector = MultiModalResourceConnector(
             allowed_local_media_path=allowed_local_media_path,
             allowed_media_domains=allowed_media_domains,
-            allow_remote_media_without_domains=False,
+            allow_remote_media_without_domains=True,
             reject_unsafe_remote_addresses=True,
         )
 
