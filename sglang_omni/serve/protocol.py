@@ -339,5 +339,18 @@ class UpdateWeightsFromDistributedRequest(AdminRequestBase):
     torch_empty_cache: bool = False
 
 
+class InitWeightsUpdateGroupRequest(AdminRequestBase):
+    master_address: str
+    master_port: int
+    world_size: int
+    rank_offset: int = 0
+    group_name: str = "weight_update_group"
+    backend: str = "nccl"
+
+
+class DestroyWeightsUpdateGroupRequest(AdminRequestBase):
+    group_name: str = "weight_update_group"
+
+
 class WeightsCheckerRequest(AdminRequestBase):
     action: str = "checksum"
