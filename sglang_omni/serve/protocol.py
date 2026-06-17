@@ -225,6 +225,28 @@ class CreateSpeechRequest(BaseModel):
     stage_params: dict[str, dict[str, Any]] | None = None
 
 
+class UploadedVoiceMetadata(BaseModel):
+    """Metadata returned for an uploaded TTS voice sample."""
+
+    name: str
+    consent: str
+    created_at: int
+    file_size: int
+    mime_type: str
+    ref_text: str | None = None
+    speaker_description: str | None = None
+
+
+class VoiceListResponse(BaseModel):
+    """Voice registry response for /v1/audio/voices."""
+
+    voices: list[str]
+    uploaded_voices: list[UploadedVoiceMetadata]
+    cache_stats: dict[str, int] = Field(
+        description="API-process uploaded-voice reference cache counters."
+    )
+
+
 class TranscriptionResponse(BaseModel):
     """OpenAI-compatible transcription response."""
 
@@ -315,6 +337,19 @@ class UpdateWeightsFromDistributedRequest(AdminRequestBase):
     weight_version: str | None = None
     load_format: str | None = None
     torch_empty_cache: bool = False
+
+
+class InitWeightsUpdateGroupRequest(AdminRequestBase):
+    master_address: str
+    master_port: int
+    world_size: int
+    rank_offset: int = 0
+    group_name: str = "weight_update_group"
+    backend: str = "nccl"
+
+
+class DestroyWeightsUpdateGroupRequest(AdminRequestBase):
+    group_name: str = "weight_update_group"
 
 
 class WeightsCheckerRequest(AdminRequestBase):
