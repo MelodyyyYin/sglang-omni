@@ -208,8 +208,6 @@ def test_file_reference_requires_allowlist() -> None:
 @pytest.mark.parametrize(
     ("ref_audio", "expected_param"),
     [
-        ("/tmp/reference.wav", "ref_audio"),
-        ("relative/reference.wav", "ref_audio"),
         ("ftp://example.com/reference.wav", "ref_audio"),
         ("data:audio/wav;base64", "ref_audio"),
         ("data:audio/wav,AAAA", "ref_audio"),
@@ -321,6 +319,40 @@ def test_reference_audio_accepts_local_path_by_default(tmp_path: Path) -> None:
     )
 
     assert prepared.request.ref_audio == str(ref_audio.resolve())
+    assert gen_req.prompt == {
+        "text": "hello",
+        "references": [
+            {"audio_path": str(ref_audio.resolve()), "text": "reference text"}
+        ],
+    }
+
+
+def test_reference_audio_accepts_relative_local_path_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ref_audio = tmp_path / "relative" / "reference.wav"
+    ref_audio.parent.mkdir()
+    ref_audio.write_bytes(b"RIFF")
+    monkeypatch.chdir(tmp_path)
+    service = SpeechRequestValidator(default_model="tts")
+
+    prepared = service.parse_generation_request(
+        {
+            "input": "hello",
+            "references": [
+                {"audio_path": "relative/reference.wav", "text": "reference text"}
+            ],
+        }
+    )
+    gen_req = service.build_generate_request(
+        prepared.request,
+        validate=False,
+        reference_descriptors=prepared.reference_descriptors,
+    )
+
+    assert prepared.request.references is not None
+    assert prepared.request.references[0].audio_path == str(ref_audio.resolve())
     assert gen_req.prompt == {
         "text": "hello",
         "references": [

@@ -229,10 +229,12 @@ duration with `--token-count auto`. Run at `--max-concurrency 16`.
 
 ```bash
 python -m benchmarks.eval.benchmark_tts_seedtts \
-  --meta zhaochenyang20/seed-tts-eval-arrow \
-  --model OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5 --port 8000 \
-  --ref-format references --token-count auto \
-  --output-dir results/moss_local_en --lang en --max-concurrency 16
+    --meta zhaochenyang20/seed-tts-eval-arrow \
+    --model OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5 --port 8000 \
+    --ref-format references \
+    --token-count auto \
+    --output-dir results/moss_tts_en \
+    --lang en --max-concurrency 16
 ```
 
 Use `--lang zh` for the Chinese split. See `benchmarks/README.md` for the full workflow.
