@@ -30,12 +30,10 @@ The processor ships with the checkpoint, so no extra TTS package is needed. Deco
 
 ## Server Configuration
 
-The checkpoint auto-resolves the `MossTTSLocalModel` architecture, so `serve` needs only
-`--model-path` (no `--config`, like Higgs TTS). The default layout puts the AR backbone on the first
-GPU and the codec/vocoder on the second, so expose two GPUs:
+The default layout puts the AR backbone and the codec/vocoder on the same GPU:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve \
+sgl-omni serve \
   --model-path OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5 \
   --port 8000
 ```
@@ -97,19 +95,39 @@ with open("output.wav", "wb") as f:
 
 ### Reference Audio Sources
 
-`audio_path` / `ref_audio` may be a local filesystem path readable by the server, an HTTP(S)
-URL, or a base64 **data URI** (`data:audio/wav;base64,<...>`, decoded with `soundfile`):
+`audio_path` / `ref_audio` may be a local filesystem path readable by the server, an HTTP(S) URL, or a base64 **data URI** (`data:audio/wav;base64,<...>`, decoded with `soundfile`):
 
-```json
-{"ref_audio": "data:audio/wav;base64,UklGR.....", "ref_text": "Transcript of the clip."}
+```python
+import base64
+import requests
+
+reference_url = "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav"
+reference_resp = requests.get(reference_url)
+reference_resp.raise_for_status()
+ref_audio = (
+    "data:audio/wav;base64,"
+    + base64.b64encode(reference_resp.content).decode("ascii")
+)
+
+resp = requests.post(
+    "http://localhost:8000/v1/audio/speech",
+    json={
+        "input": "SGLang-Omni is a great project!",
+        "ref_audio": ref_audio,
+        "ref_text": "Transcript of the reference clip.",
+    },
+)
+resp.raise_for_status()
+with open("output_data_uri.wav", "wb") as f:
+    f.write(resp.content)
 ```
 
-Reference encodes are cached (LRU) and coalesced into batched codec calls, so resending the same
-reference clip skips re-encoding.
+Reference encodes are cached (LRU) and coalesced into batched codec calls, so resending the same reference clip skips re-encoding.
 
 ### Streaming
 
-Set `"stream": true` and `"response_format": "pcm"` to receive raw PCM audio chunks in real time.
+Set `"stream": true` and `"response_format": "pcm"` to receive raw 48 kHz mono PCM
+chunks in real time. Pipe the stream through `ffmpeg` when you want a playable WAV file:
 
 ```bash
 curl -N -X POST http://localhost:8000/v1/audio/speech \
@@ -121,28 +139,34 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
     "stream": true,
     "response_format": "pcm"
   }' \
-  --output output.pcm
+  | ffmpeg -f s16le -ar 48000 -ac 1 -i pipe:0 output_stream.wav
 ```
 
 ### Duration Control
 
-MOSS-TTS-Local conditions on a target **duration token count** (codec frames; a larger count
-yields longer audio). Set it with an inline `${token:N}` prefix on `input` (stripped before
-synthesis), or with a `token_count` (alias `duration_tokens`) parameter. The count must
-be a positive integer.
+MOSS-TTS-Local conditions on a target **duration token count** (codec frames; a larger count yields longer audio). Set it with an inline `${token:N}` prefix on `input` (stripped before synthesis), or with a `token_count` (alias `duration_tokens`) parameter. The count must be a positive integer.
 
 ```json
 {"input": "${token:150}A sentence with an explicit duration target.", "ref_audio": "..."}
+```
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": "${token:150}A sentence with an explicit duration target.",
+    "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
+    "ref_text": "We asked over twenty different people, and they all said it was his."
+  }' \
+  --output output_duration_tokens.wav
 ```
 
 If omitted, the model picks the duration itself.
 
 ### Text Markup, Style, and Language
 
-Inline text markup that the model understands (for example `[pause Xs]`, pinyin, and IPA) is
-passed through unchanged. An optional `instructions` field carries a
-free-text style directive, and an optional `language` hint biases the target language (omit it
-to let the model infer from the text):
+Inline text markup that the model understands (for example `[pause Xs]`, pinyin, and IPA) is passed through unchanged. An optional `instructions` field carries a
+free-text style directive, and an optional `language` hint biases the target language (omit it to let the model infer from the text):
 
 ```json
 {
@@ -150,6 +174,19 @@ to let the model infer from the text):
   "ref_audio": "...", "ref_text": "...",
   "language": "Chinese",
 }
+```
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": "今天天气不错 [pause 0.5s] 就该出去晒晒太阳。",
+    "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
+    "ref_text": "We asked over twenty different people, and they all said it was his.",
+    "language": "Chinese",
+    "instructions": "Use a natural conversational style."
+  }' \
+  --output output_markup.wav
 ```
 
 ## Generation Parameters

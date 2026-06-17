@@ -282,6 +282,29 @@ def test_reference_audio_accepts_allowed_https(
     }
 
 
+def test_reference_audio_accepts_local_path_by_default(tmp_path: Path) -> None:
+    ref_audio = tmp_path / "reference.wav"
+    ref_audio.write_bytes(b"RIFF")
+    service = SpeechRequestValidator(default_model="tts")
+
+    prepared = service.parse_generation_request(
+        {"input": "hello", "ref_audio": str(ref_audio), "ref_text": "reference text"}
+    )
+    gen_req = service.build_generate_request(
+        prepared.request,
+        validate=False,
+        reference_descriptors=prepared.reference_descriptors,
+    )
+
+    assert prepared.request.ref_audio == str(ref_audio.resolve())
+    assert gen_req.prompt == {
+        "text": "hello",
+        "references": [
+            {"audio_path": str(ref_audio.resolve()), "text": "reference text"}
+        ],
+    }
+
+
 def test_reference_audio_rejects_http_status_with_speech_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -380,6 +403,41 @@ def test_reference_audio_revalidates_redirect_domains(
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.param == "ref_audio"
+
+
+def test_reference_audio_allows_configured_domain_suffix_redirect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = SpeechRequestValidator(
+        default_model="tts",
+        allowed_media_domains=["huggingface.co", ".hf.co"],
+    )
+    monkeypatch.setattr(
+        resource_connector,
+        "_resolve_remote_addresses",
+        _public_test_addresses,
+    )
+    service.reference_connector.connection = _MockHTTPConnection(
+        lambda request: (
+            httpx.Response(
+                302,
+                headers={"location": "https://us.aws.cdn.hf.co/reference.wav"},
+            )
+            if request.url.host == "huggingface.co"
+            else httpx.Response(
+                200,
+                content=b"RIFF",
+                headers={"content-type": "audio/wav"},
+            )
+        )
+    )
+
+    request = service.parse_request(
+        {"input": "hello", "ref_audio": "https://huggingface.co/reference.wav"}
+    )
+
+    assert request.ref_audio is not None
+    assert request.ref_audio.startswith("data:audio/wav;base64,")
 
 
 def test_reference_audio_revalidates_redirect_addresses(

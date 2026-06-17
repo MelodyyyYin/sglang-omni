@@ -339,7 +339,7 @@ class SpeechRequestValidator:
                     f"{param} must be an http, https, data, file:// URL, or local path",
                     param=param,
                 )
-            value = Path(value).expanduser().resolve().as_uri()
+            return {"audio_path": str(Path(value).expanduser().resolve())}
         try:
             return self.reference_connector.load_resource(
                 value,
