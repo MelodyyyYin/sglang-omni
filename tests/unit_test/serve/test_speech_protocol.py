@@ -578,19 +578,23 @@ def test_speech_service_rejects_oversized_input(
     assert exc_info.value.param == "input"
 
 
-def test_reference_list_rejects_raw_local_path() -> None:
+def test_reference_list_accepts_raw_local_path(tmp_path: Path) -> None:
+    audio_path = tmp_path / "reference.wav"
+    audio_path.write_bytes(b"RIFF")
     service = SpeechRequestValidator(default_model="tts")
 
-    with pytest.raises(SpeechAPIError) as exc_info:
-        service.parse_request(
-            {
-                "input": "hello",
-                "references": [{"audio_path": "/tmp/reference.wav"}],
-            }
-        )
+    request = service.parse_request(
+        {
+            "input": "hello",
+            "references": [{"audio_path": str(audio_path)}],
+        }
+    )
+    gen_req = service.build_generate_request(request, validate=False)
 
-    assert exc_info.value.status_code == 400
-    assert exc_info.value.param == "references.audio_path"
+    assert gen_req.prompt == {
+        "text": "hello",
+        "references": [{"audio_path": str(audio_path.resolve())}],
+    }
 
 
 def test_reference_list_rejects_invalid_base64_data_url() -> None:
