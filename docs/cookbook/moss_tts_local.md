@@ -172,7 +172,7 @@ free-text style directive, and an optional `language` hint biases the target lan
 {
   "input": "今天天气不错 [pause 0.5s] 就该出去晒晒太阳。",
   "ref_audio": "...", "ref_text": "...",
-  "language": "Chinese",
+  "language": "Chinese"
 }
 ```
 
