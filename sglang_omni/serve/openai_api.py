@@ -196,7 +196,6 @@ def create_app(
         max_bytes=MAX_VOICE_UPLOAD_BODY_BYTES,
     )
 
-    # Store references in app state for access from route handlers
     app.state.client = client
     app.state.model_name = model_name or "sglang-omni"
     app.state.realtime_enabled = enable_realtime
@@ -214,7 +213,6 @@ def create_app(
 
     resolved_key = resolve_admin_api_key(admin_api_key)
 
-    # Register all routes
     register_favicon(app)
     _register_health(app)
     _register_models(app)
@@ -568,7 +566,6 @@ def _register_chat_completions(app: FastAPI) -> None:
 
         gen_req = _build_chat_generate_request(req)
 
-        # Determine audio format from request
         audio_format = "wav"
         if req.audio and isinstance(req.audio, dict):
             audio_format = req.audio.get("format", "wav")
@@ -629,7 +626,6 @@ async def _chat_non_stream(
 
     requested_modalities = req.modalities or ["text"]
 
-    # Build message content
     message: dict[str, Any] = {"role": "assistant"}
 
     if "text" in requested_modalities and result.text:
@@ -645,7 +641,6 @@ async def _chat_non_stream(
     if "content" not in message and "audio" not in message:
         message["content"] = result.text
 
-    # Build usage
     usage = None
     if result.usage is not None:
         usage = UsageResponse(
@@ -692,9 +687,7 @@ async def _chat_stream(
         request_id=request_id,
         audio_format=audio_format,
     ):
-        # Capture finish info for the dedicated finish chunk after the loop.
-        # Some pipelines only emit a final aggregate chunk; do not drop its
-        # text/audio just because it already carries a finish reason.
+        # note (Yue Yin): some pipelines emit a final aggregate chunk that carries finish_reason AND payload; capture here but do not skip
         if chunk.finish_reason is not None:
             finish_reason = chunk.finish_reason
             if chunk.usage is not None:
@@ -718,18 +711,15 @@ async def _chat_stream(
         delta = ChatCompletionStreamDelta()
         emit = False
 
-        # Send role on first chunk
         if not role_sent:
             delta.role = "assistant"
             role_sent = True
             emit = True
 
-        # Text chunk
         if chunk.modality == "text" and chunk.text and "text" in requested_modalities:
             delta.content = chunk.text
             emit = True
 
-        # Audio chunk
         if (
             chunk.modality == "audio"
             and chunk.audio_b64 is not None
@@ -762,7 +752,6 @@ async def _chat_stream(
             choice.setdefault("finish_reason", None)
         yield f"data: {json.dumps(data)}\n\n"
 
-    # Finish chunk: empty delta + finish_reason.
     finish_resp = ChatCompletionStreamResponse(
         id=response_id,
         created=created,
@@ -786,14 +775,12 @@ async def _chat_stream(
 
 def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
     """Convert a ChatCompletionRequest into a client GenerateRequest."""
-    # Parse stop sequences
     stop: list[str] = []
     if isinstance(req.stop, str):
         stop = [req.stop]
     elif isinstance(req.stop, list):
         stop = list(req.stop)
 
-    # Build sampling params
     sampling = SamplingParams(
         temperature=req.temperature if req.temperature is not None else 1.0,
         top_p=req.top_p if req.top_p is not None else 1.0,
@@ -807,20 +794,16 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
         max_new_tokens=req.effective_max_tokens,
     )
 
-    # Convert messages
     messages = [Message(role=m.role, content=m.content) for m in req.messages]
 
-    # Determine output modalities
-    output_modalities = req.modalities or ["text"]  # e.g. ["text", "audio"]
+    output_modalities = req.modalities or ["text"]
 
-    # Build per-stage sampling overrides
     stage_sampling: dict[str, SamplingParams] | None = None
     if req.stage_sampling:
         stage_sampling = {}
         for stage_name, params_dict in req.stage_sampling.items():
             stage_sampling[stage_name] = SamplingParams(**params_dict)
 
-    # Extract audios, images, and videos from request
     audios: list[str] | None = None
     if req.audios:
         audios = req.audios
@@ -833,7 +816,6 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
     if req.videos:
         videos = req.videos
 
-    # Merge audio config, audios, images, and videos into metadata
     metadata: dict[str, Any] = {}
     if req.audio:
         metadata["audio_config"] = req.audio
@@ -1173,9 +1155,7 @@ def _select_speech_audio_delta(
     if audio.ndim > 1:
         audio = audio.squeeze()
     if audio.ndim > 1:
-        # Streaming chunks are mono; downmix multi-channel payloads
-        # (e.g. the 48 kHz stereo MOSS-TTS Local codec) instead of
-        # silently dropping channels.
+        # note (Yue Yin): downmix multi-channel audio (e.g. 48 kHz stereo MOSS-TTS Local) instead of silently dropping channels
         channel_axis = 0 if audio.shape[0] < audio.shape[-1] else -1
         audio = audio.mean(axis=channel_axis).astype("float32")
 

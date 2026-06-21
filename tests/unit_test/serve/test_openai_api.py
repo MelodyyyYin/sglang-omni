@@ -798,10 +798,6 @@ def test_speech_request_passes_moss_token_count() -> None:
     assert gen_req.metadata["tts_params"]["token_count"] == 180
 
 
-# ---------------------------------------------------------------------------
-# Admin auth tests
-# ---------------------------------------------------------------------------
-
 _ADMIN_PATHS_THAT_NEED_AUTH = [
     ("GET", "/model_info"),
     ("POST", "/model_info"),
@@ -894,11 +890,6 @@ def test_admin_routes_env_key_is_used_when_no_explicit_key(monkeypatch) -> None:
 
     resp = client.get("/model_info", headers=_admin_headers("env-key"))
     assert resp.status_code == 200
-
-
-# ---------------------------------------------------------------------------
-# Stub endpoint 501 tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(

@@ -20,7 +20,6 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Supported output formats and their MIME types
 FORMAT_MIME_TYPES: dict[str, str] = {
     "wav": "audio/wav",
     "mp3": "audio/mpeg",
@@ -30,10 +29,8 @@ FORMAT_MIME_TYPES: dict[str, str] = {
     "pcm": "audio/pcm",
 }
 
-# Default sample rate for generated audio
 DEFAULT_SAMPLE_RATE = 24000
 
-# Configurations for PyAV encoding
 PYAV_ENCODE_CONFIGS = {
     "opus": {
         "container": "ogg",
@@ -119,7 +116,6 @@ def to_numpy(audio: Any) -> np.ndarray:
     if isinstance(audio, np.ndarray):
         return audio.astype(np.float32, copy=False)
 
-    # torch Tensor
     if hasattr(audio, "cpu") and hasattr(audio, "numpy"):
         arr = audio.detach().cpu().float().numpy()
         return arr.astype(np.float32, copy=False)
@@ -128,7 +124,6 @@ def to_numpy(audio: Any) -> np.ndarray:
         return np.array(audio, dtype=np.float32)
 
     if isinstance(audio, bytes):
-        # Assume 16-bit signed PCM
         arr = np.frombuffer(audio, dtype="<i2")
         return (arr.astype(np.float32) / 32768.0).astype(np.float32)
 
@@ -150,8 +145,6 @@ def apply_speed(
     if speed == 1.0:
         return audio, sample_rate
 
-    # Speed up/slow down by changing the effective sample rate
-    # Then resample to the original rate
     new_length = max(int(round(len(audio) / speed)), 1)
     old_idx = np.arange(len(audio), dtype=np.float64)
     new_idx = np.linspace(0.0, len(audio) - 1, num=new_length, dtype=np.float64)
@@ -161,7 +154,6 @@ def apply_speed(
 
 def encode_wav(audio: np.ndarray, sample_rate: int) -> bytes:
     """Encode audio as a WAV file (16-bit PCM)."""
-    # Clamp to [-1, 1]
     audio = np.clip(audio, -1.0, 1.0)
     pcm = (audio * 32767.0).astype(np.int16)
     if pcm.ndim == 2:
@@ -177,13 +169,11 @@ def encode_wav(audio: np.ndarray, sample_rate: int) -> bytes:
     data_size = len(pcm_bytes)
 
     buf = io.BytesIO()
-    # RIFF header
     buf.write(b"RIFF")
     buf.write(struct.pack("<I", 36 + data_size))
     buf.write(b"WAVE")
-    # fmt chunk
     buf.write(b"fmt ")
-    buf.write(struct.pack("<I", 16))  # chunk size
+    buf.write(struct.pack("<I", 16))
     buf.write(
         struct.pack(
             "<HHIIHH",
@@ -195,7 +185,6 @@ def encode_wav(audio: np.ndarray, sample_rate: int) -> bytes:
             bits_per_sample,
         )
     )
-    # data chunk
     buf.write(b"data")
     buf.write(struct.pack("<I", data_size))
     buf.write(pcm_bytes)
@@ -251,7 +240,7 @@ def _encode_with_pyav(
 
     stream.layout = "mono"
 
-    # FFmpeg expects float-planar (fltp) format for these codecs
+    # note (Yue Yin): FFmpeg expects float-planar (fltp) format for these codecs
     frame = av.AudioFrame.from_ndarray(
         audio.reshape(1, -1), format="fltp", layout="mono"
     )
