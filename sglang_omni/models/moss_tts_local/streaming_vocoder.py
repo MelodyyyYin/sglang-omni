@@ -147,7 +147,7 @@ class _CodecStreamSession:
         with torch.no_grad():
             self._codec._set_streaming_exec_mask(exec_mask)
             result = self._codec._decode_frame(codes_step, codes_lengths)
-        # One batched D2H per step, active slots only.
+        # note (Yue Yin): one batched D2H per step, active slots only.
         slots = list(slot_codes)
         audio_cpu = result.audio[slots].detach().to("cpu", torch.float32)
         lengths_cpu = result.audio_lengths[slots].detach().to("cpu")
@@ -283,10 +283,6 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
                 self._session.close()
                 self._session = None
 
-    # ------------------------------------------------------------------
-    # Streaming hooks
-    # ------------------------------------------------------------------
-
     def is_streaming_payload(self, payload: StagePayload) -> bool:
         params = payload.request.params
         if not isinstance(params, dict):
@@ -322,7 +318,7 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
                 f"MOSS-TTS Local stream chunk must be a 1-D row with at least "
                 f"{n_vq + 1} channels (text + codes), got {tuple(row.shape)}"
             )
-        # Row layout matches output_rows: [text_token, code_0, ..., code_{n_vq-1}].
+        # note (Yue Yin): row layout matches output_rows: [text_token, code_0, ..., code_{n_vq-1}].
         state.pending.append(row[1 : 1 + n_vq])
         self._ensure_slot(state)
         self._pump_streams()
@@ -334,7 +330,7 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
 
         audio_parts: list[torch.Tensor] = []
         if state.slot is None and state.pending:
-            # Slot-starved: every frame is still buffered, decode offline.
+            # note (Yue Yin): slot-starved: every frame is still buffered, decode offline.
             codes = torch.stack(state.pending, dim=1)
             state.pending = []
             audio_parts.extend(
@@ -388,9 +384,6 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
         if state is not None and state.slot is not None and self._session is not None:
             self._session.release(state.slot)
 
-    # ------------------------------------------------------------------
-    # Streaming internals
-    # ------------------------------------------------------------------
 
     def _ensure_session(self) -> _CodecStreamSession:
         if self._session is None:
@@ -445,7 +438,7 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
             and params.get(INITIAL_CODEC_CHUNK_FRAMES_PARAM) is not None
         )
         if explicit:
-            # Explicit 0 opts out of a smaller first chunk.
+            # note (Yue Yin): explicit 0 opts out of a smaller first chunk.
             state.initial_chunk_frames = resolve_initial_codec_chunk_frames(
                 params,
                 steady_chunk_frames=self._stream_chunk_frames,
@@ -554,10 +547,6 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
             [codes], max_step_frames=self._max_step_frames
         )[0]
 
-    # ------------------------------------------------------------------
-    # Non-streaming path
-    # ------------------------------------------------------------------
-
     def _prepare_codes(
         self, payload: StagePayload
     ) -> tuple[MossTTSLocalState, torch.Tensor | None]:
@@ -566,7 +555,7 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
             raise RuntimeError("MOSS-TTS Local vocoder requires audio_codes")
         codes = torch.as_tensor(state.audio_codes, dtype=torch.long)
         if codes.numel() == 0:
-            # Emit no audio: only this request fails downstream, not the batch.
+            # note (Yue Yin): emit no audio: only this request fails downstream, not the batch.
             return state, None
         return state, codes
 
@@ -576,7 +565,7 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
         state: MossTTSLocalState,
         wav: torch.Tensor,
     ) -> StagePayload:
-        # The v2 codec is natively stereo: keep [channels, samples] end to end.
+        # note (Yue Yin): the v2 codec is natively stereo: keep [channels, samples] end to end.
         audio_payload = audio_waveform_payload(
             wav, source_hint=_SOURCE_HINT, keep_channels=True
         )
@@ -594,8 +583,7 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
     def _decode_codes_rows(self, codes_list: list[torch.Tensor]) -> list[torch.Tensor]:
         """Decode ``[T, >=n_vq]`` row tensors to fp32 CPU waveforms."""
         if self._session is None:
-            # Processor path opens its own streaming context; illegal once a
-            # session is live.
+            # note (Yue Yin): processor path opens its own streaming context; illegal once a session is live.
             return [
                 torch.as_tensor(wav).detach().to("cpu")
                 for wav in self._processor.decode_audio_codes(codes_list)
@@ -603,8 +591,7 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
         channels_first = [
             codes[:, : self._n_vq].transpose(0, 1).contiguous() for codes in codes_list
         ]
-        # abort() resets slots under _state_lock from other threads; serialize
-        # every session access on the same lock.
+        # note (Yue Yin): abort() resets slots under _state_lock from other threads; serialize every session access on the same lock.
         with self._state_lock:
             wavs = self._session.decode_offline(
                 channels_first, max_step_frames=self._max_step_frames

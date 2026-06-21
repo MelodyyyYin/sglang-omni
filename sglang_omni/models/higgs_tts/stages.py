@@ -49,8 +49,7 @@ from sglang_omni.models.higgs_tts.vocoder_scheduler import (
     HiggsStreamingVocoderScheduler,
 )
 
-# _REF_PATH_HASH_MEMO is the shared memo object, re-exported so tests can
-# reset it; the underscored alias keeps this module's historical API.
+# note (Yue Yin): _REF_PATH_HASH_MEMO is the shared memo object, re-exported so tests can reset it; the underscored alias keeps this module's historical API.
 from sglang_omni.preprocessing.cache_key import _REF_PATH_HASH_MEMO  # noqa: F401
 from sglang_omni.preprocessing.cache_key import hash_bytes, hash_media_item
 from sglang_omni.preprocessing.cache_key import (
@@ -74,15 +73,14 @@ from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleSched
 logger = logging.getLogger(__name__)
 
 
-# Codec runs at 75 Hz; chunked prefill of the multi-codebook prompt is unsafe
-# (sampler state machine has no rollback) so reject inputs past chunked_prefill_size.
+# note (Yue Yin): codec runs at 75 Hz; chunked prefill of the multi-codebook prompt is unsafe (sampler state machine has no rollback) so reject inputs past chunked_prefill_size.
 _MAX_REF_AUDIO_SEC = 100
 _REF_CODE_CACHE_MAX_ITEMS = 256
 _REF_CODE_CACHE_MAX_BYTES = 256 * 1024 * 1024
 _REF_WAVEFORM_CACHE_MAX_ITEMS = 256
 _REF_WAVEFORM_CACHE_MAX_BYTES = 512 * 1024 * 1024
 
-# Saturates near c=16 on H100/H200; higher client concurrency only queues.
+# note (Yue Yin): saturates near c=16 on H100/H200; higher client concurrency only queues.
 DEFAULT_MAX_CONCURRENCY = 16
 
 
@@ -174,7 +172,6 @@ def create_preprocessing_executor(
     raw = Tokenizer.from_file(os.path.join(checkpoint_dir, "tokenizer.json"))
     tokenizer = PreTrainedTokenizerFast(tokenizer_object=raw)
     adapter = HiggsTokenizerAdapter(tokenizer)
-    # Runs on a ThreadedSimpleScheduler pool for preprocessing;
     reference_waveform_cache = StageOutputCache(
         max_size=_REF_WAVEFORM_CACHE_MAX_ITEMS,
         max_bytes=_REF_WAVEFORM_CACHE_MAX_BYTES,
@@ -338,8 +335,7 @@ def create_audio_encoder_executor(
     codec.encode_reference(
         torch.zeros(codec.SAMPLE_RATE), sample_rate=codec.SAMPLE_RATE
     )
-    # Single-threaded SimpleScheduler stage, so no lock needed. Cache a CPU
-    # tensor (not list[list[int]]) so StageOutputCache can byte-bound it.
+    # note (Yue Yin): single-threaded SimpleScheduler stage so no lock needed; cache a CPU tensor (not list[list[int]]) so StageOutputCache can byte-bound it.
     reference_code_cache = StageOutputCache(
         max_size=_REF_CODE_CACHE_MAX_ITEMS,
         max_bytes=_REF_CODE_CACHE_MAX_BYTES,
@@ -419,9 +415,7 @@ def create_sglang_tts_engine_executor(
         "max_running_requests": DEFAULT_MAX_CONCURRENCY,
         "chunked_prefill_size": 8192,
         "dtype": "bfloat16",
-        # Radix cache is namespaced per ref-audio via Req.extra_key (set in
-        # build_sglang_higgs_request); shared -100 placeholder prefixes from
-        # different ref audios can't cross-contaminate the KV tree.
+        # note (Yue Yin): radix cache is namespaced per ref-audio via Req.extra_key; shared -100 placeholder prefixes from different ref audios can't cross-contaminate the KV tree.
     }
     if server_args_overrides:
         overrides.update(server_args_overrides)
