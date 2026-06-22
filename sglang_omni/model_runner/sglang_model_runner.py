@@ -114,6 +114,13 @@ class SGLModelRunner(ModelRunner):
         except Exception as exc:
             logger.warning("sglang-omni: skipping Ming-Omni registration (%s)", exc)
 
+        try:
+            from sglang_omni.models.stage_capabilities import log_capability_table
+
+            log_capability_table()
+        except Exception as exc:
+            logger.warning("sglang-omni: capability table log skipped (%s)", exc)
+
     def _profile_available_bytes(self, pre_model_load_memory: float) -> int:
         """Profile KV-cache headroom for colocated SGLang AR stages.
 
