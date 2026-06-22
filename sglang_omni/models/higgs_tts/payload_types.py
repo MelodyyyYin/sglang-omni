@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+
 @dataclass
 class HiggsTtsState:
     """Per-request state threaded through preprocessing → audio_encoder →
@@ -103,5 +104,6 @@ class HiggsTtsState:
             audio_samples=data.get("audio_samples"),
             sample_rate=data.get("sample_rate", 24000),
         )
+
 
 __all__ = ["HiggsTtsState"]

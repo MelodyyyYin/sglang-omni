@@ -25,6 +25,7 @@ from sglang_omni.scheduling.generation_batch_policy import (
 
 logger = logging.getLogger(__name__)
 
+
 def _compile_s2pro_codebook_decoder(model: Any, *, max_batch_size: int) -> None:
     """Compile Fast AR decoder layers while leaving sampling and loop control eager."""
     from sglang.srt.model_executor.cuda_graph_runner import set_torch_compile_config
@@ -53,11 +54,13 @@ def _compile_s2pro_codebook_decoder(model: Any, *, max_batch_size: int) -> None:
         max_batch_size,
     )
 
+
 def _resolve_s2pro_model_buffer_bs(model: Any) -> int:
     return min(
         int(model.vq_decode_max_batch_size),
         int(model._audio_decoder.kv_cache_max_batch_size),
     )
+
 
 def _resolve_checkpoint(checkpoint: str) -> str:
     if os.path.isdir(checkpoint):
@@ -65,6 +68,7 @@ def _resolve_checkpoint(checkpoint: str) -> str:
     from huggingface_hub import snapshot_download
 
     return snapshot_download(checkpoint)
+
 
 def _load_codec(checkpoint_dir: str, device: str):
     from hydra.utils import instantiate
@@ -87,12 +91,15 @@ def _load_codec(checkpoint_dir: str, device: str):
     codec.eval().to(device)
     return codec
 
+
 def load_state(payload: StagePayload) -> S2ProState:
     return S2ProState.from_dict(payload.data)
+
 
 def store_state(payload: StagePayload, state: S2ProState) -> StagePayload:
     payload.data = state.to_dict()
     return payload
+
 
 def create_preprocessing_executor(
     model_path: str,
@@ -201,6 +208,7 @@ def create_preprocessing_executor(
         return store_state(payload, state)
 
     return ThreadedSimpleScheduler(_preprocess, max_concurrency=max_concurrency)
+
 
 def create_sglang_tts_engine_executor(
     model_path: str,
@@ -329,6 +337,7 @@ def create_sglang_tts_engine_executor(
         max_new_tokens=max_new_tokens,
     )
     return scheduler
+
 
 def create_vocoder_executor(
     model_path: str,

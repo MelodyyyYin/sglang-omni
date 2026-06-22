@@ -17,6 +17,7 @@ from sglang_omni.models.tts_streaming import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 
+
 @dataclass
 class HiggsSGLangRequestData(SGLangARRequestData):
     """Per-request state for the Higgs TTS scheduler."""
@@ -30,14 +31,18 @@ class HiggsSGLangRequestData(SGLangARRequestData):
     engine_start_s: float = 0.0
     stream_metadata: dict[str, Any] | None = None
 
+
 class _ResettableHiggsModel(Protocol):
     def reset_request(self, req_id: str) -> None: ...
+
 
 _HiggsRequestBuilder = Callable[[StagePayload], HiggsSGLangRequestData]
 _HiggsResultAdapter = Callable[[HiggsSGLangRequestData], StagePayload]
 
+
 def _perf_counter() -> float:
     return time.perf_counter()
+
 
 def _ref_audio_fingerprint(codes: list[list[int]] | None) -> str | None:
     """Stable hash of the full N-codebook ref-audio sequence.
@@ -57,6 +62,7 @@ def _ref_audio_fingerprint(codes: list[list[int]] | None) -> str | None:
             buf[i + 1] = (c >> 8) & 0xFF
             i += 2
     return hashlib.blake2b(bytes(buf), digest_size=16).hexdigest()
+
 
 def build_sglang_higgs_request(
     state: HiggsTtsState, *, request_id: str = ""
@@ -100,6 +106,7 @@ def build_sglang_higgs_request(
         top_k=int(state.top_k) if state.top_k is not None else -1,
     )
 
+
 def build_higgs_stream_metadata(
     payload: StagePayload, data: HiggsSGLangRequestData
 ) -> dict[str, Any] | None:
@@ -130,6 +137,7 @@ def build_higgs_stream_metadata(
         ]
     return metadata
 
+
 def apply_higgs_result(state: HiggsTtsState, data: HiggsSGLangRequestData) -> None:
     if data.output_codes:
         codes = torch.stack(data.output_codes, dim=0).to(torch.long)
@@ -138,6 +146,7 @@ def apply_higgs_result(state: HiggsTtsState, data: HiggsSGLangRequestData) -> No
     else:
         state.output_codes_delayed = None
     state.prompt_tokens = len(data.input_ids)
+
 
 def make_higgs_scheduler_adapters(
     model: _ResettableHiggsModel,
@@ -179,6 +188,7 @@ def make_higgs_scheduler_adapters(
         )
 
     return request_builder, result_adapter
+
 
 __all__ = [
     "HiggsSGLangRequestData",

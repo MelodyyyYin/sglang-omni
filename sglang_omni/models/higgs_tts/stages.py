@@ -48,7 +48,6 @@ from sglang_omni.models.higgs_tts.utils import (
 from sglang_omni.models.higgs_tts.vocoder_scheduler import (
     HiggsStreamingVocoderScheduler,
 )
-
 from sglang_omni.preprocessing.cache_key import _REF_PATH_HASH_MEMO  # noqa: F401
 from sglang_omni.preprocessing.cache_key import hash_bytes, hash_media_item
 from sglang_omni.preprocessing.cache_key import (
@@ -82,6 +81,7 @@ _REF_CODE_CACHE_MAX_BYTES = 256 * 1024 * 1024
 _REF_WAVEFORM_CACHE_MAX_ITEMS = 256
 _REF_WAVEFORM_CACHE_MAX_BYTES = 512 * 1024 * 1024
 
+
 def _reference_audio_cache_key(reference_audio: Any) -> str | None:
     """Safe source key for preprocessing waveform-cache lookup."""
     if isinstance(reference_audio, (str, Path)):
@@ -102,6 +102,7 @@ def _reference_audio_cache_key(reference_audio: Any) -> str | None:
     raw = base64.b64decode(encoded) if isinstance(encoded, str) else bytes(encoded)
     return hash_media_item(raw)
 
+
 def _reference_code_cache_key_from_waveform(
     waveform: torch.Tensor, sample_rate: int
 ) -> str:
@@ -113,6 +114,7 @@ def _reference_code_cache_key_from_waveform(
     wav = waveform.detach().cpu().contiguous().float()
     meta = f"sr:{int(sample_rate)}|shape:{tuple(wav.shape)}"
     return f"waveform:{meta}:{hash_bytes(wav.numpy().tobytes())}"
+
 
 def _uploaded_voice_cache_key(
     reference_audio: Any,
@@ -132,6 +134,7 @@ def _uploaded_voice_cache_key(
         artifact_kind=artifact_kind,
     )
 
+
 def _state_uploaded_voice_cache_key(
     state: HiggsTtsState,
     *,
@@ -145,6 +148,7 @@ def _state_uploaded_voice_cache_key(
         voice_version=int(state.uploaded_voice_created_at),
         artifact_kind=artifact_kind,
     )
+
 
 def create_preprocessing_executor(
     model_path: str,
@@ -301,6 +305,7 @@ def create_preprocessing_executor(
 
     return ThreadedSimpleScheduler(_preprocess, max_concurrency=max_concurrency)
 
+
 def create_audio_encoder_executor(
     model_path: str,
     *,
@@ -379,6 +384,7 @@ def create_audio_encoder_executor(
         return payload
 
     return SimpleScheduler(_encode)
+
 
 def create_sglang_tts_engine_executor(
     model_path: str,
@@ -463,6 +469,7 @@ def create_sglang_tts_engine_executor(
     model_runner.set_stream_outbox(scheduler.outbox)
     return scheduler
 
+
 def create_vocoder_executor(
     model_path: str,
     *,
@@ -491,6 +498,7 @@ def create_vocoder_executor(
         stream_overlap_tokens=stream_overlap_tokens,
         stream_holdback_tokens=stream_holdback_tokens,
     )
+
 
 __all__ = [
     "create_audio_encoder_executor",

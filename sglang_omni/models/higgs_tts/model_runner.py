@@ -25,6 +25,7 @@ from sglang_omni.scheduling.messages import OutgoingMessage
 
 logger = logging.getLogger(__name__)
 
+
 class HiggsTTSModelRunner(ModelRunner):
     """ModelRunner for :class:`HiggsTTSModel`."""
 
@@ -387,5 +388,6 @@ class HiggsTTSModelRunner(ModelRunner):
                 metadata=metadata,
             )
         )
+
 
 __all__ = ["HiggsTTSModelRunner"]
