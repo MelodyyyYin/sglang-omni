@@ -6,7 +6,6 @@ import numpy as np
 
 from sglang_omni.scheduling.speaker_cache import SpeakerArtifactCache, SpeakerCacheKey
 
-
 def test_speaker_cache_tracks_hits_misses_and_voice_invalidation() -> None:
     cache = SpeakerArtifactCache(max_bytes=1024)
     key = SpeakerCacheKey(
@@ -31,7 +30,6 @@ def test_speaker_cache_tracks_hits_misses_and_voice_invalidation() -> None:
 
     cache.clear_voice("SPEAKER-A")
     assert cache.stats()["delete_invalidation_counter"] == 1
-
 
 def test_speaker_cache_evicts_oldest_entry_under_memory_pressure() -> None:
     cache = SpeakerArtifactCache(max_bytes=64)

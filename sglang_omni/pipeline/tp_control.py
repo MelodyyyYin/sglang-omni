@@ -29,14 +29,12 @@ logger = logging.getLogger(__name__)
 
 _WORK_POLL_SECONDS = 0.1
 
-
 @dataclass
 class TPWorkMessage:
     """Payload replicated from the TP leader to follower schedulers."""
 
     request_id: str
     data: Any
-
 
 class TPLeaderFanout:
     """Broadcast leader-owned stage events to TP followers."""
@@ -109,7 +107,6 @@ class TPLeaderFanout:
         self._follower_work_queues.clear()
         self._follower_abort_queues.clear()
         self._follower_admin_result_queues.clear()
-
 
 class TPFollowerControlPlane:
     """Follower-side control plane backed by multiprocessing queues."""

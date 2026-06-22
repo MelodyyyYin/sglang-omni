@@ -10,7 +10,6 @@ from urllib.parse import urlparse
 
 _M = TypeVar("_M")
 
-
 def _is_url(path: str | Path) -> bool:
     """Check if a string is a URL (HTTP, data, or file URL).
 
@@ -20,7 +19,6 @@ def _is_url(path: str | Path) -> bool:
         return False
     parsed = urlparse(path)
     return bool(parsed.scheme and parsed.scheme in ("http", "https", "data", "file"))
-
 
 class MediaIO(ABC, Generic[_M]):
     """Base class for media I/O operations.

@@ -63,7 +63,6 @@ VOICE_UPLOAD_EXTENSION_MIME_TYPES = {
     ".webm": "audio/webm",
 }
 
-
 @dataclass(frozen=True)
 class UploadedVoice:
     """Persisted uploaded voice metadata."""
@@ -115,14 +114,12 @@ class UploadedVoice:
             metadata["speaker_description"] = self.speaker_description
         return metadata
 
-
 @dataclass(frozen=True)
 class UploadedVoiceReference:
     """Reference audio resolved from an uploaded voice."""
 
     voice: UploadedVoice
     ref_audio: str
-
 
 class SpeakerSampleStore:
     """Persistent uploaded voice registry backed by one safetensors file per voice."""
@@ -351,7 +348,6 @@ class SpeakerSampleStore:
             ) from exc
         return samples, voice.sample_rate
 
-
 def normalize_voice_name(name: str) -> str:
     if not isinstance(name, str):
         raise bad_request("name must be a string", param="name")
@@ -365,7 +361,6 @@ def normalize_voice_name(name: str) -> str:
         )
     return value.lower()
 
-
 def _resolve_speaker_root(root_dir: str | Path | None) -> Path:
     if root_dir is not None:
         return Path(root_dir).expanduser().resolve()
@@ -373,7 +368,6 @@ def _resolve_speaker_root(root_dir: str | Path | None) -> Path:
     if env_root:
         return Path(env_root).expanduser().resolve()
     return DEFAULT_SPEAKER_SAMPLES_DIR
-
 
 def _speaker_max_uploaded_from_env() -> int:
     value = os.environ.get("SPEAKER_MAX_UPLOADED")
@@ -385,7 +379,6 @@ def _speaker_max_uploaded_from_env() -> int:
         logger.warning("Invalid SPEAKER_MAX_UPLOADED=%r; using default", value)
         return DEFAULT_SPEAKER_MAX_UPLOADED
 
-
 def _normalize_required_text(value: str, param: str) -> str:
     if not isinstance(value, str):
         raise bad_request(f"{param} must be a string", param=param)
@@ -394,13 +387,11 @@ def _normalize_required_text(value: str, param: str) -> str:
         raise bad_request(f"{param} must be non-empty", param=param)
     return normalized
 
-
 def _normalize_optional_text(value: str | None) -> str | None:
     if value is None:
         return None
     normalized = value.strip()
     return normalized or None
-
 
 def _resolve_upload_mime_type(filename: str | None, content_type: str | None) -> str:
     content_type = (content_type or "").split(";", 1)[0].strip().lower()
@@ -417,7 +408,6 @@ def _resolve_upload_mime_type(filename: str | None, content_type: str | None) ->
         )
     return mime_type
 
-
 def _decode_reference_audio(audio_bytes: bytes) -> tuple[np.ndarray, int]:
     try:
         from sglang_omni.preprocessing.audio import AudioMediaIO
@@ -432,7 +422,6 @@ def _decode_reference_audio(audio_bytes: bytes) -> tuple[np.ndarray, int]:
             param="audio_sample",
         ) from exc
     return np.asarray(samples, dtype=np.float32), int(sample_rate)
-
 
 def _validate_reference_audio(samples: np.ndarray, sample_rate: int) -> None:
     if sample_rate <= 0 or samples.ndim != 1 or samples.size == 0:
@@ -454,7 +443,6 @@ def _validate_reference_audio(samples: np.ndarray, sample_rate: int) -> None:
             param="audio_sample",
         )
 
-
 def _voice_data_url_cache_key(voice: UploadedVoice) -> SpeakerCacheKey:
     return SpeakerCacheKey(
         model_type="serve",
@@ -462,7 +450,6 @@ def _voice_data_url_cache_key(voice: UploadedVoice) -> SpeakerCacheKey:
         voice_version=voice.created_at,
         artifact_kind="wav_data_url",
     )
-
 
 def _write_voice_temp_file(
     directory: Path,
@@ -493,13 +480,11 @@ def _write_voice_temp_file(
         tmp_path.unlink(missing_ok=True)
         raise internal_error("Failed to save uploaded voice") from exc
 
-
 def _replace_voice_file(temp_path: Path, path: Path) -> None:
     try:
         os.replace(temp_path, path)
     except OSError as exc:
         raise internal_error("Failed to save uploaded voice") from exc
-
 
 def _safetensors_safe_open() -> Any:
     try:
@@ -508,7 +493,6 @@ def _safetensors_safe_open() -> Any:
         raise internal_error("safetensors is required for uploaded voices") from exc
     return safe_open
 
-
 def _safetensors_load_file() -> Any:
     try:
         from safetensors.numpy import load_file
@@ -516,14 +500,12 @@ def _safetensors_load_file() -> Any:
         raise internal_error("safetensors is required for uploaded voices") from exc
     return load_file
 
-
 def _safetensors_save_file() -> Any:
     try:
         from safetensors.numpy import save_file
     except ImportError as exc:
         raise internal_error("safetensors is required for uploaded voices") from exc
     return save_file
-
 
 def _voice_from_metadata(metadata: dict[str, str], path: Path) -> UploadedVoice:
     normalized_name = metadata.get("normalized_name") or metadata.get(

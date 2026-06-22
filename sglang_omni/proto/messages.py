@@ -7,7 +7,6 @@ from typing import Any
 from sglang_omni.proto.admin import AdminOperation, AdminResult
 from sglang_omni.proto.request import StagePayload
 
-
 @dataclass
 class DataReadyMessage:
     """Notify next stage that data is ready.
@@ -21,26 +20,21 @@ class DataReadyMessage:
     request_id: str
     from_stage: str
     to_stage: str
-    shm_metadata: Any  # Can be dict, SHMMetadata, or RdmaMetadata
+    shm_metadata: Any
     chunk_id: int | None = None
     is_done: bool = False
     error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        # Handle different metadata types
         if isinstance(self.shm_metadata, dict):
-            # Simple dict (current NixlRelay format)
             metadata_dict = self.shm_metadata.copy()
-            metadata_dict["_type"] = "dict"  # Mark as simple dict
+            metadata_dict["_type"] = "dict"
         elif hasattr(self.shm_metadata, "to_dict"):
-            # SHMMetadata
             metadata_dict = self.shm_metadata.to_dict()
         elif hasattr(self.shm_metadata, "model_dump"):
-            # RdmaMetadata (Pydantic BaseModel)
             metadata_dict = self.shm_metadata.model_dump()
-            metadata_dict["_type"] = "RdmaMetadata"  # Mark as RdmaMetadata
+            metadata_dict["_type"] = "RdmaMetadata"
         else:
-            # Fallback: try to convert to dict
             metadata_dict = (
                 dict(self.shm_metadata)
                 if hasattr(self.shm_metadata, "__dict__")
@@ -66,15 +60,11 @@ class DataReadyMessage:
     def from_dict(cls, d: dict[str, Any]) -> "DataReadyMessage":
         metadata_dict = d["shm_metadata"]
 
-        # Determine metadata type based on _type field first
         metadata_type = metadata_dict.get("_type", "")
 
         if metadata_type == "dict" or "transfer_info" in metadata_dict:
-            # Simple dict format (current NixlRelay design)
-            # Remove _type marker if present
             metadata = {k: v for k, v in metadata_dict.items() if k != "_type"}
         elif metadata_type == "RdmaMetadata":
-            # Try to import RdmaMetadata if available
             try:
                 from sglang_omni.relay.operations.nixl import RdmaMetadata
 
@@ -85,19 +75,15 @@ class DataReadyMessage:
                 }
                 metadata = RdmaMetadata(**clean_dict)
             except (ImportError, Exception):
-                # Fallback to dict if RdmaMetadata not available
                 metadata = {k: v for k, v in metadata_dict.items() if k != "_type"}
         elif metadata_type == "SHMMetadata" or "shm_segments" in metadata_dict:
-            # Try to import SHMMetadata if available
             try:
                 from sglang_omni.relay.nixl import SHMMetadata
 
                 metadata = SHMMetadata.from_dict(metadata_dict)
             except (ImportError, Exception):
-                # Fallback to dict if SHMMetadata not available
                 metadata = {k: v for k, v in metadata_dict.items() if k != "_type"}
         elif "descriptors" in metadata_dict:
-            # Has descriptors but no _type - try RdmaMetadata first, fallback to dict
             try:
                 from sglang_omni.relay.operations.nixl import RdmaMetadata
 
@@ -108,10 +94,8 @@ class DataReadyMessage:
                 }
                 metadata = RdmaMetadata(**clean_dict)
             except (ImportError, Exception):
-                # Fallback to dict
                 metadata = {k: v for k, v in metadata_dict.items() if k != "_type"}
         else:
-            # Default: use as dict (for current NixlRelay)
             metadata = {k: v for k, v in metadata_dict.items() if k != "_type"}
 
         return cls(
@@ -123,7 +107,6 @@ class DataReadyMessage:
             is_done=d.get("is_done", False),
             error=d.get("error"),
         )
-
 
 @dataclass
 class AbortMessage:
@@ -137,7 +120,6 @@ class AbortMessage:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "AbortMessage":
         return cls(request_id=d["request_id"])
-
 
 @dataclass
 class CompleteMessage:
@@ -168,7 +150,6 @@ class CompleteMessage:
             result=d.get("result"),
             error=d.get("error"),
         )
-
 
 @dataclass
 class StreamMessage:
@@ -208,7 +189,6 @@ class StreamMessage:
             chunk_id=d.get("chunk_id"),
         )
 
-
 @dataclass
 class SubmitMessage:
     """Submit a new request to the entry stage."""
@@ -229,7 +209,6 @@ class SubmitMessage:
             data = StagePayload.from_dict(data)
         return cls(request_id=d["request_id"], data=data)
 
-
 @dataclass
 class ShutdownMessage:
     """Signal graceful shutdown to a stage."""
@@ -241,15 +220,14 @@ class ShutdownMessage:
     def from_dict(cls, d: dict[str, Any]) -> "ShutdownMessage":
         return cls()
 
-
 @dataclass
 class ProfilerStartMessage:
     """Profiler start for a stage."""
 
     run_id: str
-    trace_path_template: str  # e.g. "/tmp/profiles/{run_id}/{stage}/trace"
-    event_dir: str | None = None  # Per-stage JSONL event sink dir for request profiling
-    enable_torch: bool = True  # When False, only request-level events are captured
+    trace_path_template: str
+    event_dir: str | None = None
+    enable_torch: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -269,7 +247,6 @@ class ProfilerStartMessage:
             enable_torch=bool(d.get("enable_torch", True)),
         )
 
-
 @dataclass
 class ProfilerStopMessage:
     """Profiler stop. ``run_id=None`` is a wildcard (stop active session)."""
@@ -282,7 +259,6 @@ class ProfilerStopMessage:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "ProfilerStopMessage":
         return cls(run_id=d.get("run_id"))
-
 
 @dataclass
 class AdminMessage:
@@ -297,7 +273,6 @@ class AdminMessage:
     def from_dict(cls, d: dict[str, Any]) -> "AdminMessage":
         return cls(operation=AdminOperation.from_dict(d["operation"]))
 
-
 @dataclass
 class AdminResultMessage:
     """Return an administrative result to the coordinator."""
@@ -310,7 +285,6 @@ class AdminResultMessage:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "AdminResultMessage":
         return cls(result=AdminResult.from_dict(d["result"]))
-
 
 def parse_message(
     d: dict[str, Any],

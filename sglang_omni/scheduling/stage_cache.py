@@ -8,12 +8,10 @@ from typing import Any
 
 import torch
 
-
 @dataclass
 class _CacheEntry:
     data: Any
     size_bytes: int
-
 
 def _detach_value(value: Any, *, device: torch.device | None) -> Any:
     if isinstance(value, torch.Tensor):
@@ -27,7 +25,6 @@ def _detach_value(value: Any, *, device: torch.device | None) -> Any:
         return type(value)(_detach_value(item, device=device) for item in value)
     return value
 
-
 def _value_size_bytes(value: Any) -> int:
     if isinstance(value, torch.Tensor):
         return int(value.numel() * value.element_size())
@@ -36,7 +33,6 @@ def _value_size_bytes(value: Any) -> int:
     if isinstance(value, (list, tuple)):
         return sum(_value_size_bytes(item) for item in value)
     return 0
-
 
 class StageOutputCache:
     """Small in-memory LRU cache for non-AR stage outputs."""

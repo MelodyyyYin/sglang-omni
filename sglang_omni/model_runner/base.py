@@ -25,7 +25,6 @@ from sglang_omni.scheduling.types import (
 
 logger = logging.getLogger(__name__)
 
-
 def _current_sglang_sampling_backend() -> str | None:
     try:
         from sglang.srt.server_args import get_global_server_args
@@ -33,7 +32,6 @@ def _current_sglang_sampling_backend() -> str | None:
         return get_global_server_args().sampling_backend
     except ValueError:
         return None
-
 
 def _rank_shared_unseeded_sampling_seed(request: Any, row_idx: int) -> int:
     request_id = getattr(request, "request_id", None)
@@ -45,7 +43,6 @@ def _rank_shared_unseeded_sampling_seed(request: Any, row_idx: int) -> int:
     if request_id is None:
         request_id = f"row-{row_idx}"
     return derive_sampling_seed("sglang-omni-unseeded-row", request_id)
-
 
 @dataclass
 class _PendingStep:
@@ -66,15 +63,14 @@ class _PendingStep:
     launch(N+1) writes the other (design.md section 1.4).
     """
 
-    event: Any  # torch.cuda.Event, recorded after post_decode_launch publishes
-    launch_buf: Any  # post_decode_launch return: device snapshot or host staging
-    scheduler_output: Any  # this step's SchedulerOutput (routing + output proc)
-    forward_batch: Any  # for resolve-time finalize sampling
-    schedule_batch: Any  # to set .output_ids during resolve
-    model_worker_batch: Any  # for the prefill-only finalize branch (unused in decode)
-    batch_result: Any  # carries logits_output (device of next_token_ids)
-    n_real: int  # number of real (non-padding) rows this step
-
+    event: Any
+    launch_buf: Any
+    scheduler_output: Any
+    forward_batch: Any
+    schedule_batch: Any
+    model_worker_batch: Any
+    batch_result: Any
+    n_real: int
 
 class ModelRunner:
     """Base AR model runner.
@@ -90,15 +86,9 @@ class ModelRunner:
         self.device = torch.device(f"cuda:{tp_worker.gpu_id}")
         self.model = tp_worker.model_runner.model
 
-        # Async decode (one-step lookahead). Inert unless ``_async_enabled`` is set.
         self._async_enabled: bool = False
         self._staging_slot: int = 0
         self._host_staging_buffers: list[torch.Tensor] = []
-        # Observability: how often resolve found the launched step's event
-        # already done (no blocking) vs had to block on synchronize(). This
-        # counts whether the launched step's GPU work was published in time; it
-        # does NOT measure host-D2H overlap (only host-staging runners like Higgs
-        # overlap a host copy; the device-snapshot path does not).
         self._async_query_hit: int = 0
         self._async_query_miss: int = 0
 
@@ -192,16 +182,9 @@ class ModelRunner:
         launch_buf = self.post_decode_launch(
             batch_result, forward_batch, scheduler_output.requests
         )
-        # Publish this step's output token ids now (post_decode_launch set them
-        # from GPU state without a host sync) so the NEXT decode step's
-        # get_next_batch_to_run / prepare_for_decode can build its input_ids;
-        # under lookahead the host collect (resolve) lags by one step.
         if batch_result.next_token_ids is not None:
             schedule_batch.output_ids = batch_result.next_token_ids
         event = torch.cuda.Event()
-        # Recorded after post_decode_launch publishes this step, so
-        # event.query()==True means the launched step's GPU work is done and
-        # launch_buf is ready (design.md section 3).
         event.record()
         return _PendingStep(
             event=event,
@@ -231,8 +214,6 @@ class ModelRunner:
         else:
             pending.event.synchronize()
             self._async_query_miss += 1
-        # Skip reqs finished or retracted in a prior (lagged) step so _finalize
-        # neither re-emits nor re-frees their KV (mirrors _resolve_and_process).
         skip_rids = {
             req.request_id
             for req in pending.scheduler_output.requests
@@ -432,10 +413,6 @@ class ModelRunner:
             can_run_cuda_graph=bool(batch_result.can_run_cuda_graph),
         )
 
-    # ------------------------------------------------------------------
-    # Hooks — override in subclasses
-    # ------------------------------------------------------------------
-
     def before_prefill(
         self, forward_batch: Any, schedule_batch: Any, requests: list
     ) -> None:
@@ -558,10 +535,6 @@ class ModelRunner:
     ) -> Any | None:
         return None
 
-    # ------------------------------------------------------------------
-    # Shared logit processing
-    # ------------------------------------------------------------------
-
     def _sample_next_token_ids(
         self,
         logits_output: Any,
@@ -623,7 +596,7 @@ class ModelRunner:
             if seed is None:
                 seed = _rank_shared_unseeded_sampling_seed(request, row_idx)
             elif not (0 <= seed <= SAMPLING_SEED_MASK):
-                seed = resolve_row_seed(seed)  # mask and cache user seed
+                seed = resolve_row_seed(seed)
                 sp.sampling_seed = seed
             row_seeds.append(seed)
         sampling_info.sampling_seed = torch.tensor(

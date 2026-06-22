@@ -16,7 +16,6 @@ from sglang_omni.serve.protocol import CreateSpeechRequest
 from sglang_omni.serve.speech_errors import SpeechAPIError
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 
-
 class _MockHTTPConnection:
     def __init__(self, handler) -> None:
         self.client = httpx.Client(transport=httpx.MockTransport(handler))
@@ -24,11 +23,9 @@ class _MockHTTPConnection:
     def get_sync_client(self) -> httpx.Client:
         return self.client
 
-
 def _public_test_addresses(hostname: str) -> tuple[ipaddress.IPv4Address, ...]:
     del hostname
     return (ipaddress.ip_address("93.184.216.34"),)
-
 
 def test_speech_service_rejects_non_string_input() -> None:
     service = SpeechRequestValidator(default_model="tts")
@@ -38,7 +35,6 @@ def test_speech_service_rejects_non_string_input() -> None:
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.param == "input"
-
 
 @pytest.mark.parametrize("response_format", ["wav", "mp3", "flac", "aac", "opus"])
 def test_speech_service_requires_pcm_for_http_streaming(
@@ -54,7 +50,6 @@ def test_speech_service_requires_pcm_for_http_streaming(
     assert exc_info.value.status_code == 400
     assert exc_info.value.param == "response_format"
     assert "stream=true" in exc_info.value.message
-
 
 def test_speech_service_reports_missing_encoder_dependency_as_capability_error(
     monkeypatch: pytest.MonkeyPatch,
@@ -77,7 +72,6 @@ def test_speech_service_reports_missing_encoder_dependency_as_capability_error(
     assert exc_info.value.status_code == 503
     assert exc_info.value.error_type == "server_error"
     assert exc_info.value.param == "response_format"
-
 
 def test_speech_service_accepts_pyav_compressed_encoder_without_pydub(
     monkeypatch: pytest.MonkeyPatch,
@@ -102,7 +96,6 @@ def test_speech_service_accepts_pyav_compressed_encoder_without_pydub(
 
     assert request.response_format == "mp3"
 
-
 def test_speech_service_rejects_boolean_seed() -> None:
     service = SpeechRequestValidator(default_model="tts")
 
@@ -111,7 +104,6 @@ def test_speech_service_rejects_boolean_seed() -> None:
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.param == "seed"
-
 
 @pytest.mark.parametrize(
     ("payload", "expected_param"),
@@ -139,7 +131,6 @@ def test_speech_service_rejects_invalid_boundary_values(
     assert exc_info.value.status_code == 400
     assert exc_info.value.param == expected_param
 
-
 @pytest.mark.parametrize(
     ("field_name", "value"),
     [
@@ -159,7 +150,6 @@ def test_speech_service_rejects_invalid_duration_field_types(
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.param == field_name
-
 
 def test_speech_service_normalizes_tts_extension_fields_into_tts_params() -> None:
     service = SpeechRequestValidator(default_model="tts")
@@ -192,7 +182,6 @@ def test_speech_service_normalizes_tts_extension_fields_into_tts_params() -> Non
     assert gen_req.sampling.max_new_tokens == 128
     assert tts_params["explicit_generation_params"] == ["max_new_tokens"]
 
-
 def test_file_reference_requires_allowlist() -> None:
     service = SpeechRequestValidator(default_model="tts")
 
@@ -203,7 +192,6 @@ def test_file_reference_requires_allowlist() -> None:
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.param == "ref_audio"
-
 
 @pytest.mark.parametrize(
     ("ref_audio", "expected_param"),
@@ -225,7 +213,6 @@ def test_reference_audio_rejects_unsupported_sources(
     assert exc_info.value.status_code == 400
     assert exc_info.value.param == expected_param
 
-
 def test_reference_audio_accepts_valid_base64_data_url() -> None:
     service = SpeechRequestValidator(default_model="tts")
     encoded = base64.b64encode(b"RIFF").decode("ascii")
@@ -241,7 +228,6 @@ def test_reference_audio_accepts_valid_base64_data_url() -> None:
         "text": "hello",
         "references": [{"data": encoded, "media_type": "audio/wav"}],
     }
-
 
 def test_reference_audio_accepts_allowed_https(
     monkeypatch: pytest.MonkeyPatch,
@@ -279,7 +265,6 @@ def test_reference_audio_accepts_allowed_https(
         "references": [{"data": encoded, "media_type": "audio/wav"}],
     }
 
-
 def test_reference_audio_accepts_public_https_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -303,7 +288,6 @@ def test_reference_audio_accepts_public_https_by_default(
 
     assert request.ref_audio == "data:audio/wav;base64,UklGRg=="
 
-
 def test_reference_audio_accepts_local_path_by_default(tmp_path: Path) -> None:
     ref_audio = tmp_path / "reference.wav"
     ref_audio.write_bytes(b"RIFF")
@@ -325,7 +309,6 @@ def test_reference_audio_accepts_local_path_by_default(tmp_path: Path) -> None:
             {"audio_path": str(ref_audio.resolve()), "text": "reference text"}
         ],
     }
-
 
 def test_reference_audio_accepts_relative_local_path_by_default(
     tmp_path: Path,
@@ -360,7 +343,6 @@ def test_reference_audio_accepts_relative_local_path_by_default(
         ],
     }
 
-
 def test_reference_audio_rejects_http_status_with_speech_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -388,7 +370,6 @@ def test_reference_audio_rejects_http_status_with_speech_error(
     assert exc_info.value.param == "ref_audio"
     assert "HTTP 404" in exc_info.value.message
 
-
 def test_reference_audio_honors_allowed_media_domains() -> None:
     service = SpeechRequestValidator(
         default_model="tts",
@@ -402,7 +383,6 @@ def test_reference_audio_honors_allowed_media_domains() -> None:
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.param == "ref_audio"
-
 
 def test_reference_audio_rejects_private_remote_addresses() -> None:
     service = SpeechRequestValidator(
@@ -418,7 +398,6 @@ def test_reference_audio_rejects_private_remote_addresses() -> None:
     assert exc_info.value.status_code == 400
     assert exc_info.value.param == "ref_audio"
     assert "loopback" in exc_info.value.message
-
 
 def test_reference_audio_revalidates_redirect_domains(
     monkeypatch: pytest.MonkeyPatch,
@@ -446,7 +425,6 @@ def test_reference_audio_revalidates_redirect_domains(
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.param == "ref_audio"
-
 
 def test_reference_audio_allows_configured_domain_suffix_redirect(
     monkeypatch: pytest.MonkeyPatch,
@@ -481,7 +459,6 @@ def test_reference_audio_allows_configured_domain_suffix_redirect(
 
     assert request.ref_audio is not None
     assert request.ref_audio.startswith("data:audio/wav;base64,")
-
 
 def test_reference_audio_revalidates_redirect_addresses(
     monkeypatch: pytest.MonkeyPatch,
@@ -518,7 +495,6 @@ def test_reference_audio_revalidates_redirect_addresses(
     assert exc_info.value.param == "ref_audio"
     assert "private" in exc_info.value.message
 
-
 def test_reference_audio_rejects_oversized_https_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -548,7 +524,6 @@ def test_reference_audio_rejects_oversized_https_response(
     assert exc_info.value.status_code == 400
     assert exc_info.value.param == "ref_audio"
 
-
 def test_reference_audio_rejects_oversized_data_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -564,7 +539,6 @@ def test_reference_audio_rejects_oversized_data_url(
     assert exc_info.value.status_code == 400
     assert exc_info.value.param == "ref_audio"
 
-
 def test_speech_service_rejects_oversized_input(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -576,7 +550,6 @@ def test_speech_service_rejects_oversized_input(
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.param == "input"
-
 
 def test_reference_list_accepts_raw_local_path(tmp_path: Path) -> None:
     audio_path = tmp_path / "reference.wav"
@@ -596,7 +569,6 @@ def test_reference_list_accepts_raw_local_path(tmp_path: Path) -> None:
         "references": [{"audio_path": str(audio_path.resolve())}],
     }
 
-
 def test_reference_list_rejects_invalid_base64_data_url() -> None:
     service = SpeechRequestValidator(default_model="tts")
 
@@ -610,7 +582,6 @@ def test_reference_list_rejects_invalid_base64_data_url() -> None:
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.param == "references.audio_path"
-
 
 @pytest.mark.parametrize("field_name", ["audio_path", "ref_audio", "audio"])
 def test_reference_list_canonicalizes_audio_aliases(
@@ -636,7 +607,6 @@ def test_reference_list_canonicalizes_audio_aliases(
         "references": [{"audio_path": str(audio_path.resolve()), "text": "reference"}],
     }
 
-
 def test_reference_list_canonicalizes_data_url() -> None:
     service = SpeechRequestValidator(default_model="tts")
     encoded = base64.b64encode(b"RIFF").decode("ascii")
@@ -661,7 +631,6 @@ def test_reference_list_canonicalizes_data_url() -> None:
         ],
     }
 
-
 def test_allowed_local_media_path_must_be_directory(tmp_path: Path) -> None:
     missing = tmp_path / "missing"
 
@@ -669,7 +638,6 @@ def test_allowed_local_media_path_must_be_directory(tmp_path: Path) -> None:
         ValueError, match="allowed local media path must be a directory"
     ):
         SpeechRequestValidator(default_model="tts", allowed_local_media_path=missing)
-
 
 def test_file_reference_resolves_inside_allowlist(tmp_path: Path) -> None:
     audio_path = tmp_path / "reference.wav"
@@ -693,7 +661,6 @@ def test_file_reference_resolves_inside_allowlist(tmp_path: Path) -> None:
     prepared_again = service.prepare_request(request)
     assert prepared_again.ref_audio == str(audio_path.resolve())
 
-
 def test_relative_file_reference_resolves_inside_allowlist(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -709,7 +676,6 @@ def test_relative_file_reference_resolves_inside_allowlist(
 
     assert request.ref_audio == str(audio_path.resolve())
 
-
 def test_file_reference_accepts_localhost_file_url(tmp_path: Path) -> None:
     audio_path = tmp_path / "reference.wav"
     audio_path.write_bytes(b"RIFF")
@@ -724,7 +690,6 @@ def test_file_reference_accepts_localhost_file_url(tmp_path: Path) -> None:
 
     assert request.ref_audio == str(audio_path.resolve())
 
-
 def test_file_reference_rejects_remote_file_netloc(tmp_path: Path) -> None:
     service = SpeechRequestValidator(
         default_model="tts",
@@ -738,7 +703,6 @@ def test_file_reference_rejects_remote_file_netloc(tmp_path: Path) -> None:
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.param == "ref_audio"
-
 
 def test_file_reference_rejects_oversized_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -757,7 +721,6 @@ def test_file_reference_rejects_oversized_file(
     assert exc_info.value.status_code == 400
     assert exc_info.value.param == "ref_audio"
 
-
 def test_file_reference_rejects_missing_file_inside_allowlist(tmp_path: Path) -> None:
     service = SpeechRequestValidator(
         default_model="tts",
@@ -770,7 +733,6 @@ def test_file_reference_rejects_missing_file_inside_allowlist(tmp_path: Path) ->
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.param == "ref_audio"
-
 
 def test_file_reference_rejects_directory_inside_allowlist(tmp_path: Path) -> None:
     audio_dir = tmp_path / "reference-dir"
@@ -785,7 +747,6 @@ def test_file_reference_rejects_directory_inside_allowlist(tmp_path: Path) -> No
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.param == "ref_audio"
-
 
 def test_file_reference_rejects_symlink_escape(tmp_path: Path) -> None:
     allowed = tmp_path / "allowed"

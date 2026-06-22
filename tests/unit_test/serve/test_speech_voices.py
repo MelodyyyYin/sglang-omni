@@ -18,7 +18,6 @@ from sglang_omni.serve.speech_errors import SpeechAPIError
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 from sglang_omni.serve.speech_voices import SpeakerSampleStore
 
-
 class RecordingSpeechClient:
     def __init__(self) -> None:
         self.requests: list[Any] = []
@@ -35,7 +34,6 @@ class RecordingSpeechClient:
             mime_type="audio/wav",
             format="wav",
         )
-
 
 @pytest.mark.asyncio
 async def test_voice_upload_body_limit_rejects_before_endpoint() -> None:
@@ -63,7 +61,6 @@ async def test_voice_upload_body_limit_rejects_before_endpoint() -> None:
     )
 
     assert messages[0]["status"] == 413
-
 
 @pytest.mark.asyncio
 async def test_voice_upload_body_limit_rejects_chunked_body() -> None:
@@ -100,7 +97,6 @@ async def test_voice_upload_body_limit_rejects_chunked_body() -> None:
     )
 
     assert messages[0]["status"] == 413
-
 
 def test_voice_routes_upload_list_use_and_delete(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("SPEAKER_SAMPLES_DIR", str(tmp_path))
@@ -156,7 +152,6 @@ def test_voice_routes_upload_list_use_and_delete(tmp_path: Path, monkeypatch) ->
         "error": "Voice 'Narrator_01' not found",
     }
 
-
 def test_voice_store_restores_overwrites_and_invalidates_cache(tmp_path: Path) -> None:
     cache = SpeakerArtifactCache()
     store = SpeakerSampleStore(root_dir=tmp_path, max_uploaded=2, cache=cache)
@@ -193,7 +188,6 @@ def test_voice_store_restores_overwrites_and_invalidates_cache(tmp_path: Path) -
             "ref_text": "new transcript",
         }
     ]
-
 
 def test_voice_store_enforces_upload_contracts(tmp_path: Path) -> None:
     store = SpeakerSampleStore(root_dir=tmp_path, max_uploaded=1)
@@ -283,7 +277,6 @@ def test_voice_store_enforces_upload_contracts(tmp_path: Path) -> None:
     ]
     assert list(tmp_path.glob("*.tmp")) == []
 
-
 def test_voice_store_restore_preserves_max_uploaded_cap(tmp_path: Path) -> None:
     store = SpeakerSampleStore(root_dir=tmp_path, max_uploaded=2)
     first = store.upload(
@@ -307,7 +300,6 @@ def test_voice_store_restore_preserves_max_uploaded_cap(tmp_path: Path) -> None:
     assert [voice["name"] for voice in voices] == ["newer"]
     assert voices[0]["created_at"] == second["created_at"]
     assert second["created_at"] > first["created_at"]
-
 
 def test_voice_store_restore_keeps_newest_duplicate_normalized_name(
     tmp_path: Path,
@@ -345,7 +337,6 @@ def test_voice_store_restore_keeps_newest_duplicate_normalized_name(
     assert [voice["name"] for voice in voices] == ["Guide"]
     assert voices[0]["created_at"] == uploaded["created_at"]
 
-
 def test_voice_store_restore_skips_malformed_metadata(tmp_path: Path) -> None:
     store = SpeakerSampleStore(root_dir=tmp_path, max_uploaded=2)
     uploaded = store.upload(
@@ -380,7 +371,6 @@ def test_voice_store_restore_skips_malformed_metadata(tmp_path: Path) -> None:
     assert [voice["name"] for voice in voices] == ["Guide"]
     assert voices[0]["created_at"] == uploaded["created_at"]
 
-
 def test_voice_store_decode_error_uses_stable_client_message(tmp_path: Path) -> None:
     store = SpeakerSampleStore(root_dir=tmp_path)
 
@@ -397,7 +387,6 @@ def test_voice_store_decode_error_uses_stable_client_message(tmp_path: Path) -> 
         "audio_sample could not be decoded as a supported audio format"
     )
     assert exc_info.value.param == "audio_sample"
-
 
 def test_speech_service_resolves_uploaded_voice_to_reference(tmp_path: Path) -> None:
     store = SpeakerSampleStore(root_dir=tmp_path)
@@ -425,7 +414,6 @@ def test_speech_service_resolves_uploaded_voice_to_reference(tmp_path: Path) -> 
     assert tts_params["task_type"] == "Base"
     assert tts_params["uploaded_voice_name"] == "anchor"
     assert tts_params["uploaded_voice_created_at"] == uploaded["created_at"]
-
 
 def test_speech_service_explicit_reference_overrides_uploaded_voice(
     tmp_path: Path,
@@ -458,7 +446,6 @@ def test_speech_service_explicit_reference_overrides_uploaded_voice(
     assert gen_req.metadata["tts_params"]["voice"] == "anchor"
     assert "uploaded_voice_name" not in gen_req.metadata["tts_params"]
 
-
 @pytest.mark.parametrize("task_type", ["CustomVoice", "VoiceDesign"])
 def test_speech_service_rejects_uploaded_voice_with_non_base_task_type(
     tmp_path: Path,
@@ -480,7 +467,6 @@ def test_speech_service_rejects_uploaded_voice_with_non_base_task_type(
         )
     assert exc_info.value.param == "task_type"
 
-
 def test_speech_service_allows_uploaded_voice_with_explicit_base_task_type(
     tmp_path: Path,
 ) -> None:
@@ -500,7 +486,6 @@ def test_speech_service_allows_uploaded_voice_with_explicit_base_task_type(
     gen_req = service.build_generate_request(request, validate=False)
 
     assert gen_req.metadata["tts_params"]["task_type"] == "Base"
-
 
 def test_speech_service_uses_same_uploaded_voice_resolution_for_prompt_and_params(
     tmp_path: Path,
@@ -535,7 +520,6 @@ def test_speech_service_uses_same_uploaded_voice_resolution_for_prompt_and_param
     assert ref["uploaded_voice_created_at"] == first["created_at"]
     assert tts_params["uploaded_voice_created_at"] == first["created_at"]
 
-
 def test_speech_service_rejects_unknown_required_uploaded_voice(
     tmp_path: Path,
 ) -> None:
@@ -548,7 +532,6 @@ def test_speech_service_rejects_unknown_required_uploaded_voice(
 
     with pytest.raises(SpeechAPIError, match="Unknown voice"):
         service.parse_request({"input": "hello", "voice": "missing"})
-
 
 def test_speech_service_rejects_batch_default_uploaded_voice_task_type(
     tmp_path: Path,
@@ -575,7 +558,6 @@ def test_speech_service_rejects_batch_default_uploaded_voice_task_type(
             }
         )
 
-
 def test_speech_service_preserves_preset_voice_names(tmp_path: Path) -> None:
     store = SpeakerSampleStore(root_dir=tmp_path)
     service = SpeechRequestValidator(
@@ -588,7 +570,6 @@ def test_speech_service_preserves_preset_voice_names(tmp_path: Path) -> None:
 
     assert gen_req.prompt == "hello"
     assert gen_req.metadata["tts_params"]["voice"] == "Vivian"
-
 
 def test_speech_service_can_disable_uploaded_voice_resolution(
     tmp_path: Path,
@@ -613,7 +594,6 @@ def test_speech_service_can_disable_uploaded_voice_resolution(
     assert gen_req.prompt == "hello"
     assert gen_req.metadata["tts_params"]["voice"] == "Vivian"
     assert "uploaded_voice_name" not in gen_req.metadata["tts_params"]
-
 
 def _reference_wav(
     *,

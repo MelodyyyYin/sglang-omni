@@ -11,7 +11,6 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-
 @dataclass
 class TensorDigest:
     name: str
@@ -26,7 +25,6 @@ class TensorDigest:
             "dtype": self.dtype,
             "sha256": self.sha256,
         }
-
 
 class StrictWeightChecker:
     """Compute strict per-tensor and aggregate SHA256 digests."""
@@ -146,7 +144,6 @@ class StrictWeightChecker:
             "elapsed_s": time.time() - started,
         }
 
-
 def _digest_tensor(name: str, tensor: Any) -> TensorDigest:
     detached = tensor.detach() if hasattr(tensor, "detach") else tensor
     contiguous = detached.contiguous() if hasattr(detached, "contiguous") else detached
@@ -159,7 +156,6 @@ def _digest_tensor(name: str, tensor: Any) -> TensorDigest:
     h.update(str(shape).encode())
     h.update(_tensor_bytes(cpu))
     return TensorDigest(name=name, shape=shape, dtype=dtype, sha256=h.hexdigest())
-
 
 def _tensor_bytes(tensor: Any) -> bytes:
     numpy = getattr(tensor, "numpy", None)
@@ -185,7 +181,6 @@ def _tensor_bytes(tensor: Any) -> bytes:
     raise TypeError(
         f"Cannot extract raw bytes from tensor type {type(tensor).__name__}"
     )
-
 
 def _aggregate_checksum(checksums: dict[str, str]) -> str:
     h = hashlib.sha256()

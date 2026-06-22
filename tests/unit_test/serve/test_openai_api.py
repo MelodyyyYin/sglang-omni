@@ -31,7 +31,6 @@ MODEL_FAMILIES = {
     "voxtral": "vocoder",
 }
 
-
 class FaultInjectingCoordinator(Coordinator):
     """Inject a model-stage failure through the real Coordinator/Client path."""
 
@@ -84,10 +83,8 @@ class FaultInjectingCoordinator(Coordinator):
             modality=modality,
         )
 
-
 def _fault_client(model_name: str) -> Client:
     return Client(FaultInjectingCoordinator(MODEL_FAMILIES[model_name]))
-
 
 class SuccessfulSpeechClient:
     def __init__(self, *, sample_rate: int = 24000) -> None:
@@ -126,7 +123,6 @@ class SuccessfulSpeechClient:
             format=response_format,
         )
 
-
 class EmptyStreamingSpeechClient:
     def health(self) -> dict[str, Any]:
         return {"running": True}
@@ -140,7 +136,6 @@ class EmptyStreamingSpeechClient:
             sample_rate=24000,
             finish_reason="stop",
         )
-
 
 class EmptyDeltaStreamingSpeechClient:
     def health(self) -> dict[str, Any]:
@@ -163,7 +158,6 @@ class EmptyDeltaStreamingSpeechClient:
             finish_reason="stop",
         )
 
-
 class PrefetchedBlockingStreamingSpeechClient:
     def __init__(self) -> None:
         self.aborted: list[str] = []
@@ -185,7 +179,6 @@ class PrefetchedBlockingStreamingSpeechClient:
     async def abort(self, request_id: str) -> None:
         self.aborted.append(request_id)
 
-
 class BlockingFirstAudioStreamingSpeechClient:
     def __init__(self) -> None:
         self.started = asyncio.Event()
@@ -199,7 +192,6 @@ class BlockingFirstAudioStreamingSpeechClient:
 
     async def abort(self, request_id: str) -> None:
         self.aborted.append(request_id)
-
 
 class BlockingNonStreamingSpeechClient:
     def __init__(self) -> None:
@@ -225,7 +217,6 @@ class BlockingNonStreamingSpeechClient:
     async def abort(self, request_id: str) -> None:
         self.aborted.append(request_id)
 
-
 class DisconnectingRequest:
     def __init__(self) -> None:
         self.disconnected = asyncio.Event()
@@ -233,11 +224,9 @@ class DisconnectingRequest:
     async def is_disconnected(self) -> bool:
         return self.disconnected.is_set()
 
-
 class ConnectedRequest:
     async def is_disconnected(self) -> bool:
         return False
-
 
 class SuccessfulTranscriptionClient:
     def __init__(self) -> None:
@@ -258,7 +247,6 @@ class SuccessfulTranscriptionClient:
         del request_id, audio_format
         self.requests.append(request)
         return CompletionResult(request_id="transcription-1", text="hello world")
-
 
 class AdminClient:
     def __init__(self) -> None:
@@ -374,7 +362,6 @@ class AdminClient:
         self.calls.append(("weights_checker", payload or {}, stages, timeout_s))
         return {"success": True, "message": "ok", "results": []}
 
-
 @pytest.mark.parametrize("model_name", MODEL_FAMILIES)
 def test_non_streaming_http_faults_return_500(model_name: str) -> None:
     client = TestClient(create_app(_fault_client(model_name), model_name=model_name))
@@ -403,7 +390,6 @@ def test_non_streaming_http_faults_return_500(model_name: str) -> None:
     assert speech_resp.json()["error"]["type"] == "server_error"
     assert "cuda out of memory" in speech_resp.json()["error"]["message"]
 
-
 def test_speech_endpoint_rejects_invalid_request_with_openai_error() -> None:
     client = TestClient(create_app(SuccessfulSpeechClient(), model_name="tts"))
 
@@ -426,7 +412,6 @@ def test_speech_endpoint_rejects_invalid_request_with_openai_error() -> None:
         }
     }
 
-
 def test_speech_endpoint_returns_binary_audio() -> None:
     client = TestClient(create_app(SuccessfulSpeechClient(), model_name="tts"))
 
@@ -438,7 +423,6 @@ def test_speech_endpoint_returns_binary_audio() -> None:
     assert response.status_code == 200
     assert response.content == b"RIFF"
     assert response.headers["content-type"] == "audio/wav"
-
 
 def test_speech_endpoint_accepts_sdk_shaped_binary_request() -> None:
     speech_client = SuccessfulSpeechClient()
@@ -463,7 +447,6 @@ def test_speech_endpoint_accepts_sdk_shaped_binary_request() -> None:
     assert speech_client.speech_requests[0].model == "tts-1"
     assert speech_client.speech_requests[0].metadata["tts_params"]["voice"] == "alloy"
 
-
 def test_speech_endpoint_rejects_invalid_json_with_openai_error() -> None:
     client = TestClient(create_app(SuccessfulSpeechClient(), model_name="tts"))
 
@@ -477,7 +460,6 @@ def test_speech_endpoint_rejects_invalid_json_with_openai_error() -> None:
     assert response.json()["error"]["type"] == "BadRequestError"
     assert response.json()["error"]["code"] == 400
 
-
 def test_speech_endpoint_stream_without_audio_returns_error() -> None:
     client = TestClient(create_app(EmptyStreamingSpeechClient(), model_name="tts"))
 
@@ -490,7 +472,6 @@ def test_speech_endpoint_stream_without_audio_returns_error() -> None:
     assert response.json()["error"]["type"] == "server_error"
     assert "No audio output generated" in response.json()["error"]["message"]
 
-
 def test_speech_endpoint_stream_empty_delta_is_not_success() -> None:
     client = TestClient(create_app(EmptyDeltaStreamingSpeechClient(), model_name="tts"))
 
@@ -502,7 +483,6 @@ def test_speech_endpoint_stream_empty_delta_is_not_success() -> None:
     assert response.status_code == 500
     assert response.json()["error"]["type"] == "server_error"
     assert "No audio output generated" in response.json()["error"]["message"]
-
 
 def test_admin_routes_forward_to_client() -> None:
     admin = AdminClient()
@@ -555,7 +535,6 @@ def test_admin_routes_forward_to_client() -> None:
         ("weights_checker", {"action": "checksum"}, None, 120.0),
     ]
 
-
 def test_chat_stream_failure_closes_without_done_sentinel() -> None:
     chunks: list[str] = []
     client = _fault_client("qwen3-omni")
@@ -584,7 +563,6 @@ def test_chat_stream_failure_closes_without_done_sentinel() -> None:
     assert chunks
     assert all(chunk != "data: [DONE]\n\n" for chunk in chunks)
 
-
 def test_speech_stream_defaults_to_raw_pcm() -> None:
     client = TestClient(
         create_app(SuccessfulSpeechClient(), model_name="higgs-audio-v2")
@@ -606,7 +584,6 @@ def test_speech_stream_defaults_to_raw_pcm() -> None:
     assert response.headers["x-channels"] == "1"
     assert response.headers["x-bit-depth"] == "16"
     assert response.content == expected
-
 
 def test_speech_stream_headers_use_chunk_sample_rate() -> None:
     client = TestClient(
@@ -630,7 +607,6 @@ def test_speech_stream_headers_use_chunk_sample_rate() -> None:
     assert response.headers["x-bit-depth"] == "16"
     assert response.content == expected
 
-
 def test_raw_pcm_response_close_aborts_inner_speech_stream() -> None:
     async def _drive() -> None:
         client = PrefetchedBlockingStreamingSpeechClient()
@@ -647,7 +623,6 @@ def test_raw_pcm_response_close_aborts_inner_speech_stream() -> None:
         assert client.aborted == ["req-1"]
 
     asyncio.run(_drive())
-
 
 def test_raw_pcm_response_disconnect_before_first_chunk_aborts_request() -> None:
     async def _drive() -> None:
@@ -670,7 +645,6 @@ def test_raw_pcm_response_disconnect_before_first_chunk_aborts_request() -> None
 
     asyncio.run(_drive())
 
-
 def test_speech_stream_rejects_non_pcm_response_format() -> None:
     client = TestClient(
         create_app(SuccessfulSpeechClient(), model_name="higgs-audio-v2")
@@ -689,7 +663,6 @@ def test_speech_stream_rejects_non_pcm_response_format() -> None:
     assert "response_format" in response.text
     assert "pcm" in response.text.lower()
 
-
 def test_speech_request_carries_initial_codec_chunk_frames() -> None:
     req = CreateSpeechRequest(
         input="hello",
@@ -704,7 +677,6 @@ def test_speech_request_carries_initial_codec_chunk_frames() -> None:
 
     assert gen_req.extra_params["initial_codec_chunk_frames"] == 4
 
-
 def test_raw_pcm_speech_request_defaults_initial_codec_chunk_frames() -> None:
     req = CreateSpeechRequest(
         input="hello",
@@ -717,7 +689,6 @@ def test_raw_pcm_speech_request_defaults_initial_codec_chunk_frames() -> None:
     ).build_generate_request(req)
 
     assert gen_req.extra_params["initial_codec_chunk_frames"] == 1
-
 
 def test_raw_pcm_speech_request_respects_explicit_initial_zero() -> None:
     req = CreateSpeechRequest(
@@ -732,7 +703,6 @@ def test_raw_pcm_speech_request_respects_explicit_initial_zero() -> None:
     ).build_generate_request(req)
 
     assert gen_req.extra_params["initial_codec_chunk_frames"] == 0
-
 
 def test_speech_response_disconnect_aborts_active_request() -> None:
     async def _drive() -> None:
@@ -756,7 +726,6 @@ def test_speech_response_disconnect_aborts_active_request() -> None:
 
     asyncio.run(_drive())
 
-
 def test_speech_response_returns_when_disconnect_poll_is_false() -> None:
     async def _drive() -> None:
         result = await _await_speech_response(
@@ -770,7 +739,6 @@ def test_speech_response_returns_when_disconnect_poll_is_false() -> None:
         assert result.audio_bytes == b"RIFF"
 
     asyncio.run(_drive())
-
 
 def test_speech_request_records_explicit_generation_params() -> None:
     req = CreateSpeechRequest(
@@ -793,7 +761,6 @@ def test_speech_request_records_explicit_generation_params() -> None:
         "top_k",
     ]
 
-
 def test_speech_request_passes_streaming_control_fields() -> None:
     req = CreateSpeechRequest(
         input="hello",
@@ -812,7 +779,6 @@ def test_speech_request_passes_streaming_control_fields() -> None:
     assert tts_params["x_vector_only_mode"] is True
     assert tts_params["response_format"] == "pcm"
     assert gen_req.extra_params == {"initial_codec_chunk_frames": 8}
-
 
 def test_transcription_request_builds_asr_generate_request() -> None:
     gen_req = build_transcription_generate_request(
@@ -836,7 +802,6 @@ def test_transcription_request_builds_asr_generate_request() -> None:
     assert gen_req.output_modalities == ["text"]
     assert gen_req.stream is False
 
-
 def test_transcription_endpoint_returns_text_json() -> None:
     transcription_client = SuccessfulTranscriptionClient()
     client = TestClient(
@@ -857,7 +822,6 @@ def test_transcription_endpoint_returns_text_json() -> None:
     assert request.prompt["filename"] == "sample.wav"
     assert request.extra_params["language"] == "en"
 
-
 def test_speech_request_passes_moss_token_count() -> None:
     req = CreateSpeechRequest(input="hello", token_count=180)
 
@@ -866,11 +830,6 @@ def test_speech_request_passes_moss_token_count() -> None:
     )
 
     assert gen_req.metadata["tts_params"]["token_count"] == 180
-
-
-# ---------------------------------------------------------------------------
-# Admin auth tests
-# ---------------------------------------------------------------------------
 
 _ADMIN_PATHS_THAT_NEED_AUTH = [
     ("GET", "/model_info"),
@@ -888,14 +847,12 @@ _ADMIN_PATHS_THAT_NEED_AUTH = [
 
 _ADMIN_API_KEY = "secret-key"
 
-
 def _admin_headers(
     key: str = _ADMIN_API_KEY,
     *,
     scheme: str = "Bearer",
 ) -> dict[str, str]:
     return {"Authorization": f"{scheme} {key}"}
-
 
 def test_admin_routes_open_when_no_key_configured() -> None:
     """Without a key, all admin routes are accessible with no auth header."""
@@ -907,7 +864,6 @@ def test_admin_routes_open_when_no_key_configured() -> None:
 
     resp = client.post("/pause_generation", json={})
     assert resp.status_code == 200
-
 
 def test_admin_routes_require_bearer_token_when_key_configured() -> None:
     """When admin_api_key is set, requests without the header are rejected."""
@@ -923,7 +879,6 @@ def test_admin_routes_require_bearer_token_when_key_configured() -> None:
         ), f"{method} {path} should be 401, got {resp.status_code}"
         assert "WWW-Authenticate" in resp.headers
 
-
 def test_admin_routes_reject_wrong_bearer_token() -> None:
     admin = AdminClient()
     client = TestClient(
@@ -937,7 +892,6 @@ def test_admin_routes_reject_wrong_bearer_token() -> None:
         assert (
             resp.status_code == 403
         ), f"{method} {path} should be 403, got {resp.status_code}"
-
 
 def test_admin_routes_accept_correct_bearer_token() -> None:
     admin = AdminClient()
@@ -955,7 +909,6 @@ def test_admin_routes_accept_correct_bearer_token() -> None:
     )
     assert resp.status_code == 200
 
-
 def test_admin_routes_env_key_is_used_when_no_explicit_key(monkeypatch) -> None:
     monkeypatch.setenv("SGLANG_OMNI_ADMIN_KEY", "env-key")
     admin = AdminClient()
@@ -967,12 +920,6 @@ def test_admin_routes_env_key_is_used_when_no_explicit_key(monkeypatch) -> None:
     resp = client.get("/model_info", headers=_admin_headers("env-key"))
     assert resp.status_code == 200
 
-
-# ---------------------------------------------------------------------------
-# Stub endpoint 501 tests
-# ---------------------------------------------------------------------------
-
-
 def test_unimplemented_tensor_weight_update_returns_501() -> None:
     admin = AdminClient()
     client = TestClient(create_app(admin, model_name="qwen3-omni"))
@@ -981,7 +928,6 @@ def test_unimplemented_tensor_weight_update_returns_501() -> None:
     assert resp.status_code == 501
     assert resp.json()["error"]["code"] == "not_implemented"
     assert "update_weights_from_disk" in resp.json()["error"]["message"]
-
 
 def test_distributed_weight_update_routes_forward_to_client() -> None:
     admin = AdminClient()
@@ -1057,7 +1003,6 @@ def test_distributed_weight_update_routes_forward_to_client() -> None:
             0,
         ),
     ]
-
 
 def test_stub_endpoint_checks_auth_before_501() -> None:
     """Auth check fires before the tensor stub 501 body."""

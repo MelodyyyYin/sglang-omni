@@ -15,7 +15,6 @@ from sglang_omni.scheduling.stage_cache import StageOutputCache
 DEFAULT_SPEAKER_CACHE_BYTES = 512 * 1024 * 1024
 _KEY_SEPARATOR = "\x1f"
 
-
 @dataclass(frozen=True)
 class SpeakerCacheKey:
     """Stable identity for one model-side uploaded-speaker artifact."""
@@ -24,7 +23,6 @@ class SpeakerCacheKey:
     voice_name: str
     voice_version: int
     artifact_kind: str
-
 
 class SpeakerArtifactCache:
     """Process-wide bounded LRU for voice features shared by TTS stages."""
@@ -79,7 +77,6 @@ class SpeakerArtifactCache:
                 "delete_invalidation_counter": self._delete_invalidation_counter,
             }
 
-
 def estimate_cache_bytes(value: Any) -> int:
     """Estimate memory held by common artifact containers."""
 
@@ -105,7 +102,6 @@ def estimate_cache_bytes(value: Any) -> int:
         return sys.getsizeof(value) + sum(estimate_cache_bytes(item) for item in value)
     return sys.getsizeof(value)
 
-
 def _encode_key(key: SpeakerCacheKey) -> str:
     return _KEY_SEPARATOR.join(
         (
@@ -116,14 +112,11 @@ def _encode_key(key: SpeakerCacheKey) -> str:
         )
     )
 
-
 def _encoded_key_voice_name(key: str) -> str:
     parts = key.split(_KEY_SEPARATOR, 3)
     return parts[1] if len(parts) == 4 else ""
 
-
 _GLOBAL_SPEAKER_CACHE = SpeakerArtifactCache()
-
 
 def get_speaker_artifact_cache() -> SpeakerArtifactCache:
     return _GLOBAL_SPEAKER_CACHE

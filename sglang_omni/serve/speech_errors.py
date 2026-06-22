@@ -8,7 +8,6 @@ from typing import Any
 
 from fastapi.responses import JSONResponse
 
-
 @dataclass
 class SpeechAPIError(Exception):
     """A user-visible TTS API error."""
@@ -21,7 +20,6 @@ class SpeechAPIError(Exception):
 
     def __post_init__(self) -> None:
         Exception.__init__(self, self.message)
-
 
 def openai_error_payload(
     message: str,
@@ -40,7 +38,6 @@ def openai_error_payload(
             "code": code,
         }
     }
-
 
 def openai_error_response(
     message: str,
@@ -62,7 +59,6 @@ def openai_error_response(
         ),
     )
 
-
 def speech_error_response(error: SpeechAPIError) -> JSONResponse:
     return openai_error_response(
         error.message,
@@ -71,7 +67,6 @@ def speech_error_response(error: SpeechAPIError) -> JSONResponse:
         param=error.param,
         code=error.code,
     )
-
 
 def bad_request(message: str, *, param: str | None = None) -> SpeechAPIError:
     return SpeechAPIError(
@@ -82,7 +77,6 @@ def bad_request(message: str, *, param: str | None = None) -> SpeechAPIError:
         code=400,
     )
 
-
 def internal_error(message: str, *, param: str | None = None) -> SpeechAPIError:
     return SpeechAPIError(
         message=message,
@@ -91,7 +85,6 @@ def internal_error(message: str, *, param: str | None = None) -> SpeechAPIError:
         param=param,
         code=None,
     )
-
 
 def service_unavailable(message: str, *, param: str | None = None) -> SpeechAPIError:
     return SpeechAPIError(

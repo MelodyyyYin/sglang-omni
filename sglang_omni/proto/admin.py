@@ -16,7 +16,6 @@ ADMIN_INIT_WEIGHTS_UPDATE_GROUP = "init_weights_update_group"
 ADMIN_DESTROY_WEIGHTS_UPDATE_GROUP = "destroy_weights_update_group"
 ADMIN_WEIGHTS_CHECKER = "weights_checker"
 
-
 @dataclass
 class AdminOperation:
     """One coordinator-to-stage administrative operation."""
@@ -46,7 +45,6 @@ class AdminOperation:
             target_stages=list(target_stages) if target_stages is not None else None,
             timeout_s=data.get("timeout_s"),
         )
-
 
 @dataclass
 class AdminResult:
@@ -88,7 +86,6 @@ class AdminResult:
             rank=data.get("rank"),
             role=data.get("role"),
         )
-
 
 def is_update_action(action: str) -> bool:
     return action in {
