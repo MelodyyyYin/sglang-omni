@@ -1,8 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Stage factories for Fish Audio S2-Pro TTS pipeline.
-
-Each factory returns a callable (for SimpleScheduler) or an OmniScheduler.
-"""
+"""Stage factories for Fish Audio S2-Pro TTS pipeline; each returns a callable (for SimpleScheduler) or an OmniScheduler."""
 
 from __future__ import annotations
 

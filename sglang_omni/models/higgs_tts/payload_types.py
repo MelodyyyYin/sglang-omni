@@ -1,8 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Per-request pipeline state for Higgs TTS.
-
-Carried between stages via :class:`sglang_omni.proto.StagePayload.data`.
-"""
+"""Per-request pipeline state for Higgs TTS, carried between stages via :class:`sglang_omni.proto.StagePayload.data`."""
 
 from __future__ import annotations
 
@@ -12,9 +9,7 @@ from typing import Any
 
 @dataclass
 class HiggsTtsState:
-    """Per-request state threaded through preprocessing → audio_encoder →
-    tts_engine → vocoder. Fields populate lazily so a deserialised state is
-    valid at any stage boundary."""
+    """Per-request state threaded through preprocessing → audio_encoder → tts_engine → vocoder; fields populate lazily so a deserialised state is valid at any stage boundary."""
 
     prompt_token_ids: list[int] = field(default_factory=list)
     reference_codes_delayed: list[list[int]] | None = None

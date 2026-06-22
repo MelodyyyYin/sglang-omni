@@ -1,14 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Utilities shared across the Higgs TTS pipeline.
-
-- Delay pattern: :func:`apply_delay_pattern` / :func:`reverse_delay_pattern`
-  shift codebook ``c`` by ``c`` steps, BOC/EOC padding inside the codebook
-  vocab (ids 1024 / 1025 for the default 1026 vocab).
-- :func:`truncate_rope_to_bf16` matches sglang's fp32 RoPE cache to Higgs's
-  bf16 training-time RoPE.
-- Stage helpers: checkpoint snapshot, codec cache, ref-codes coercion,
-  ref-audio loading from path / URL / bytes / base64.
-"""
+"""Utilities shared across the Higgs TTS pipeline (delay pattern, RoPE bf16 truncation, checkpoint/codec/ref-audio helpers)."""
 
 from __future__ import annotations
 
@@ -67,9 +58,7 @@ def reverse_delay_pattern(delayed_LN: torch.Tensor) -> torch.Tensor:
 
 
 def truncate_rope_to_bf16(model: torch.nn.Module) -> None:
-    """bf16-truncate sglang's fp32 ``cos_sin_cache`` in-place (stored as fp32)
-    to match Higgs's bf16 training-time RoPE.
-    """
+    """bf16-truncate sglang's fp32 ``cos_sin_cache`` in-place to match Higgs's bf16 training-time RoPE."""
     for module in model.modules():
         if hasattr(module, "cos_sin_cache"):
             cache = module.cos_sin_cache
@@ -112,10 +101,7 @@ def to_codes_TN(raw: Any, num_codebooks: int) -> torch.Tensor | None:
 
 
 def load_audio_to_24k(reference_audio: Any) -> tuple[np.ndarray, int]:
-    """Load ``inputs["reference_audio"]`` as 24 kHz mono float32.
-
-    Accepts local path, HTTP/HTTPS URL, or ``{audio_path|path|bytes|base64|data}`` dict.
-    """
+    """Load ``inputs["reference_audio"]`` as 24 kHz mono float32 from a local path, HTTP/HTTPS URL, or ``{audio_path|path|bytes|base64|data}`` dict."""
     io = AudioMediaIO(target_sr=HiggsAudioCodec.SAMPLE_RATE)
 
     def _load_path_or_url(src: str | Path) -> tuple[np.ndarray, int]:

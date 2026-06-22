@@ -45,13 +45,7 @@ def _perf_counter() -> float:
 
 
 def _ref_audio_fingerprint(codes: list[list[int]] | None) -> str | None:
-    """Stable hash of the full N-codebook ref-audio sequence.
-
-    Returned as a short hex string used as ``Req.extra_key``. ``None`` for
-    zero-shot (no ref audio) so all zero-shot requests share the radix subtree.
-    Each codec value packs into 2 bytes (range 0..1025) so the hash is
-    sensitive to every codebook, not just cb0.
-    """
+    """Stable hex hash of the full N-codebook ref-audio sequence for ``Req.extra_key`` (``None`` for zero-shot; 2-byte packing makes it sensitive to every codebook)."""
     if not codes:
         return None
     buf = bytearray(2 * sum(len(row) for row in codes))
@@ -83,6 +77,7 @@ def build_sglang_higgs_request(
     sampling_params = SamplingParams(**sp_kwargs)
     sampling_params.normalize(tokenizer=None)
 
+    # extra_key namespaces the radix cache per ref-audio fingerprint so shared -100 placeholder prefixes can't cross-contaminate KV (vocab_size = backbone text vocab so cb0 rides sglang's sampler path).
     req = Req(
         rid=request_id,
         origin_input_text="",
@@ -153,13 +148,7 @@ def make_higgs_scheduler_adapters(
     *,
     max_new_tokens_cap: int | None = None,
 ) -> tuple[_HiggsRequestBuilder, _HiggsResultAdapter]:
-    """Build (request_builder, result_adapter) closures bound to a
-    :class:`HiggsTTSModel` instance.
-
-    The result adapter drops the model's per-request slot (sampler state +
-    accumulated codes) once a result is emitted so a long-running server
-    doesn't accumulate dead slots.
-    """
+    """Build (request_builder, result_adapter) closures bound to a :class:`HiggsTTSModel`; the result adapter drops the model's per-request slot on emit so the server doesn't accumulate dead slots."""
 
     def request_builder(payload: StagePayload) -> HiggsSGLangRequestData:
         state = HiggsTtsState.from_dict(payload.data)

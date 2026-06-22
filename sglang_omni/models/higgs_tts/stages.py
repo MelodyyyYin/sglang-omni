@@ -1,23 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Stage factories for the Higgs TTS pipeline.
-
-Pipeline shape::
-
-    preprocessing → audio_encoder → tts_engine → vocoder
-
-- ``create_preprocessing_executor``: text tokenize + (if raw audio path)
-  load waveform; fast path also delay-encodes client-supplied
-  ``reference_codes`` and builds the prompt. Returns a
-  :class:`ThreadedSimpleScheduler` for CPU-heavy work.
-- ``create_audio_encoder_executor``: GPU codec encode for the raw-audio
-  path → delayed ref codes + prompt assembly. No-op on the fast path.
-- ``create_sglang_tts_engine_executor``: runs :class:`HiggsTTSModel` under
-  sglang's worker; the model runner computes the fused multi-codebook
-  embedding inline in prefill from ``reference_codes_delayed`` and overlays
-  it at ``-100`` placeholder positions. Returns a :class:`OmniScheduler`.
-- ``create_vocoder_executor``: creates the Higgs vocoder scheduler, preserving
-  batched non-streaming decode and incremental streaming audio chunks.
-"""
+"""Stage factories for the Higgs TTS pipeline: preprocessing → audio_encoder → tts_engine → vocoder."""
 
 from __future__ import annotations
 
@@ -75,6 +57,7 @@ from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleSched
 
 logger = logging.getLogger(__name__)
 
+# Codec runs at 75 Hz; chunked prefill of the multi-codebook prompt is unsafe (no sampler-state rollback), so reject inputs past chunked_prefill_size.
 _MAX_REF_AUDIO_SEC = 100
 _REF_CODE_CACHE_MAX_ITEMS = 256
 _REF_CODE_CACHE_MAX_BYTES = 256 * 1024 * 1024
@@ -106,11 +89,7 @@ def _reference_audio_cache_key(reference_audio: Any) -> str | None:
 def _reference_code_cache_key_from_waveform(
     waveform: torch.Tensor, sample_rate: int
 ) -> str:
-    """Content key for the reference-code cache after audio decode/resample.
-
-    Hashing the waveform consumed by the codec keeps cache reuse tied to actual
-    audio content across local files, bytes/base64 payloads, and URL refs.
-    """
+    """Content key for the reference-code cache: hashing the codec-consumed waveform ties cache reuse to actual audio content across file/bytes/base64/URL refs."""
     wav = waveform.detach().cpu().contiguous().float()
     meta = f"sr:{int(sample_rate)}|shape:{tuple(wav.shape)}"
     return f"waveform:{meta}:{hash_bytes(wav.numpy().tobytes())}"
@@ -157,13 +136,7 @@ def create_preprocessing_executor(
     codebook_size: int = 1026,
     max_concurrency: int = 16,
 ):
-    """CPU stage: text tokenize + optional ref-audio file IO.
-
-    Builds the full prompt + delays the codes when the client supplied
-    pre-encoded ``reference_codes``. When raw audio is supplied, defers
-    codec encoding (and prompt assembly) to the audio_encoder stage —
-    only the loaded waveform is shipped forward.
-    """
+    """CPU stage: text tokenize + optional ref-audio file IO (delay-encodes client-supplied codes here; defers raw-audio codec encoding to the audio_encoder stage)."""
     checkpoint_dir = resolve_checkpoint(model_path)
 
     # Note:(Chenchen Hong) Load tokenizer.json directly to avoid checkpoint metadata drift.
@@ -313,12 +286,7 @@ def create_audio_encoder_executor(
     dtype: str = "bfloat16",
     num_codebooks: int = 8,
 ):
-    """GPU stage: codec-encode raw ref audio → delayed codes + prompt assembly.
-
-    No-op when preprocessing already produced ``reference_codes_delayed`` (the
-    client-supplied pre-encoded fast path). Codec weights are extracted from
-    the TTS checkpoint itself (bundled at ``tied.embedding.modality_embeddings``).
-    """
+    """GPU stage: codec-encode raw ref audio → delayed codes + prompt assembly (no-op on the pre-encoded fast path; codec weights extracted from the TTS checkpoint)."""
     checkpoint_dir = resolve_checkpoint(model_path)
     raw = Tokenizer.from_file(os.path.join(checkpoint_dir, "tokenizer.json"))
     tokenizer = PreTrainedTokenizerFast(tokenizer_object=raw)
@@ -409,6 +377,7 @@ def create_sglang_tts_engine_executor(
         "max_running_requests": max_running_requests,
         "chunked_prefill_size": 8192,
         "dtype": "bfloat16",
+        # Radix cache namespaced per ref-audio via Req.extra_key so shared -100 placeholder prefixes from different ref audios can't cross-contaminate the KV tree.
     }
     if server_args_overrides:
         overrides.update(server_args_overrides)
@@ -482,10 +451,7 @@ def create_vocoder_executor(
     stream_overlap_tokens: int = 8,
     stream_holdback_tokens: int = 4,
 ):
-    """Decode Higgs delayed codes to a mono 24 kHz waveform.
-
-    Codec weights are extracted from the TTS checkpoint itself.
-    """
+    """Decode Higgs delayed codes to a mono 24 kHz waveform (codec weights extracted from the TTS checkpoint)."""
     checkpoint_dir = resolve_checkpoint(model_path)
     codec = get_or_load_codec(checkpoint_dir, device, dtype)
 
