@@ -37,17 +37,14 @@ ControlMessage = (
     | ProfilerStopMessage
 )
 
-
 def serialize_message(msg: ControlMessage) -> bytes:
     """Serialize a message to bytes."""
     return msgpack.packb(msg.to_dict(), use_bin_type=True)
-
 
 def deserialize_message(data: bytes) -> ControlMessage:
     """Deserialize bytes to a message."""
     d = msgpack.unpackb(data, raw=False)
     return parse_message(d)
-
 
 class ControlPlaneContext:
     """Shared ZMQ context for control plane."""
@@ -68,7 +65,6 @@ class ControlPlaneContext:
         if cls._context is not None:
             cls._context.term()
             cls._context = None
-
 
 class PushSocket:
     """Async PUSH socket for sending messages to a single destination."""
@@ -97,7 +93,6 @@ class PushSocket:
         if self._socket is not None:
             self._socket.close()
             self._socket = None
-
 
 class PullSocket:
     """Async PULL socket for receiving messages."""
@@ -143,7 +138,6 @@ class PullSocket:
             self._socket.close()
             self._socket = None
 
-
 class PubSocket:
     """Async PUB socket for broadcasting messages (e.g., abort)."""
 
@@ -156,7 +150,6 @@ class PubSocket:
         ctx = ControlPlaneContext.get()
         self._socket = ctx.socket(zmq.PUB)
         self._socket.bind(self.endpoint)
-        # Give subscribers time to connect
         await asyncio.sleep(0.1)
         logger.debug("PUB socket bound to %s", self.endpoint)
 
@@ -174,7 +167,6 @@ class PubSocket:
             self._socket.close()
             self._socket = None
 
-
 class SubSocket:
     """Async SUB socket for receiving broadcast messages."""
 
@@ -187,7 +179,7 @@ class SubSocket:
         ctx = ControlPlaneContext.get()
         self._socket = ctx.socket(zmq.SUB)
         self._socket.connect(self.endpoint)
-        self._socket.setsockopt(zmq.SUBSCRIBE, b"")  # Subscribe to all messages
+        self._socket.setsockopt(zmq.SUBSCRIBE, b"")
         logger.debug("SUB socket connected to %s", self.endpoint)
 
     async def recv(self) -> AbortMessage:
@@ -212,7 +204,6 @@ class SubSocket:
         if self._socket is not None:
             self._socket.close()
             self._socket = None
-
 
 class StageControlPlane:
     """Control plane interface for a Stage.
@@ -243,15 +234,12 @@ class StageControlPlane:
 
     async def start(self) -> None:
         """Initialize all sockets."""
-        # Socket to receive work
         self._recv_socket = PullSocket(self.recv_endpoint, bind=True)
         await self._recv_socket.start()
 
-        # Socket to send completions to coordinator
         self._coordinator_socket = PushSocket(self.coordinator_endpoint)
         await self._coordinator_socket.connect()
 
-        # Socket to receive abort broadcasts
         self._abort_socket = SubSocket(self.abort_endpoint)
         await self._abort_socket.connect()
 
@@ -335,7 +323,6 @@ class StageControlPlane:
             sock.close()
         self._next_stage_sockets.clear()
 
-
 class CoordinatorControlPlane:
     """Control plane interface for the Coordinator.
 
@@ -359,11 +346,9 @@ class CoordinatorControlPlane:
 
     async def start(self) -> None:
         """Initialize all sockets."""
-        # Socket to receive completions
         self._completion_socket = PullSocket(self.completion_endpoint, bind=True)
         await self._completion_socket.start()
 
-        # Socket to broadcast aborts
         self._abort_socket = PubSocket(self.abort_endpoint)
         await self._abort_socket.bind()
 

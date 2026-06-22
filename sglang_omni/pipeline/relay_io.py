@@ -19,19 +19,11 @@ import torch
 from sglang_omni.proto import DataReadyMessage, StagePayload
 from sglang_omni.relay.base import Relay
 
-
 def _dtype_alignment(dtype: torch.dtype) -> int:
     return max(torch.empty((), dtype=dtype).element_size(), 1)
 
-
 def _pad_offset(offset: int, alignment: int) -> int:
     return (-offset) % alignment
-
-
-# ---------------------------------------------------------------------------
-# Tensor extraction / restoration (recursive, nested dicts/lists)
-# ---------------------------------------------------------------------------
-
 
 def extract_tensors(obj: Any, path: str = "") -> tuple[Any, dict[str, torch.Tensor]]:
     """Recursively extract tensors from nested structure, replacing with placeholders."""
@@ -68,7 +60,6 @@ def extract_tensors(obj: Any, path: str = "") -> tuple[Any, dict[str, torch.Tens
     else:
         return obj, tensors
 
-
 def restore_tensors(obj: Any, tensor_dict: dict[str, torch.Tensor]) -> Any:
     """Recursively restore tensors from placeholders."""
     if isinstance(obj, dict):
@@ -83,12 +74,6 @@ def restore_tensors(obj: Any, tensor_dict: dict[str, torch.Tensor]) -> Any:
         return type(obj)(restore_tensors(item, tensor_dict) for item in obj)
     else:
         return obj
-
-
-# ---------------------------------------------------------------------------
-# Payload read/write (full StagePayload via relay)
-# ---------------------------------------------------------------------------
-
 
 async def write_payload(
     relay: Relay,
@@ -145,7 +130,6 @@ async def write_payload(
         "tensor_info": tensor_info,
     }, op
 
-
 async def read_payload(
     relay: Relay,
     request_id: str,
@@ -189,12 +173,6 @@ async def read_payload(
     relay.cleanup(request_id)
     return payload
 
-
-# ---------------------------------------------------------------------------
-# Blob read/write (raw tensor via relay, for streaming chunks)
-# ---------------------------------------------------------------------------
-
-
 async def write_blob(
     relay: Relay,
     key: str,
@@ -222,7 +200,6 @@ async def write_blob(
     }
     return metadata, op
 
-
 async def read_blob(
     relay: Relay,
     key: str,
@@ -245,17 +222,10 @@ async def read_blob(
     dtype = getattr(torch, dtype_str.replace("torch.", ""))
     return recv_buf[offset:].view(dtype).reshape(shape)
 
-
-# ---------------------------------------------------------------------------
-# Stream chunk send
-# ---------------------------------------------------------------------------
-
 _IPC_INLINE_CPU_BYTES_LIMIT = 64 * 1024
-
 
 def _is_cuda_tensor(obj: Any) -> bool:
     return isinstance(obj, torch.Tensor) and obj.is_cuda
-
 
 def _contains_cuda_tensor(obj: Any) -> bool:
     if _is_cuda_tensor(obj):
@@ -267,7 +237,6 @@ def _contains_cuda_tensor(obj: Any) -> bool:
     if isinstance(obj, (list, tuple, set, frozenset)):
         return any(_contains_cuda_tensor(value) for value in obj)
     return False
-
 
 def _contains_cpu_tensor(obj: Any, seen: set[int] | None = None) -> bool:
     if obj is None:
@@ -285,7 +254,6 @@ def _contains_cpu_tensor(obj: Any, seen: set[int] | None = None) -> bool:
     if isinstance(obj, (list, tuple, set, frozenset)):
         return any(_contains_cpu_tensor(value, seen) for value in obj)
     return False
-
 
 def _inline_cpu_pickle_size(obj: Any, seen: set[int] | None = None) -> int:
     if obj is None:
@@ -311,7 +279,6 @@ def _inline_cpu_pickle_size(obj: Any, seen: set[int] | None = None) -> int:
     except Exception:
         return _IPC_INLINE_CPU_BYTES_LIMIT + 1
 
-
 def _should_use_cuda_ipc_stream_chunk(data: Any, metadata: dict | None) -> bool:
     if not _contains_cuda_tensor(data):
         return False
@@ -320,7 +287,6 @@ def _should_use_cuda_ipc_stream_chunk(data: Any, metadata: dict | None) -> bool:
     inline_size = _inline_cpu_pickle_size(data) + _inline_cpu_pickle_size(metadata)
     return inline_size <= _IPC_INLINE_CPU_BYTES_LIMIT
 
-
 def ipc_pickle(obj: Any) -> bytes:
     """Serialize via ForkingPickler only when CUDA IPC tensor handles are needed."""
     if not _contains_cuda_tensor(obj):
@@ -328,7 +294,6 @@ def ipc_pickle(obj: Any) -> bytes:
     buf = io.BytesIO()
     ForkingPickler(buf, 2).dump(obj)
     return buf.getvalue()
-
 
 def _serialize_ipc_metadata_value(value: Any) -> Any:
     if isinstance(value, torch.Tensor):
@@ -340,7 +305,6 @@ def _serialize_ipc_metadata_value(value: Any) -> Any:
     if isinstance(value, tuple):
         return {"_ipc_tuple": [_serialize_ipc_metadata_value(item) for item in value]}
     return value
-
 
 def serialize_ipc_chunk(
     data: Any,
@@ -354,7 +318,6 @@ def serialize_ipc_chunk(
 
     return ipc_metadata
 
-
 def deserialize_ipc_metadata(value: Any) -> Any:
     if isinstance(value, dict):
         if set(value) == {"_ipc_tensor"}:
@@ -365,7 +328,6 @@ def deserialize_ipc_metadata(value: Any) -> Any:
     if isinstance(value, list):
         return [deserialize_ipc_metadata(item) for item in value]
     return value
-
 
 async def send_stream_chunk(
     relay: Relay,
@@ -381,9 +343,6 @@ async def send_stream_chunk(
     same_gpu_targets: set[str] | None = None,
 ) -> None:
     """Send a streaming chunk to a downstream stage."""
-    # Keep CUDA IPC limited to CUDA-dominant chunks with no CPU tensors and only
-    # small inline Python metadata; otherwise the relay path keeps CPU-heavy
-    # pieces out of the IPC control-plane pickle.
     if (
         same_gpu_targets
         and target_stage in same_gpu_targets
@@ -434,9 +393,6 @@ async def send_stream_chunk(
                 }
             relay_metadata["chunk_metadata_tensors"] = metadata_refs
 
-    # Send control message FIRST — receiver starts reading immediately.
-    # NIXL credit deadlock avoidance: if we wait_for_completion before notifying,
-    # the receiver never starts reading, never triggers RDMA notification, deadlock.
     msg = DataReadyMessage(
         request_id=request_id,
         from_stage=from_stage,
@@ -448,7 +404,6 @@ async def send_stream_chunk(
 
     for pending_op in pending_ops:
         await pending_op.wait_for_completion()
-
 
 async def send_stream_signal(
     control_plane: Any,

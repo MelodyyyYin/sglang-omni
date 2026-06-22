@@ -20,7 +20,6 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Supported output formats and their MIME types
 FORMAT_MIME_TYPES: dict[str, str] = {
     "wav": "audio/wav",
     "mp3": "audio/mpeg",
@@ -30,10 +29,8 @@ FORMAT_MIME_TYPES: dict[str, str] = {
     "pcm": "audio/pcm",
 }
 
-# Default sample rate for generated audio
 DEFAULT_SAMPLE_RATE = 24000
 
-# Configurations for PyAV encoding
 PYAV_ENCODE_CONFIGS = {
     "opus": {
         "container": "ogg",
@@ -79,7 +76,6 @@ PYAV_ENCODE_CONFIGS = {
     },
 }
 
-
 @cache
 def audio_encoding_unavailable_reason(response_format: str) -> str | None:
     """Return why the requested response format cannot be encoded."""
@@ -106,7 +102,6 @@ def audio_encoding_unavailable_reason(response_format: str) -> str | None:
 
     return None
 
-
 def to_numpy(audio: Any) -> np.ndarray:
     """Convert audio data to a numpy float32 array.
 
@@ -119,7 +114,6 @@ def to_numpy(audio: Any) -> np.ndarray:
     if isinstance(audio, np.ndarray):
         return audio.astype(np.float32, copy=False)
 
-    # torch Tensor
     if hasattr(audio, "cpu") and hasattr(audio, "numpy"):
         arr = audio.detach().cpu().float().numpy()
         return arr.astype(np.float32, copy=False)
@@ -128,12 +122,10 @@ def to_numpy(audio: Any) -> np.ndarray:
         return np.array(audio, dtype=np.float32)
 
     if isinstance(audio, bytes):
-        # Assume 16-bit signed PCM
         arr = np.frombuffer(audio, dtype="<i2")
         return (arr.astype(np.float32) / 32768.0).astype(np.float32)
 
     raise TypeError(f"Unsupported audio type: {type(audio)}")
-
 
 def apply_speed(
     audio: np.ndarray, speed: float, sample_rate: int
@@ -150,18 +142,14 @@ def apply_speed(
     if speed == 1.0:
         return audio, sample_rate
 
-    # Speed up/slow down by changing the effective sample rate
-    # Then resample to the original rate
     new_length = max(int(round(len(audio) / speed)), 1)
     old_idx = np.arange(len(audio), dtype=np.float64)
     new_idx = np.linspace(0.0, len(audio) - 1, num=new_length, dtype=np.float64)
     resampled = np.interp(new_idx, old_idx, audio).astype(np.float32)
     return resampled, sample_rate
 
-
 def encode_wav(audio: np.ndarray, sample_rate: int) -> bytes:
     """Encode audio as a WAV file (16-bit PCM)."""
-    # Clamp to [-1, 1]
     audio = np.clip(audio, -1.0, 1.0)
     pcm = (audio * 32767.0).astype(np.int16)
     if pcm.ndim == 2:
@@ -177,13 +165,11 @@ def encode_wav(audio: np.ndarray, sample_rate: int) -> bytes:
     data_size = len(pcm_bytes)
 
     buf = io.BytesIO()
-    # RIFF header
     buf.write(b"RIFF")
     buf.write(struct.pack("<I", 36 + data_size))
     buf.write(b"WAVE")
-    # fmt chunk
     buf.write(b"fmt ")
-    buf.write(struct.pack("<I", 16))  # chunk size
+    buf.write(struct.pack("<I", 16))
     buf.write(
         struct.pack(
             "<HHIIHH",
@@ -195,13 +181,11 @@ def encode_wav(audio: np.ndarray, sample_rate: int) -> bytes:
             bits_per_sample,
         )
     )
-    # data chunk
     buf.write(b"data")
     buf.write(struct.pack("<I", data_size))
     buf.write(pcm_bytes)
 
     return buf.getvalue()
-
 
 def _resample_linear(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
     if orig_sr == target_sr:
@@ -213,7 +197,6 @@ def _resample_linear(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndar
     old_idx = np.arange(audio.shape[0], dtype=np.float64)
     new_idx = np.linspace(0.0, audio.shape[0] - 1, num=new_len, dtype=np.float64)
     return np.interp(new_idx, old_idx, audio).astype(np.float32)
-
 
 def _encode_with_pyav(
     audio: np.ndarray,
@@ -251,7 +234,6 @@ def _encode_with_pyav(
 
     stream.layout = "mono"
 
-    # FFmpeg expects float-planar (fltp) format for these codecs
     frame = av.AudioFrame.from_ndarray(
         audio.reshape(1, -1), format="fltp", layout="mono"
     )
@@ -266,7 +248,6 @@ def _encode_with_pyav(
     container.close()
     return buf.getvalue()
 
-
 def encode_pcm(audio: np.ndarray, sample_rate: int) -> bytes:
     """Encode audio as raw 16-bit PCM bytes."""
     audio = np.clip(audio, -1.0, 1.0)
@@ -274,7 +255,6 @@ def encode_pcm(audio: np.ndarray, sample_rate: int) -> bytes:
     if pcm.ndim == 2:
         pcm = np.ascontiguousarray(pcm.T)
     return pcm.tobytes()
-
 
 def select_audio_delta(
     audio_data: Any,
@@ -288,9 +268,6 @@ def select_audio_delta(
     if audio.ndim > 1:
         audio = audio.squeeze()
     if audio.ndim > 1:
-        # Streaming chunks are mono; downmix multi-channel payloads
-        # (e.g. the 48 kHz stereo MOSS-TTS Local codec) instead of
-        # silently dropping channels.
         channel_axis = 0 if audio.shape[0] < audio.shape[-1] else -1
         audio = audio.mean(axis=channel_axis).astype("float32")
 
@@ -300,7 +277,6 @@ def select_audio_delta(
     if total_samples <= emitted_samples:
         return None, emitted_samples
     return audio[emitted_samples:], total_samples
-
 
 def encode_audio(
     audio: Any,
@@ -415,7 +391,6 @@ def encode_audio(
         raise ValueError(f"Unsupported audio format: {response_format!r}")
     logger.warning("Unknown audio format '%s'; falling back to WAV", fmt)
     return encode_wav(arr, sample_rate), FORMAT_MIME_TYPES["wav"]
-
 
 def audio_to_base64(
     audio: Any,

@@ -7,14 +7,12 @@ from typing import Any
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
-
 class UsageResponse(BaseModel):
     """Token usage statistics."""
 
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
-
 
 class ChatMessage(BaseModel):
     """A single message in a chat conversation."""
@@ -25,15 +23,13 @@ class ChatMessage(BaseModel):
     tool_calls: list[dict[str, Any]] | None = None
     tool_call_id: str | None = None
 
-
 class ChatCompletionAudio(BaseModel):
     """Audio data returned in a chat completion response."""
 
     id: str
-    data: str  # base64-encoded audio
+    data: str
     expires_at: int | None = None
     transcript: str | None = None
-
 
 class ChatCompletionRequest(BaseModel):
     """OpenAI-compatible chat completion request."""
@@ -43,7 +39,6 @@ class ChatCompletionRequest(BaseModel):
     model: str | None = None
     messages: list[ChatMessage]
 
-    # Sampling parameters
     temperature: float | None = None
     top_p: float | None = None
     top_k: int | None = None
@@ -54,25 +49,16 @@ class ChatCompletionRequest(BaseModel):
     stop: str | list[str] | None = None
     seed: int | None = None
 
-    # Streaming
     stream: bool = False
 
-    # Multi-modal output control
-    modalities: list[str] | None = None  # e.g. ["text", "audio"]
+    modalities: list[str] | None = None
 
-    # Audio output configuration
-    audio: dict[str, Any] | None = None  # {"voice": "...", "format": "wav"}
+    audio: dict[str, Any] | None = None
 
-    # Audio input (sglang-omni extension)
-    # Can be a list of audio file paths (local paths or URLs)
     audios: list[str] | None = None
 
-    # Image input (sglang-omni extension)
-    # Can be a list of image file paths (local paths or URLs)
     images: list[str] | None = None
 
-    # Video input (sglang-omni extension)
-    # Can be a list of video file paths (local paths or URLs)
     videos: list[str] | None = None
     video_fps: float | None = None
     video_max_frames: int | None = None
@@ -80,18 +66,15 @@ class ChatCompletionRequest(BaseModel):
     video_max_pixels: int | None = None
     video_total_pixels: int | None = None
 
-    # Per-stage sampling overrides (sglang-omni specific)
     stage_sampling: dict[str, dict[str, Any]] | None = None
     stage_params: dict[str, dict[str, Any]] | None = None
 
-    # Talker-specific overrides for Qwen3-Omni speech output
     talker_temperature: float | None = None
     talker_top_p: float | None = None
     talker_top_k: int | None = None
     talker_repetition_penalty: float | None = None
     talker_max_new_tokens: int | None = None
 
-    # Misc
     request_id: str | None = None
     user: str | None = None
 
@@ -99,14 +82,12 @@ class ChatCompletionRequest(BaseModel):
     def effective_max_tokens(self) -> int | None:
         return self.max_completion_tokens or self.max_tokens
 
-
 class ChatCompletionChoice(BaseModel):
     """A single choice in a chat completion response."""
 
     index: int = 0
     message: dict[str, Any]
     finish_reason: str | None = "stop"
-
 
 class ChatCompletionResponse(BaseModel):
     """OpenAI-compatible chat completion response."""
@@ -118,7 +99,6 @@ class ChatCompletionResponse(BaseModel):
     choices: list[ChatCompletionChoice]
     usage: UsageResponse | None = None
 
-
 class ChatCompletionStreamDelta(BaseModel):
     """Delta content in a streaming chunk."""
 
@@ -126,14 +106,12 @@ class ChatCompletionStreamDelta(BaseModel):
     content: str | None = None
     audio: ChatCompletionAudio | None = None
 
-
 class ChatCompletionStreamChoice(BaseModel):
     """A single choice in a streaming chunk."""
 
     index: int = 0
     delta: ChatCompletionStreamDelta
     finish_reason: str | None = None
-
 
 class ChatCompletionStreamResponse(BaseModel):
     """OpenAI-compatible streaming chunk."""
@@ -144,7 +122,6 @@ class ChatCompletionStreamResponse(BaseModel):
     model: str
     choices: list[ChatCompletionStreamChoice]
     usage: UsageResponse | None = None
-
 
 class RolloutSamplingParams(BaseModel):
     """Typed sampling params for ``POST /generate``."""
@@ -162,13 +139,11 @@ class RolloutSamplingParams(BaseModel):
     max_new_tokens: int | None = Field(default=None, ge=1)
     max_tokens: int | None = Field(default=None, ge=1)
 
-
 class RolloutMessage(BaseModel):
     """Chat message for ``POST /generate`` (role and content required)."""
 
     role: str = Field(min_length=1)
     content: str | list[Any]
-
 
 class RolloutGenerateRequest(BaseModel):
     """Rollout request for ``POST /generate``; set exactly one of
@@ -197,13 +172,11 @@ class RolloutGenerateRequest(BaseModel):
     return_routed_experts: bool = False
     return_indexer_topk: bool = False
 
-
 class GenerateFinishReason(BaseModel):
     """Finish status for a rollout generation."""
 
     type: str
     length: int | None = None
-
 
 class GenerateAudio(BaseModel):
     """Audio payload for a rollout generation."""
@@ -212,7 +185,6 @@ class GenerateAudio(BaseModel):
     path: str | None = None
     format: str | None = None
     sample_rate: int | None = None
-
 
 class GenerateMetaInfo(BaseModel):
     """Rollout meta_info block."""
@@ -226,14 +198,12 @@ class GenerateMetaInfo(BaseModel):
     output_token_logprobs: list[Any] | None = None
     omni_rollout: dict[str, Any] | None = None
 
-
 class GenerateResponse(BaseModel):
     """Response body for ``POST /generate``."""
 
     text: str = ""
     audio: GenerateAudio | None = None
     meta_info: GenerateMetaInfo
-
 
 SUPPORTED_TTS_RESPONSE_FORMATS = frozenset({"wav", "mp3", "flac", "pcm", "aac", "opus"})
 SUPPORTED_TTS_LANGUAGES = frozenset(
@@ -256,7 +226,6 @@ TTS_SPEED_MIN = 0.25
 TTS_SPEED_MAX = 4.0
 DEFAULT_TTS_BATCH_MAX_ITEMS = 32
 
-
 class SpeechReference(BaseModel):
     """Reference item for voice cloning in /v1/audio/speech."""
 
@@ -268,7 +237,6 @@ class SpeechReference(BaseModel):
     text: str | None = None
     vq_codes: list[list[int]] | list[int] | None = None
 
-
 class CreateSpeechRequest(BaseModel):
     """OpenAI-compatible text-to-speech request.
 
@@ -278,7 +246,6 @@ class CreateSpeechRequest(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    # Standard OpenAI fields
     model: str | None = None
     input: str
     voice: str = Field(
@@ -289,21 +256,18 @@ class CreateSpeechRequest(BaseModel):
     speed: float = 1.0
     stream: bool = False
 
-    # Advanced TTS extensions
-    task_type: str | None = None  # e.g. "Base", "CustomVoice", "VoiceDesign"
+    task_type: str | None = None
     language: str | None = None
-    instructions: str | None = None  # style/emotion instructions
+    instructions: str | None = None
 
-    # Voice cloning parameters
-    ref_audio: str | None = None  # path or URL to reference audio
-    ref_text: str | None = None  # transcript of reference audio
-    references: list[SpeechReference] | None = None  # S2-Pro-style refs
+    ref_audio: str | None = None
+    ref_text: str | None = None
+    references: list[SpeechReference] | None = None
     x_vector_only_mode: bool | None = None
-    token_count: int | None = None  # MOSS-TTS duration token target
-    duration_tokens: int | None = None  # alias for token_count
+    token_count: int | None = None
+    duration_tokens: int | None = None
     initial_codec_chunk_frames: int | None = Field(default=None, ge=0)
 
-    # Generation parameters
     max_new_tokens: int | None = None
     temperature: float | None = None
     top_p: float | None = None
@@ -311,9 +275,7 @@ class CreateSpeechRequest(BaseModel):
     repetition_penalty: float | None = None
     seed: int | None = None
 
-    # Per-stage overrides (sglang-omni specific)
     stage_params: dict[str, dict[str, Any]] | None = None
-
 
 class SpeechBatchItem(BaseModel):
     """One item in a batch text-to-speech request."""
@@ -347,7 +309,6 @@ class SpeechBatchItem(BaseModel):
     seed: Any = None
     stage_params: Any = None
 
-
 class CreateSpeechBatchRequest(BaseModel):
     """Batch text-to-speech request with shared defaults and item overrides."""
 
@@ -380,7 +341,6 @@ class CreateSpeechBatchRequest(BaseModel):
     seed: int | None = None
     stage_params: dict[str, dict[str, Any]] | None = None
 
-
 class SpeechBatchResult(BaseModel):
     """One item result in a batch text-to-speech response."""
 
@@ -391,7 +351,6 @@ class SpeechBatchResult(BaseModel):
     media_type: str | None = None
     error: dict[str, Any] | None = None
 
-
 class SpeechBatchResponse(BaseModel):
     """Batch text-to-speech response preserving item order."""
 
@@ -400,7 +359,6 @@ class SpeechBatchResponse(BaseModel):
     total: int
     succeeded: int
     failed: int
-
 
 class SpeechStreamSessionConfig(BaseModel):
     """Configuration for /v1/audio/speech/stream WebSocket sessions."""
@@ -434,7 +392,6 @@ class SpeechStreamSessionConfig(BaseModel):
     seed: int | None = None
     stage_params: dict[str, dict[str, Any]] | None = None
 
-
 class UploadedVoiceMetadata(BaseModel):
     """Metadata returned for an uploaded TTS voice sample."""
 
@@ -446,7 +403,6 @@ class UploadedVoiceMetadata(BaseModel):
     ref_text: str | None = None
     speaker_description: str | None = None
 
-
 class VoiceListResponse(BaseModel):
     """Voice registry response for /v1/audio/voices."""
 
@@ -456,12 +412,10 @@ class VoiceListResponse(BaseModel):
         description="API-process uploaded-voice reference cache counters."
     )
 
-
 class TranscriptionResponse(BaseModel):
     """OpenAI-compatible transcription response."""
 
     text: str
-
 
 class ModelPermission(BaseModel):
     """Model permission info."""
@@ -471,7 +425,6 @@ class ModelPermission(BaseModel):
     allow_create_engine: bool = False
     allow_sampling: bool = True
     allow_logprobs: bool = True
-
 
 class ModelCard(BaseModel):
     """A single model entry."""
@@ -485,13 +438,11 @@ class ModelCard(BaseModel):
     )
     root: str | None = None
 
-
 class ModelList(BaseModel):
     """Response for GET /v1/models."""
 
     object: str = "list"
     data: list[ModelCard] = Field(default_factory=list)
-
 
 class AdminRequestBase(BaseModel):
     """Common admin request routing controls."""
@@ -499,14 +450,11 @@ class AdminRequestBase(BaseModel):
     stages: list[str] | None = None
     timeout_s: float | None = None
 
-
 class PauseGenerationRequest(AdminRequestBase):
     mode: str = "abort"
 
-
 class ContinueGenerationRequest(AdminRequestBase):
     torch_empty_cache: bool = True
-
 
 class UpdateWeightFromDiskRequest(AdminRequestBase):
     model_path: str
@@ -521,7 +469,6 @@ class UpdateWeightFromDiskRequest(AdminRequestBase):
     flush_cache: bool = True
     manifest: dict[str, Any] | None = None
 
-
 class UpdateWeightsFromTensorRequest(AdminRequestBase):
     serialized_named_tensors: list[Any] | None = None
     load_format: str | None = None
@@ -530,7 +477,6 @@ class UpdateWeightsFromTensorRequest(AdminRequestBase):
     weight_version: str | None = None
     disable_draft_model: bool | None = None
     torch_empty_cache: bool = False
-
 
 class UpdateWeightsFromDistributedRequest(AdminRequestBase):
     names: list[str]
@@ -543,7 +489,6 @@ class UpdateWeightsFromDistributedRequest(AdminRequestBase):
     load_format: str | None = None
     torch_empty_cache: bool = False
 
-
 class InitWeightsUpdateGroupRequest(AdminRequestBase):
     master_address: str
     master_port: int
@@ -552,10 +497,8 @@ class InitWeightsUpdateGroupRequest(AdminRequestBase):
     group_name: str = "weight_update_group"
     backend: str = "nccl"
 
-
 class DestroyWeightsUpdateGroupRequest(AdminRequestBase):
     group_name: str = "weight_update_group"
-
 
 class WeightsCheckerRequest(AdminRequestBase):
     action: str = "checksum"

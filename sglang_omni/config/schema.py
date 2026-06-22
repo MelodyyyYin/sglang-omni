@@ -7,7 +7,6 @@ from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-
 class RelayConfig(BaseModel):
     """Relay configuration for stage data transfer."""
 
@@ -19,14 +18,12 @@ class RelayConfig(BaseModel):
     world_size: int | None = None
     device: str = "cpu"
 
-
 class EndpointsConfig(BaseModel):
     """Endpoint allocation settings."""
 
     model_config = ConfigDict(extra="forbid")
 
     base_path: str = "/tmp/sglang_omni"
-
 
 class ParallelismConfig(BaseModel):
     """Supported parallelism for one logical stage."""
@@ -38,7 +35,6 @@ class ParallelismConfig(BaseModel):
     def model_post_init(self, __context: Any = None) -> None:
         if self.tp < 1:
             raise ValueError("parallelism.tp must be >= 1")
-
 
 class StageResourceConfig(BaseModel):
     """Placement-resource intent for one stage rank/process."""
@@ -61,7 +57,6 @@ class StageResourceConfig(BaseModel):
                 "runtime.resources.total_gpu_memory_fraction must be in (0, 1]"
             )
 
-
 class SGLangServerArgsConfig(BaseModel):
     """Typed subset of SGLang ServerArgs exposed through pipeline config."""
 
@@ -75,7 +70,6 @@ class SGLangServerArgsConfig(BaseModel):
             raise ValueError(
                 "runtime.sglang_server_args.mem_fraction_static must be in (0, 1)"
             )
-
 
 class StageRuntimeConfig(BaseModel):
     """Typed runtime intent for one stage.
@@ -100,7 +94,6 @@ class StageRuntimeConfig(BaseModel):
         if self.video_fps is not None and self.video_fps <= 0:
             raise ValueError("runtime.video_fps must be positive")
 
-
 class PlacementConfig(BaseModel):
     """Pipeline-level placement planning limits."""
 
@@ -115,7 +108,6 @@ class PlacementConfig(BaseModel):
             raise ValueError(
                 "placement.max_total_gpu_memory_fraction_per_gpu must be in (0, 1]"
             )
-
 
 class StageConfig(BaseModel):
     """Single pipeline stage configuration.
@@ -137,42 +129,33 @@ class StageConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    # --- Identity ---
     name: str
 
-    # --- Factory ---
     factory: str
     factory_args: dict[str, Any] = Field(default_factory=dict)
 
-    # --- Routing (set `next` for static routing or `terminal`) ---
     next: str | list[str] | None = None
     terminal: bool = False
     route_fn: str | None = None
 
-    # --- GPU / parallelism ---
     gpu: int | list[int] | None = None
     tp_size: int = 1
     parallelism: ParallelismConfig = Field(default_factory=ParallelismConfig)
     process: str | None = None
 
-    # --- Runtime intent ---
     runtime: StageRuntimeConfig = Field(default_factory=StageRuntimeConfig)
     runtime_arg_map: dict[str, str] = Field(default_factory=dict)
 
-    # --- Fan-in ---
     wait_for: list[str] | None = None
     wait_for_fn: str | None = None
     merge_fn: str | None = None
 
-    # --- Streaming ---
     stream_to: list[str] = Field(default_factory=list)
     stream_done_to_fn: str | None = None
     can_accept_stream_before_payload: bool = False
 
-    # --- Route-specific payload projection ---
     project_payload: dict[str, str] = Field(default_factory=dict)
 
-    # --- Relay (auto-inferred from gpu when None) ---
     relay: RelayConfig | None = None
 
     def model_post_init(self, __context: Any = None) -> None:
@@ -196,7 +179,6 @@ class StageConfig(BaseModel):
             parallelism_set and not tp_size_set and self.tp_size != self.parallelism.tp
         ):
             self.tp_size = self.parallelism.tp
-
 
 class PipelineConfig(BaseModel):
     """Top-level pipeline configuration."""
@@ -452,14 +434,12 @@ class PipelineConfig(BaseModel):
     def from_dict(data: dict[str, Any]) -> PipelineConfig:
         return PipelineConfig(**data)
 
-
 def _target_list(targets: str | list[str] | None) -> list[str]:
     if targets is None:
         return []
     if isinstance(targets, str):
         return [targets]
     return list(targets)
-
 
 def _stage_gpu_ids_for_fusion(stage: StageConfig) -> tuple[int, ...]:
     gpu = stage.gpu
