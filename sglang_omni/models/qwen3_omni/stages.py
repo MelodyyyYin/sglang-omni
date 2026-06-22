@@ -1,10 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Stage factories for Qwen3-Omni pipelines.
-
-Each factory returns either:
-- A callable (compute_fn) for simple stages
-- An OmniScheduler for AR stages
-"""
+"""Stage factories for Qwen3-Omni pipelines (return a compute_fn callable or an OmniScheduler for AR stages)."""
 from __future__ import annotations
 
 import logging
