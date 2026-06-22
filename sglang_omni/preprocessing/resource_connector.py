@@ -23,10 +23,8 @@ from .base import MediaIO
 _M = TypeVar("_M")
 _MAX_HTTP_REDIRECTS = 5
 
-# Global thread pool for CPU-bound tasks (decoding/resampling)
 global_thread_pool = ThreadPoolExecutor(max_workers=8)
 atexit.register(global_thread_pool.shutdown)
-
 
 class ResourceHTTPConnection:
     """Manages persistent HTTP clients for connection pooling."""
@@ -60,9 +58,7 @@ class ResourceHTTPConnection:
         if self._client:
             self._client.close()
 
-
 global_http_connection = ResourceHTTPConnection()
-
 
 def resolve_allowed_local_media_path(path: str | Path) -> Path:
     resolved = Path(path).expanduser().resolve()
@@ -70,20 +66,17 @@ def resolve_allowed_local_media_path(path: str | Path) -> Path:
         raise ValueError(f"allowed local media path must be a directory: {path}")
     return resolved
 
-
 def _next_redirect_url(response: httpx.Response) -> str:
     location = response.headers.get("location")
     if not location:
         raise ValueError("Redirect response is missing a Location header.")
     return str(response.url.join(location))
 
-
 def _response_media_type(response: httpx.Response) -> str | None:
     content_type = response.headers.get("content-type")
     if not content_type:
         return None
     return content_type.split(";", 1)[0].strip().lower() or None
-
 
 def _validate_response_length(
     response: httpx.Response, *, max_bytes: int | None
@@ -100,11 +93,9 @@ def _validate_response_length(
     if size > max_bytes:
         raise ValueError(f"Media URL response exceeds {max_bytes} bytes.")
 
-
 def _validate_downloaded_size(size: int, *, max_bytes: int | None) -> None:
     if max_bytes is not None and size > max_bytes:
         raise ValueError(f"Media URL response exceeds {max_bytes} bytes.")
-
 
 def _resolve_remote_addresses(
     hostname: str,
@@ -130,7 +121,6 @@ def _resolve_remote_addresses(
         raise ValueError(f"Could not resolve media URL hostname: {hostname}")
     return tuple(addresses)
 
-
 def _unsafe_remote_address_category(
     address: ipaddress.IPv4Address | ipaddress.IPv6Address,
 ) -> str | None:
@@ -148,14 +138,12 @@ def _unsafe_remote_address_category(
         return "unspecified"
     return None
 
-
 def _is_allowed_remote_domain(hostname: str, allowed_domain: str) -> bool:
     allowed_domain = allowed_domain.rstrip(".").lower()
     if allowed_domain.startswith("."):
         suffix = allowed_domain[1:]
         return hostname == suffix or hostname.endswith(allowed_domain)
     return hostname == allowed_domain
-
 
 def _read_limited_response_bytes(
     response: httpx.Response, *, max_bytes: int | None
@@ -171,7 +159,6 @@ def _read_limited_response_bytes(
         chunks.append(chunk)
     return b"".join(chunks)
 
-
 def _media_http_error(exc: httpx.HTTPError, url: str) -> ValueError:
     if isinstance(exc, httpx.HTTPStatusError):
         status_code = exc.response.status_code
@@ -179,7 +166,6 @@ def _media_http_error(exc: httpx.HTTPError, url: str) -> ValueError:
     if isinstance(exc, httpx.TimeoutException):
         return ValueError(f"Timed out loading media URL: {url}")
     return ValueError(f"Failed to load media URL {url}: {exc}")
-
 
 async def _read_limited_response_bytes_async(
     response: httpx.Response, *, max_bytes: int | None
@@ -194,7 +180,6 @@ async def _read_limited_response_bytes_async(
         _validate_downloaded_size(total, max_bytes=max_bytes)
         chunks.append(chunk)
     return b"".join(chunks)
-
 
 class MultiModalResourceConnector:
     """Connector for optimized multi-modal data loading."""
@@ -554,9 +539,7 @@ class MultiModalResourceConnector:
 
         return await self.load_resource_async(video_url, video_io, timeout=timeout)
 
-
 _global_connector: MultiModalResourceConnector | None = None
-
 
 def get_global_resource_connector() -> MultiModalResourceConnector:
     """Get or create the global resource connector."""

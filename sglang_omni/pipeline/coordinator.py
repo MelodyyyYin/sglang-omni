@@ -29,14 +29,12 @@ from sglang_omni.proto import (
 
 logger = logging.getLogger(__name__)
 
-
 @dataclass
 class _AdminPendingOperation:
     expected_stages: set[str]
     action: str
     results: dict[str, AdminResult] = field(default_factory=dict)
     future: asyncio.Future | None = None
-
 
 class Coordinator:
     """Central coordinator for the multi-stage pipeline.
@@ -75,16 +73,13 @@ class Coordinator:
         self._terminal_stages_resolver = terminal_stages_resolver
         self._partial_results: dict[str, dict[str, Any]] = {}
 
-        # Control plane
         self.control_plane = CoordinatorControlPlane(
             completion_endpoint=completion_endpoint,
             abort_endpoint=abort_endpoint,
         )
 
-        # Stage registry
         self._stages: dict[str, StageInfo] = {}
 
-        # Request tracking
         self._requests: dict[str, RequestInfo] = {}
         self._completion_futures: dict[str, asyncio.Future] = {}
         self._stream_queues: dict[
@@ -93,7 +88,6 @@ class Coordinator:
         self._admin_ops: dict[str, _AdminPendingOperation] = {}
         self._admin_lock = asyncio.Lock()
 
-        # State
         self._running = False
         self._fatal_error: str | None = None
 
@@ -374,7 +368,6 @@ class Coordinator:
         if not isinstance(request, OmniRequest):
             request = OmniRequest(inputs=request)
 
-        # Track request
         self._requests[request_id] = RequestInfo(
             request_id=request_id,
             state=RequestState.PENDING,
@@ -382,7 +375,6 @@ class Coordinator:
             terminal_stages=self._resolve_terminal_stages(request),
         )
 
-        # Create future for completion
         loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
         self._completion_futures[request_id] = future
@@ -400,7 +392,6 @@ class Coordinator:
             metadata={"entry_stage": self.entry_stage},
         )
 
-        # Submit to entry stage
         entry_info = self._stages[self.entry_stage]
         await self.control_plane.submit_to_stage(
             self.entry_stage,
@@ -408,7 +399,6 @@ class Coordinator:
             SubmitMessage(request_id=request_id, data=payload),
         )
 
-        # Update state
         self._requests[request_id].state = RequestState.RUNNING
 
         logger.info(
@@ -438,13 +428,10 @@ class Coordinator:
         ):
             return False
 
-        # Broadcast abort to all stages
         await self.control_plane.broadcast_abort(AbortMessage(request_id=request_id))
 
-        # Update state
         info.state = RequestState.ABORTED
 
-        # Resolve future with error
         if request_id in self._completion_futures:
             self._completion_futures[request_id].set_exception(
                 asyncio.CancelledError(f"Request {request_id} aborted")
@@ -459,7 +446,6 @@ class Coordinator:
                 )
             )
 
-        # Cleanup request tracking
         self._requests.pop(request_id, None)
         self._partial_results.pop(request_id, None)
 
@@ -513,7 +499,6 @@ class Coordinator:
 
         info = self._requests[request_id]
 
-        # Fail-fast: any terminal failure -> fail entire request
         if not msg.success:
             info.state = RequestState.FAILED
             info.error = msg.error
@@ -541,7 +526,6 @@ class Coordinator:
             )
             return
 
-        # Single active terminal (original behavior) or no terminal_stages configured
         if len(expected_terminal_stages) <= 1:
             info.state = RequestState.COMPLETED
             info.result = msg.result
@@ -554,18 +538,15 @@ class Coordinator:
             self._requests.pop(request_id, None)
             return
 
-        # Multi-terminal: collect partial results
         partials = self._partial_results.setdefault(request_id, {})
         partials[msg.from_stage] = msg.result
 
-        # Forward stream completion per-stage
         if request_id in self._stream_queues:
             await self._stream_queues[request_id].put(msg)
 
         if set(partials) < expected_terminal_stages:
-            return  # still waiting
+            return
 
-        # All terminal stages done -> merge and resolve
         merged = dict(partials)
         self._partial_results.pop(request_id)
         info.state = RequestState.COMPLETED
@@ -718,12 +699,11 @@ class Coordinator:
             "request_states": state_counts,
         }
 
-
 async def run_coordinator(
     completion_endpoint: str,
     abort_endpoint: str,
     entry_stage: str,
-    stages: dict[str, str],  # name -> endpoint
+    stages: dict[str, str],
     terminal_stages: list[str] | None = None,
     terminal_stages_resolver: Callable[[OmniRequest], list[str] | None] | None = None,
 ) -> Coordinator:
@@ -747,11 +727,9 @@ async def run_coordinator(
         terminal_stages_resolver=terminal_stages_resolver,
     )
 
-    # Register stages
     for name, endpoint in stages.items():
         coordinator.register_stage(name, endpoint)
 
-    # Start
     await coordinator.start()
 
     return coordinator

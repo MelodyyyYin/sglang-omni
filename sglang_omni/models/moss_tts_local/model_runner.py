@@ -14,7 +14,6 @@ from sglang_omni.models.moss_tts_local.state_pool import MossTTSLocalDecodeJourn
 from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.types import RequestOutput
 
-
 class MossTTSLocalModelRunner(ModelRunner):
     """Drives the per-frame local-transformer decode and feedback embeddings.
 
@@ -133,17 +132,8 @@ class MossTTSLocalModelRunner(ModelRunner):
             prefix_len = len(req.prefix_indices)
             pool = self.model._state_pool
             if data.output_rows:
-                # KV-pressure retraction re-prefills with an extend region
-                # spanning already-generated frames; their rows live in
-                # output_rows, not prompt_rows. The resumed prefill samples
-                # the next frame itself, superseding any feedback embedding
-                # stranded by the retraction.
                 generated = torch.stack(data.output_rows, dim=0)
                 rows = torch.cat([rows.to(generated.device), generated], dim=0)
-            # Realign the launch-side counter and clear the stranded pool row on
-            # any retraction re-prefill, including one retracted before it emitted
-            # a frame (empty output_rows). Both are no-ops for a fresh prefill:
-            # the counters are already aligned and no pool row is held.
             generation_steps = int(data.generation_steps)
             data.sampling_steps = generation_steps
             pool.reset_for_refill(sched_req.request_id, generation_steps)
@@ -217,7 +207,6 @@ class MossTTSLocalModelRunner(ModelRunner):
         if not requests:
             return
         rows, end_id = self._run_frame_decode(result, forward_batch, requests)
-        # Radix key is a capture-safe GPU hash: a device op, no host sync.
         next_text = rows[:, 0]
         next_token_ids = self._row_radix_token_ids(rows, next_text, end_id)
         result.next_token_ids = next_token_ids
@@ -280,9 +269,6 @@ class MossTTSLocalModelRunner(ModelRunner):
         audio_top_p = params["audio_top_p"]
         audio_top_k = params["audio_top_k"]
         sampling_seeds = params["seeds"]
-        # Advance the launch-side counter only for emitted rows; non-final
-        # chunked rows take a read-only position so a mid-prefill chunk's frame
-        # cannot shift the final chunk's sampling position off the no-chunk path.
         emit_set = {
             i
             for i, sched_req in enumerate(requests)
@@ -346,8 +332,6 @@ class MossTTSLocalModelRunner(ModelRunner):
                 seeds=sampling_seeds,
                 base_positions=gen_steps * num_channels,
             )
-            # The graph outputs are static buffers that the next replay (any
-            # later prefill or decode step) overwrites; snapshot what we keep.
             codes = codes.clone()
             embeds = feedback.clone()
         else:
@@ -413,8 +397,6 @@ class MossTTSLocalModelRunner(ModelRunner):
                 pool_rows=emit_pool_rows,
                 rows=emit_rows,
             )
-        # Always return rows so both the sync inline path and the async launch
-        # publish next_token_ids; an all-chunked batch just attaches no journal.
         return rows, end_id
 
     def post_decode_launch(self, result: Any, forward_batch: Any, requests: list):
@@ -589,10 +571,6 @@ class MossTTSLocalModelRunner(ModelRunner):
         scheduler_output: Any,
         outputs: dict[str, RequestOutput],
     ) -> None:
-        # The per-step journal is the single source of truth for output
-        # collection. A missing journal means no frame was produced this step
-        # (e.g. a prefill-only batch), which is the synchronous-baseline early
-        # return.
         try:
             journal = result.moss_journal
         except AttributeError:
@@ -621,9 +599,6 @@ class MossTTSLocalModelRunner(ModelRunner):
             )
         rows_cpu: torch.Tensor | None = None
         for i, sched_req in enumerate(expected_reqs):
-            # Overrun: a request finished or retracted in a PRIOR step is still
-            # in this lagged resolve batch; its wasted frame must not reach
-            # output_rows / the vocoder. No-op on the sync path.
             req = sched_req.data.req
             if req is not None:
                 try:
@@ -646,7 +621,6 @@ class MossTTSLocalModelRunner(ModelRunner):
             if self._outbox is None:
                 continue
             if rows_cpu is None:
-                # One D2H per step regardless of how many requests stream.
                 rows_cpu = journal.rows.detach().to("cpu", torch.long)
             self._outbox.put(
                 OutgoingMessage(

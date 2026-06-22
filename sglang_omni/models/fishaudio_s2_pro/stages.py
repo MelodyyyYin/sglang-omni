@@ -20,7 +20,6 @@ from sglang_omni.proto import StagePayload
 
 logger = logging.getLogger(__name__)
 
-
 def _compile_s2pro_codebook_decoder(model: Any, *, max_batch_size: int) -> None:
     """Compile Fast AR decoder layers while leaving sampling and loop control eager."""
     from sglang.srt.model_executor.cuda_graph_runner import set_torch_compile_config
@@ -49,14 +48,12 @@ def _compile_s2pro_codebook_decoder(model: Any, *, max_batch_size: int) -> None:
         max_batch_size,
     )
 
-
 def _resolve_checkpoint(checkpoint: str) -> str:
     if os.path.isdir(checkpoint):
         return checkpoint
     from huggingface_hub import snapshot_download
 
     return snapshot_download(checkpoint)
-
 
 def _load_codec(checkpoint_dir: str, device: str):
     from hydra.utils import instantiate
@@ -79,20 +76,12 @@ def _load_codec(checkpoint_dir: str, device: str):
     codec.eval().to(device)
     return codec
 
-
 def load_state(payload: StagePayload) -> S2ProState:
     return S2ProState.from_dict(payload.data)
-
 
 def store_state(payload: StagePayload, state: S2ProState) -> StagePayload:
     payload.data = state.to_dict()
     return payload
-
-
-# ---------------------------------------------------------------------------
-# Preprocessing — returns callable
-# ---------------------------------------------------------------------------
-
 
 def create_preprocessing_executor(
     model_path: str,
@@ -201,12 +190,6 @@ def create_preprocessing_executor(
         return store_state(payload, state)
 
     return ThreadedSimpleScheduler(_preprocess, max_concurrency=max_concurrency)
-
-
-# ---------------------------------------------------------------------------
-# TTS Engine — returns OmniScheduler
-# ---------------------------------------------------------------------------
-
 
 def create_sglang_tts_engine_executor(
     model_path: str,
@@ -327,12 +310,6 @@ def create_sglang_tts_engine_executor(
         max_new_tokens=max_new_tokens,
     )
     return scheduler
-
-
-# ---------------------------------------------------------------------------
-# Vocoder — returns callable
-# ---------------------------------------------------------------------------
-
 
 def create_vocoder_executor(
     model_path: str,

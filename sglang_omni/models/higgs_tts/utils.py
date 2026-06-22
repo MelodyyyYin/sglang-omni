@@ -24,13 +24,10 @@ from sglang_omni.preprocessing.audio import AudioMediaIO
 from sglang_omni.preprocessing.base import _is_url
 from sglang_omni.preprocessing.resource_connector import global_http_connection
 
-# Codec-vocab specials (inside the [N*V] codebook space, NOT the text vocab).
 BOC_ID = 1024
 EOC_ID = 1025
 
-# Shared between audio_encoder + vocoder; one codec load saves ~1 GB VRAM.
 _CODEC_CACHE: dict[tuple[str, str, str], HiggsAudioCodec] = {}
-
 
 def apply_delay_pattern(codes_TN: torch.Tensor) -> torch.Tensor:
     """``[T, N]`` raw codes → ``[T + N - 1, N]`` delayed, BOC/EOC padded."""
@@ -47,7 +44,6 @@ def apply_delay_pattern(codes_TN: torch.Tensor) -> torch.Tensor:
         out[t_idx < c, c] = BOC_ID
         out[c : c + T, c] = codes_TN[:, c]
     return out
-
 
 def reverse_delay_pattern(delayed_LN: torch.Tensor) -> torch.Tensor:
     """``[L, N]`` delayed (L >= N) → ``[L - (N - 1), N]`` raw codes."""
@@ -67,7 +63,6 @@ def reverse_delay_pattern(delayed_LN: torch.Tensor) -> torch.Tensor:
         out[:, c] = delayed_LN[c : c + T, c]
     return out
 
-
 def truncate_rope_to_bf16(model: torch.nn.Module) -> None:
     """bf16-truncate sglang's fp32 ``cos_sin_cache`` in-place (stored as fp32)
     to match Higgs's bf16 training-time RoPE.
@@ -78,13 +73,11 @@ def truncate_rope_to_bf16(model: torch.nn.Module) -> None:
             truncated = cache.to(torch.bfloat16).to(cache.dtype)
             cache.copy_(truncated)
 
-
 def resolve_checkpoint(checkpoint: str) -> str:
     """Local dir or HF repo id → local snapshot path."""
     if Path(checkpoint).is_dir():
         return checkpoint
     return snapshot_download(checkpoint)
-
 
 def get_or_load_codec(path: str, device: str, dtype: str) -> HiggsAudioCodec:
     """Process-wide cached :class:`HiggsAudioCodec` per (path, device, dtype)."""
@@ -98,7 +91,6 @@ def get_or_load_codec(path: str, device: str, dtype: str) -> HiggsAudioCodec:
     _CODEC_CACHE[key] = codec
     return codec
 
-
 def to_codes_TN(raw: Any, num_codebooks: int) -> torch.Tensor | None:
     """Coerce client-supplied ``reference_codes`` to a ``[T, N]`` int64 tensor."""
     if raw is None:
@@ -111,7 +103,6 @@ def to_codes_TN(raw: Any, num_codebooks: int) -> torch.Tensor | None:
             f"reference_codes must have shape [T, {num_codebooks}], got {tuple(t.shape)}"
         )
     return t.to(torch.long)
-
 
 def load_audio_to_24k(reference_audio: Any) -> tuple[np.ndarray, int]:
     """Load ``inputs["reference_audio"]`` as 24 kHz mono float32.
@@ -145,7 +136,6 @@ def load_audio_to_24k(reference_audio: Any) -> tuple[np.ndarray, int]:
             reference_audio.get("audio_path") or reference_audio["path"]
         )
     raise ValueError("reference_audio must include audio_path, path, bytes, or data")
-
 
 __all__ = [
     "BOC_ID",
