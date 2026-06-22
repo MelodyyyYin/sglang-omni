@@ -1,15 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""OmniScheduler — stage-facing AR scheduler using composition.
-
-Uses SGLang's batch selection and result processing logic via **unbound
-method calls** on the upstream ``Scheduler`` class.  No inheritance.
-
-When an upstream method (e.g. ``get_next_batch_to_run``) internally calls
-``self.get_new_batch_prefill()``, Python finds it through
-``OmniScheduler.__getattr__`` → looks it up on the upstream class → binds
-it to this instance.  This gives us the full scheduling MRO without
-inheriting from ``SGLangScheduler``.
-"""
+"""OmniScheduler — stage-facing AR scheduler using composition: SGLang scheduling methods are called unbound on the upstream ``Scheduler`` class (resolved via ``__getattr__``), giving the full MRO without inheritance."""
 
 from __future__ import annotations
 
@@ -78,19 +68,7 @@ class _NoOpGrammarManager:
 
 
 class OmniScheduler:
-    """Stage-facing scheduler for AR stages.
-
-    Public contract (used by Stage):
-        ``inbox``, ``outbox``, ``start()``, ``stop()``, ``abort(request_id)``
-
-    Composition strategy:
-        SGLang scheduling methods (``get_next_batch_to_run``,
-        ``process_batch_result``, …) are looked up on the upstream
-        ``Scheduler`` *class* via ``__getattr__`` and called with this
-        instance as ``self``.  Methods we override (``recv_requests``,
-        ``process_input_requests``, ``run_batch``, ``send_to_tokenizer``)
-        are defined directly on this class and take precedence.
-    """
+    """Stage-facing scheduler for AR stages (public: inbox/outbox/start/stop/abort); SGLang methods are looked up on the upstream class via ``__getattr__``, while methods defined here take precedence."""
 
     def __init__(
         self,
@@ -139,6 +117,7 @@ class OmniScheduler:
         self.moe_ep_size = 1
         self.page_size = server_args.page_size
         self.enable_overlap = enable_overlap
+        # One-step-lookahead async decode; only safe for runners implementing post_decode_launch/resolve.
         self.enable_async_decode = enable_async_decode
         self.async_decode_min_batch_size = int(async_decode_min_batch_size)
         if model_runner is not None:
@@ -347,11 +326,7 @@ class OmniScheduler:
         return None
 
     def __getattr__(self, name: str):
-        """Look up methods on the upstream SGLang Scheduler class.
-
-        This gives us access to the full scheduling MRO (batch selection,
-        result processing, memory checks, etc.) without inheriting.
-        """
+        """Look up methods on the upstream SGLang Scheduler class, giving the full scheduling MRO without inheriting."""
         if name == "grammar_queue":
             value = []
             self.__dict__[name] = value
@@ -595,14 +570,7 @@ class OmniScheduler:
             return _FAILED_BATCH_RESULT
 
     def _run_batch(self, batch, pp_proxy_tensors=None):
-        """Run a batch through the model runner.
-
-        The custom model runner (for example ThinkerModelRunner or a
-        model-specific talker runner)
-        accepts a ``SchedulerOutput`` wrapper and returns a
-        ``ModelRunnerOutput``.  The upstream ``process_batch_result`` expects
-        a ``GenerationBatchResult``.  We bridge the two formats here.
-        """
+        """Run a batch through the model runner, bridging its ``ModelRunnerOutput`` to the ``GenerationBatchResult`` upstream ``process_batch_result`` expects."""
         self._emit_prefill_start_for_batch(batch)
         if self._model_runner is not None:
             self.forward_ct = getattr(self, "forward_ct", 0) + 1
@@ -613,8 +581,7 @@ class OmniScheduler:
         return _Upstream.run_batch(self, batch, pp_proxy_tensors)
 
     def _build_sched_output(self, batch):
-        """Wrap a ScheduleBatch into the SchedulerOutput the model runner
-        expects. Shared by the sync and async (launch) paths."""
+        """Wrap a ScheduleBatch into the SchedulerOutput the model runner expects (shared by the sync and async launch paths)."""
         from sglang_omni.scheduling.types import SchedulerOutput, SchedulerRequest
 
         sched_reqs = [
@@ -624,11 +591,7 @@ class OmniScheduler:
         return SchedulerOutput(requests=sched_reqs, batch_data=batch)
 
     def _emit_stream_output(self, sched_output, mr_output, skip_rids=()) -> None:
-        """Emit per-request stream chunks from a ModelRunnerOutput. Shared by
-        the sync and async (resolve) paths. ``skip_rids`` suppresses emission
-        for requests already finished in an earlier step (the lookahead
-        overrun) — emitting their extra chunk would corrupt the downstream
-        vocoder's delayed-code stream."""
+        """Emit per-request stream chunks from a ModelRunnerOutput (shared sync/async-resolve); ``skip_rids`` suppresses emission for lookahead-overrun reqs whose extra chunk would corrupt the downstream vocoder's delayed-code stream."""
         if self._stream_output_builder is None:
             return
         for sched_req in sched_output.requests:
@@ -663,10 +626,7 @@ class OmniScheduler:
         )
 
     def _run_batch_launch(self, batch):
-        """Async: build SchedulerOutput and launch the decode step on the GPU
-        (forward + sample, then ``post_decode_launch`` publishes the resolve
-        payload), without waiting. Returns ``(sched_output, pending_step)``; the
-        caller holds the pending step (launch-first keeps two steps in flight)."""
+        """Async: build SchedulerOutput and launch the decode step on the GPU without waiting; returns ``(sched_output, pending_step)`` held by the caller (launch-first keeps two steps in flight)."""
         self._emit_prefill_start_for_batch(batch)
         self.forward_ct = getattr(self, "forward_ct", 0) + 1
         sched_output = self._build_sched_output(batch)
@@ -674,14 +634,7 @@ class OmniScheduler:
         return sched_output, pending_step
 
     def _run_batch_resolve(self, batch, sched_output, pending_step, skip_rids=()):
-        """Async: resolve the given launched step (wait event, host collect),
-        emit its stream chunks (except overrun reqs in ``skip_rids``), and
-        return its GenerationBatchResult.
-
-        next_token_ids comes from the resolved step's own batch_result, not
-        ``batch.output_ids`` — the running batch's output_ids was already
-        consumed (reset to None) by the next step's prepare_for_decode.
-        """
+        """Async: resolve the given launched step, emit its stream chunks (except ``skip_rids``), and return its GenerationBatchResult with next_token_ids from the resolved step's own batch_result (not the already-consumed ``batch.output_ids``)."""
         from sglang.srt.managers.scheduler import GenerationBatchResult
 
         mr_output = self._model_runner.execute_resolve(pending_step)
@@ -721,12 +674,7 @@ class OmniScheduler:
             )
 
     def stream_output(self, reqs, return_logprob=False, skip_req=None):
-        """Intercept finished requests and emit to outbox.
-
-        Upstream calls this after process_batch_result to send results
-        to the detokenizer via ZMQ.  We capture finished requests here
-        and put them in the outbox so Stage can route them downstream.
-        """
+        """Intercept finished requests (called by upstream after process_batch_result) and put their results in the outbox for Stage to route downstream."""
         for req in reqs:
             if skip_req is not None and req is skip_req:
                 continue
@@ -1388,30 +1336,13 @@ class OmniScheduler:
         return (not bool(is_extend())) if callable(is_extend) else False
 
     def _async_pending_batch(self):
-        """The in-flight (launched, not yet resolved) decode batch, or None.
-
-        ``getattr`` with default so abort paths stay safe even for schedulers
-        built without going through ``__init__`` (e.g. unit-test fixtures).
-        ``_async_pending`` is ``(batch, sched_output, pending_step)`` or None.
-        """
+        """The in-flight (launched, not yet resolved) decode batch, or None (``getattr`` default keeps abort paths safe for schedulers built without ``__init__``)."""
         pending = getattr(self, "_async_pending", None)
         return pending[0] if pending is not None else None
 
     def _resolve_and_process(self, batch, sched_output, pending_step) -> None:
-        """Resolve a launched step and feed it to process_batch_result, after
-        dropping requests that already finished in an earlier step.
-
-        Lookahead overrun: a request that finishes at step S is still present in
-        step S+1's (already-launched) batch — its S+1 output is discarded by the
-        collect's ``_cg_was_done`` skip, but upstream process_batch_result would
-        re-free its KV. So drop reqs that were ALREADY finished in an earlier
-        step (and their next_token_ids rows) from this lagged batch.
-
-        Crucially, snapshot finished-state BEFORE the resolve: a req that
-        finishes *during* this step's collect (e.g. an EOC finish, which
-        _mark_sampler_finished sets) must be KEPT so process_batch_result emits
-        it — only reqs finished in a *prior* step are the overrun to drop.
-        """
+        """Resolve a launched step and feed it to process_batch_result after dropping reqs already finished in a *prior* step (lookahead overrun would re-free their KV); finished-state is snapshotted BEFORE the resolve so reqs finishing *during* this collect are kept."""
+        # A req retracted at step S is still in step S+1's lagged batch; drop it like a prior-step finish so its KV is not re-freed.
         pre_finished = [
             r.finished() or bool(getattr(r, "is_retracted", False)) for r in batch.reqs
         ]
@@ -1431,9 +1362,7 @@ class OmniScheduler:
             self.process_batch_result(batch, result)
 
     def _resolve_pending_async(self) -> None:
-        """Resolve + process the in-flight decode step, if any. Used to flush
-        before prefill / pause / shutdown so a launched step is never stranded.
-        """
+        """Resolve + process the in-flight decode step, if any, to flush before prefill/pause/shutdown so a launched step is never stranded."""
         if self._async_pending is None:
             return
         batch, sched_output, pending_step = self._async_pending
@@ -1444,12 +1373,7 @@ class OmniScheduler:
             self._handle_batch_failure(batch, exc)
 
     def _drop_stale_overrun(self, batch):
-        """Drop reqs finished OR retracted by the just-completed drain from the
-        stale fast-path batch, so run_batch does not forward/finalize them again
-        (double-free of already-freed KV). Returns the filtered batch, or None if
-        it empties. Mirrors the finished/is_retracted pre-drop in
-        _resolve_and_process; the fast path previously dropped only finished.
-        """
+        """Drop reqs finished/retracted by the just-completed drain from the stale fast-path batch so run_batch does not forward/finalize them again (double-free of freed KV); returns the filtered batch, or None if it empties."""
         if batch is None or not batch.reqs:
             return batch
         drop = [
@@ -1462,15 +1386,7 @@ class OmniScheduler:
         return batch if batch.reqs else None
 
     def _event_loop_async_decode(self) -> None:
-        """One-step-lookahead decode loop (single stream + CUDA event).
-
-        Each iteration LAUNCHES the current decode step (GPU forward + on-GPU
-        sample, then ``post_decode_launch`` publishes the resolve payload, no GPU
-        wait) and THEN RESOLVES the previous step's host-side collect, so the
-        resolve host work overlaps the current step's GPU forward (launch-first,
-        D1 in design.md section 1.3). Prefill / empty batches flush any in-flight
-        decode first and run synchronously (the in-flight step is never stranded).
-        """
+        """One-step-lookahead decode loop (single stream + CUDA event): each iteration launches the current step then resolves the previous step's host collect so it overlaps the current GPU forward; prefill/empty batches flush any in-flight step and run synchronously."""
         while self._running:
             self._process_admin_requests()
             recv_reqs = self.recv_requests()
@@ -1510,6 +1426,7 @@ class OmniScheduler:
             else:
                 if self._async_pending is not None:
                     self._resolve_pending_async()
+                    # Stale-batch overrun: `batch` was built before this drain, which may finish/retract its reqs; drop them before run_batch to avoid a second forward/finalize (double-free of freed KV).
                     batch = self._drop_stale_overrun(batch)
                     self.cur_batch = batch
                 if batch:

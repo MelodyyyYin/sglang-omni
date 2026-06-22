@@ -260,18 +260,7 @@ def apply_mem_fraction_cli_overrides(
     thinker_mem_fraction_static: float | None,
     talker_mem_fraction_static: float | None,
 ) -> PipelineConfig:
-    """Apply CLI mem_fraction_static flags to the pipeline config.
-
-    Precedence (per role): a non-None per-role flag wins over the global flag.
-    `--thinker-mem-fraction-static` overrides `--mem-fraction-static` for the
-    thinker stage; `--talker-mem-fraction-static` overrides it for the talker
-    stage. The global `--mem-fraction-static` is the fallback for any role
-    whose per-role flag is omitted.
-
-    Validation: out-of-range values raise typer.BadParameter atomically, before
-    any stage mutation, so a partially-applied config cannot leak into the
-    launch path.
-    """
+    """Apply CLI mem_fraction_static flags (per-role flag wins over global) to the pipeline config, validating all values atomically before any stage mutation so a partial config never leaks into launch."""
     mem_fraction_static = _validate_mem_fraction_static(
         "--mem-fraction-static", mem_fraction_static
     )

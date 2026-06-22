@@ -1,9 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Audio encoding utilities.
-
-Converts raw audio data (numpy arrays, torch tensors, or raw bytes) into
-various output formats (WAV, MP3, FLAC, etc.) for API responses.
-"""
+"""Audio encoding utilities: convert raw audio (numpy/torch/bytes) to output formats (WAV, MP3, FLAC, etc.) for API responses."""
 
 from __future__ import annotations
 
@@ -105,14 +101,7 @@ def audio_encoding_unavailable_reason(response_format: str) -> str | None:
 
 
 def to_numpy(audio: Any) -> np.ndarray:
-    """Convert audio data to a numpy float32 array.
-
-    Accepts:
-    - numpy ndarray
-    - torch Tensor
-    - list / tuple of numbers
-    - bytes (assumed 16-bit PCM)
-    """
+    """Convert audio data (numpy/torch/list/tuple/16-bit PCM bytes) to a numpy float32 array."""
     if isinstance(audio, np.ndarray):
         return audio.astype(np.float32, copy=False)
 
@@ -133,13 +122,7 @@ def to_numpy(audio: Any) -> np.ndarray:
 def apply_speed(
     audio: np.ndarray, speed: float, sample_rate: int
 ) -> tuple[np.ndarray, int]:
-    """Apply speed adjustment by resampling.
-
-    Returns (adjusted_audio, adjusted_sample_rate).
-
-    Raises:
-        ValueError: If *speed* is zero or negative.
-    """
+    """Apply speed adjustment by resampling, returning (adjusted_audio, adjusted_sample_rate); raises ValueError if speed <= 0."""
     if speed <= 0.0:
         raise ValueError(f"speed must be positive, got {speed}")
     if speed == 1.0:
@@ -276,6 +259,7 @@ def select_audio_delta(
     if audio.ndim > 1:
         audio = audio.squeeze()
     if audio.ndim > 1:
+        # Streaming chunks are mono; downmix multi-channel payloads (e.g. 48 kHz stereo MOSS-TTS Local codec) instead of silently dropping channels.
         channel_axis = 0 if audio.shape[0] < audio.shape[-1] else -1
         audio = audio.mean(axis=channel_axis).astype("float32")
 
@@ -295,19 +279,7 @@ def encode_audio(
     speed: float = 1.0,
     allow_format_fallback: bool = True,
 ) -> tuple[bytes, str]:
-    """Encode audio data to the requested format.
-
-    Args:
-        audio: Raw audio data (numpy, torch tensor, list, bytes)
-        response_format: Target format (wav, mp3, flac, opus, aac, pcm)
-        sample_rate: Audio sample rate in Hz
-        speed: Speed adjustment factor (1.0 = normal)
-        allow_format_fallback: If True, return WAV when a compressed encoder is
-            unavailable or the format is unknown. If False, raise ValueError.
-
-    Returns:
-        (encoded_bytes, mime_type)
-    """
+    """Encode audio to the requested format, returning (encoded_bytes, mime_type); allow_format_fallback=True returns WAV on unavailable/unknown format, else raises ValueError."""
     arr = to_numpy(audio)
 
     if arr.ndim > 1:
@@ -408,11 +380,7 @@ def audio_to_base64(
     sample_rate: int = DEFAULT_SAMPLE_RATE,
     output_format: str = "wav",
 ) -> str:
-    """Encode audio data to a base64 string.
-
-    Useful for embedding audio in JSON responses (e.g. chat completions
-    with audio modality).
-    """
+    """Encode audio data to a base64 string (e.g. for embedding in JSON responses)."""
     audio_bytes, _ = encode_audio(
         audio, response_format=output_format, sample_rate=sample_rate
     )

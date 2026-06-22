@@ -71,14 +71,7 @@ class Client:
         request_id: str,
         audio_format: str = "wav",
     ) -> CompletionResult:
-        """Run a non-streaming completion and return an aggregated result.
-
-        Iterates ``generate()``, accumulates text, concatenates audio chunks,
-        and encodes audio to base64.
-
-        Raises:
-            ClientError: If the pipeline produces no response at all.
-        """
+        """Run a non-streaming completion and return an aggregated result (text + base64 audio); raises ClientError if the pipeline produces no response."""
         text_parts: list[str] = []
         audio_chunks: list[Any] = []
         sample_rate: int | None = None
@@ -151,11 +144,7 @@ class Client:
         request_id: str,
         audio_format: str = "wav",
     ) -> AsyncIterator[CompletionStreamChunk]:
-        """Iterate ``generate()`` and yield high-level stream chunks.
-
-        Audio data is base64-encoded before yielding so that callers never
-        need to touch numpy / raw bytes.
-        """
+        """Iterate ``generate()`` and yield high-level stream chunks with audio base64-encoded (callers never touch numpy/raw bytes)."""
         async for chunk in self.generate(request, request_id=request_id):
             audio_b64: str | None = None
             if chunk.modality == "audio" and chunk.audio_data is not None:
@@ -184,11 +173,7 @@ class Client:
         speed: float = 1.0,
         allow_format_fallback: bool = True,
     ) -> SpeechResult:
-        """Run a TTS request and return encoded audio bytes.
-
-        Raises:
-            ClientError: If the pipeline produces no audio output.
-        """
+        """Run a TTS request and return encoded audio bytes; raises ClientError if the pipeline produces no audio output."""
         audio_chunks: list[Any] = []
         sample_rate: int | None = None
         last_chunk: GenerateChunk | None = None

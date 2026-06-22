@@ -78,12 +78,7 @@ class SGLangServerArgsConfig(BaseModel):
 
 
 class StageRuntimeConfig(BaseModel):
-    """Typed runtime intent for one stage.
-
-    Backend-specific values stay namespaced. For example,
-    sglang_server_args is translated into SGLang ServerArgs by the
-    runtime adapter, not by placement planning.
-    """
+    """Typed runtime intent for one stage; backend-specific values stay namespaced (e.g. sglang_server_args is translated by the runtime adapter, not placement planning)."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -118,22 +113,7 @@ class PlacementConfig(BaseModel):
 
 
 class StageConfig(BaseModel):
-    """Single pipeline stage configuration.
-
-    Minimal example::
-
-        StageConfig(name="decode", factory="...create_decode", terminal=True)
-
-    Fan-in example::
-
-        StageConfig(
-            name="aggregate",
-            factory="...create_aggregate",
-            wait_for=["preprocessor", "image_enc", "audio_enc"],
-            merge_fn="...merge_for_thinker",
-            next="thinker",
-        )
-    """
+    """Single pipeline stage configuration."""
 
     model_config = ConfigDict(extra="forbid")
 

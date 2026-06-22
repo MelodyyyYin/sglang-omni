@@ -158,8 +158,7 @@ class RolloutMessage(BaseModel):
 
 
 class RolloutGenerateRequest(BaseModel):
-    """Rollout request for ``POST /generate``; set exactly one of
-    ``input_ids``, ``prompt``, ``messages``."""
+    """Rollout request for ``POST /generate``; set exactly one of ``input_ids``, ``prompt``, ``messages``."""
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -257,11 +256,7 @@ class SpeechReference(BaseModel):
 
 
 class CreateSpeechRequest(BaseModel):
-    """OpenAI-compatible text-to-speech request.
-
-    Standard OpenAI fields plus extensions for advanced TTS models
-    (e.g. voice cloning, style instructions).
-    """
+    """OpenAI-compatible text-to-speech request (standard fields plus extensions for advanced TTS models, e.g. voice cloning, style instructions)."""
 
     model_config = ConfigDict(populate_by_name=True)
 

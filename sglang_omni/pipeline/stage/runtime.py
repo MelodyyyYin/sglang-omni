@@ -997,6 +997,7 @@ class Stage:
                 "projected local-object dispatch requires projectors to return "
                 f"StagePayload, got {type(projected_payload).__name__}"
             )
+        # Fan-out edge may use process-local dispatch only when projection gives the target its own mutable payload/data containers; tensor leaves inside may still be intentionally shared.
         if projected_payload.data is original_payload.data:
             return False
         return not Stage._shares_mutable_container(

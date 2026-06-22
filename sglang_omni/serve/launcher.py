@@ -1,26 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Launch an OpenAI-compatible server from a PipelineConfig.
-
-Usage (programmatic)::
-
-    from sglang_omni.serve.launcher import launch_server
-    launch_server(pipeline_config, host="0.0.0.0", port=8000)
-
-Usage (CLI — with config file)::
-
-    sglang-omni-server --config pipeline.json --port 8000
-
-Usage (CLI — built-in pipeline, no JSON needed)::
-
-    sglang-omni-server \\
-        --pipeline qwen3-omni \\
-        --model-id Qwen/Qwen3-Omni-30B-A3B-Instruct \\
-        --port 8000
-
-Export a config to JSON::
-
-    sglang-omni-server --pipeline qwen3-omni --model-id ... --export-config out.json
-"""
+"""Launch an OpenAI-compatible server from a PipelineConfig (programmatically via ``launch_server`` or via the ``sglang-omni-server`` CLI)."""
 
 from __future__ import annotations
 
@@ -111,11 +90,7 @@ def _placement_log_summary(
     process_plan,
     pipeline_config: PipelineConfig,
 ) -> dict[str, Any]:
-    """Build the resolved startup placement summary.
-
-    The summary includes topology, stage placement, stage budgets, per-GPU
-    totals, and best-effort hardware metadata.
-    """
+    """Build the resolved startup placement summary (topology, stage placement, stage budgets, per-GPU totals, best-effort hardware metadata)."""
 
     hardware = {
         gpu_id: _format_gpu_device_info(get_gpu_device_info(gpu_id))
@@ -293,10 +268,7 @@ async def _run_server(
     allowed_media_domains: list[str] | None = None,
     tts_batch_max_items: int = DEFAULT_TTS_BATCH_MAX_ITEMS,
 ) -> None:
-    """Start the pipeline and run the OpenAI server.
-
-    This is the async entry point.  For a blocking call use :func:`launch_server`.
-    """
+    """Start the pipeline and run the OpenAI server (async entry point; use :func:`launch_server` for a blocking call)."""
     port = _find_available_port(host, port)
 
     mp_runner = MultiProcessPipelineRunner(pipeline_config)
@@ -409,25 +381,7 @@ def launch_server(
     allowed_media_domains: list[str] | None = None,
     tts_batch_max_items: int = DEFAULT_TTS_BATCH_MAX_ITEMS,
 ) -> None:
-    """Blocking helper: start the pipeline and OpenAI-compatible server.
-
-    Args:
-        pipeline_config: Declarative pipeline configuration.
-        host: Bind address for the HTTP server.
-        port: Bind port for the HTTP server.
-        model_name: Model name reported in /v1/models responses.
-            Defaults to the pipeline name.
-        log_level: Uvicorn log level.
-        client_kwargs: Extra keyword arguments forwarded to
-            :class:`~sglang_omni.client.Client`.
-        enable_realtime: If True, mount the WebSocket ``/v1/realtime``
-            endpoint (OpenAI Realtime API).
-        allowed_local_media_path: Directory allowed for ``file://`` media
-            references in TTS requests.
-        allowed_media_domains: Domains allowed for remote TTS reference audio.
-        tts_batch_max_items: Maximum items accepted by
-            ``/v1/audio/speech/batch``.
-    """
+    """Blocking helper: start the pipeline and OpenAI-compatible server."""
     apply_gpu_compat_env_defaults()
     asyncio.run(
         _run_server(

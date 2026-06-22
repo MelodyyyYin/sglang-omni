@@ -1,20 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""OpenAI-compatible API server for sglang-omni.
-
-Provides the following endpoints:
-- POST /v1/chat/completions  — Text (+ audio) chat completions
-- POST /v1/audio/speech      — Text-to-speech synthesis
-- POST /v1/audio/speech/batch — Batch text-to-speech synthesis
-- WS   /v1/audio/speech/stream — Stateful TTS WebSocket streaming
-- GET  /v1/audio/voices      — List preset and uploaded TTS voices
-- POST /v1/audio/voices      — Upload a persistent TTS reference voice
-- DELETE /v1/audio/voices/{name} — Delete an uploaded TTS voice
-- GET  /v1/models            — List available models
-- GET  /v1/fs/list           — Browse filesystem directories
-- GET  /v1/fs/file           — Download a file
-- GET  /health               — Health check
-- WS   /v1/realtime          — OpenAI-compatible Realtime API (when enabled)
-"""
+"""OpenAI-compatible API server for sglang-omni (chat completions, TTS speech/batch/stream, voices, models, fs, health, realtime endpoints)."""
 
 from __future__ import annotations
 
@@ -181,27 +166,7 @@ def create_app(
     admin_api_key: str | None = None,
     tts_batch_max_items: int = DEFAULT_TTS_BATCH_MAX_ITEMS,
 ) -> FastAPI:
-    """Create a FastAPI application with OpenAI-compatible endpoints.
-
-    Args:
-        client: Client instance connected to the pipeline coordinator.
-        model_name: Default model name to report in responses and /v1/models.
-        requires_uploaded_voice_for_named_voice: Whether non-default TTS voice
-            names must resolve to uploaded voices before reaching the model.
-        supports_uploaded_voice_references: Whether uploaded voice names can be
-            lowered into backend reference-audio requests.
-        enable_realtime: If True, mount the WebSocket ``/v1/realtime``
-            endpoint (OpenAI Realtime API).
-        allowed_local_media_path: Directory allowed for ``file://`` TTS
-            reference audio.
-        allowed_media_domains: Domains allowed for remote TTS reference audio.
-        admin_api_key: Optional API key for admin-control endpoints.
-        tts_batch_max_items: Maximum items accepted by
-            ``/v1/audio/speech/batch``.
-
-    Returns:
-        Configured FastAPI application.
-    """
+    """Create a FastAPI application with OpenAI-compatible endpoints."""
     app = FastAPI(title="sglang-omni", version="0.1.0")
 
     app.add_middleware(

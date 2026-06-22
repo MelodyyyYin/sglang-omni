@@ -1,9 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Base model runner — shared execute() pipeline for all AR models.
-
-Handles: ForwardBatch construction, phase-aware pre/post hooks, forward
-pass, sampling, logit post-processing, and output extraction.
-"""
+"""Base model runner — shared execute() pipeline for all AR models (ForwardBatch build, pre/post hooks, forward, sampling, logit post-processing, output extraction)."""
 from __future__ import annotations
 
 import logging
@@ -49,22 +45,7 @@ def _rank_shared_unseeded_sampling_seed(request: Any, row_idx: int) -> int:
 
 @dataclass
 class _PendingStep:
-    """One decode step launched on the GPU but not yet consumed on the host.
-
-    Async-decode (one-step lookahead) bookkeeping: a launched step has its
-    forward + on-GPU sample + collect enqueued and ``event`` recorded right
-    after, so ``event.query()`` true means the launched step's GPU work is
-    published. ``launch_buf`` is whatever ``post_decode_launch`` returns for
-    resolve to consume: a device-side correctness snapshot of the published ids
-    (MOSS-TTS-Local, no host copy), or a pinned host staging buffer an async host
-    copy filled (Higgs); only the latter provides host-D2H overlap.
-    ``execute_resolve`` later waits on ``event`` and reads ``launch_buf``.
-
-    Invariant: at most one ``_PendingStep`` is live at a time (see
-    ``ModelRunner._pending``). When the launch uses host staging it is pinned
-    and ping-ponged between two buffers so resolve(N) reads one while
-    launch(N+1) writes the other (design.md section 1.4).
-    """
+    """One decode step launched on the GPU but not yet consumed on the host (async-decode lookahead bookkeeping; at most one live at a time)."""
 
     event: Any
     launch_buf: Any
@@ -77,12 +58,7 @@ class _PendingStep:
 
 
 class ModelRunner:
-    """Base AR model runner.
-
-    Subclasses provide phase-specific behavior:
-      - prefill hooks for extend/prompt processing
-      - decode hooks for single-step autoregressive decode processing
-    """
+    """Base AR model runner; subclasses provide prefill (extend) and decode (single-step) phase hooks."""
 
     def __init__(self, tp_worker: Any, output_processor: Any):
         self.tp_worker = tp_worker
@@ -97,17 +73,7 @@ class ModelRunner:
         self._async_query_miss: int = 0
 
     def _next_host_staging(self, device_staging: torch.Tensor) -> torch.Tensor:
-        """Return a pinned host staging buffer mirroring ``device_staging``'s
-        full shape, ping-ponging between two buffers on each call. Only runners
-        that stage the collect to host (Higgs) call this; device-snapshot
-        runners (MOSS-TTS-Local) never do.
-
-        Two buffers are required: resolve(N) reads one on the host while
-        launch(N+1)'s async host copy writes the other. That CPU-read vs
-        GPU-write overlap is not protected by single-stream ordering.
-        Buffers are allocated lazily on first use (the base runner does not
-        know the model-specific staging shape at construction time).
-        """
+        """Return a pinned host staging buffer mirroring ``device_staging``'s shape, ping-ponging between two buffers so resolve(N) reads one while launch(N+1)'s async copy writes the other (unordered CPU-read vs GPU-write)."""
         if not self._host_staging_buffers:
             self._host_staging_buffers = [
                 torch.empty(
@@ -123,15 +89,7 @@ class ModelRunner:
         return buf
 
     def execute(self, scheduler_output: Any) -> ModelRunnerOutput:
-        """Full synchronous pipeline: build → prepare → forward → post →
-        sample → output.
-
-        Used when async decode is disabled. Behavior is byte-identical to the
-        pre-async implementation: it is a pure extraction over the same shared
-        sub-steps (``_build_forward_batch`` / ``_prepare_and_forward`` /
-        ``_finalize``) that ``execute_launch`` + ``execute_resolve`` also use,
-        in the same order. Async decode splits this at the post-decode boundary.
-        """
+        """Full synchronous pipeline (build → prepare → forward → post → sample → output); used when async decode is disabled."""
         built = self._build_forward_batch(scheduler_output)
         if built is None:
             return ModelRunnerOutput(outputs={}, req_ids=[], req_id_to_index={})
@@ -156,21 +114,7 @@ class ModelRunner:
         )
 
     def execute_launch(self, scheduler_output: Any) -> "_PendingStep | None":
-        """Enqueue a decode step's forward + on-GPU sample, call
-        ``post_decode_launch`` to publish a model-specific resolve payload
-        (returned as ``launch_buf``), and record a CUDA event right after
-        publication. Does NOT wait on the GPU. Decode batches only. ``launch_buf``
-        is a device-side correctness snapshot (MOSS-TTS-Local) or pinned host
-        staging (Higgs); only the latter overlaps a host copy with the next
-        forward, and ``event.query()`` proves the launched step's GPU work is
-        done, not that any host overlap happened.
-
-        Returns the ``_PendingStep`` handle (or None if there was no batch).
-        The CALLER owns the handle and passes it to ``execute_resolve`` later.
-        Ownership lives with the caller (not on ``self``) because launch-first
-        scheduling has two steps momentarily in flight: the just-launched step
-        N and the not-yet-resolved step N-1.
-        """
+        """Enqueue a decode step's forward + on-GPU sample, publish the resolve payload via ``post_decode_launch``, record a CUDA event, and return the caller-owned ``_PendingStep`` (decode-only, no GPU wait; None if no batch)."""
         built = self._build_forward_batch(scheduler_output)
         if built is None:
             return None
@@ -204,13 +148,7 @@ class ModelRunner:
     def execute_resolve(
         self, pending: "_PendingStep | None"
     ) -> ModelRunnerOutput | None:
-        """Consume a launched decode step: wait on its event (non-blocking
-        ``query()``, else ``synchronize()``), read its ``launch_buf`` (a device
-        snapshot or pinned host staging) and run the per-request collect loop
-        (``post_decode_resolve``), then
-        finalize sampling/output. Returns that step's ``ModelRunnerOutput``,
-        or None if ``pending`` is None (first iteration / after a drain).
-        """
+        """Consume a launched decode step (wait on event, read ``launch_buf`` via ``post_decode_resolve``, finalize) and return its ``ModelRunnerOutput``, or None if ``pending`` is None."""
         if pending is None:
             return None
         if pending.event.query():
@@ -218,6 +156,7 @@ class ModelRunner:
         else:
             pending.event.synchronize()
             self._async_query_miss += 1
+        # Skip reqs finished/retracted in a prior step so _finalize neither re-emits nor re-frees their KV.
         skip_rids = {
             req.request_id
             for req in pending.scheduler_output.requests
@@ -241,9 +180,7 @@ class ModelRunner:
         )
 
     def _build_forward_batch(self, scheduler_output: Any):
-        """Build the ForwardBatch + capture-hidden mode. Returns
-        ``(forward_batch, schedule_batch, model_worker_batch, is_prefill)``, or
-        None when there is no batch to run."""
+        """Build the ForwardBatch + capture-hidden mode; returns ``(forward_batch, schedule_batch, model_worker_batch, is_prefill)`` or None when there is no batch."""
         from sglang.srt.model_executor.forward_batch_info import (
             CaptureHiddenMode,
             ForwardBatch,
@@ -287,8 +224,7 @@ class ModelRunner:
         *,
         is_lookahead: bool = False,
     ):
-        """Prepare hook → standard forward (if not custom) → sample-before-post
-        block. Returns ``batch_result``."""
+        """Prepare hook → standard forward (if not custom) → sample-before-post block; returns ``batch_result``."""
         if is_prefill:
             self.before_prefill(forward_batch, schedule_batch, requests)
             batch_result = self.custom_prefill_forward(
@@ -325,16 +261,7 @@ class ModelRunner:
         return batch_result
 
     def finalize_skip_rids(self, scheduler_output) -> set[str]:
-        """Request ids whose ``generation_steps`` must NOT advance this step.
-
-        Default empty. A model overrides this when a batch contains rows that
-        are sampled but must not count as a generated step — e.g. non-final
-        chunked-prefill rows, whose spurious step would shift the final chunk's
-        sampling position off the no-chunk path. Unioned into ``skip_rids``
-        inside ``_finalize`` so it covers the sync, async-resolve, and
-        prefill-only paths alike. Additive and behaviour-neutral for any model
-        that does not override it.
-        """
+        """Request ids whose ``generation_steps`` must NOT advance this step (default empty; e.g. non-final chunked-prefill rows whose spurious step would shift the final chunk's sampling position)."""
         return set()
 
     def on_generation_step_advanced(
@@ -361,19 +288,7 @@ class ModelRunner:
         set_output_ids: bool = True,
         skip_rids: set[str] | None = None,
     ) -> ModelRunnerOutput:
-        """Final sampling (if still needed) + output extraction + per-request
-        bookkeeping. Shared tail of both the sync and async paths.
-
-        ``set_output_ids`` publishes this step's tokens onto
-        ``schedule_batch.output_ids`` so the NEXT step's ``prepare_for_decode``
-        can build its input_ids. The synchronous path needs this. The async
-        RESOLVE path must NOT do it: under launch-first the resolve runs one
-        step behind, and ``schedule_batch`` here is the *live* running batch
-        whose output_ids was already published by the (current) launch at the
-        right length — re-stamping the lagged step's next_token_ids would leave
-        a stale-length output_ids on the running batch, which the next
-        prepare_for_decode turns into an input_ids that mismatches seq_lens once
-        a request finishes mid-batch (the bs>1 replay size mismatch)."""
+        """Final sampling + output extraction + per-request bookkeeping (shared sync/async tail); ``set_output_ids`` publishes tokens onto ``schedule_batch.output_ids`` (sync only — the async resolve runs a step behind and must not re-stamp the live batch)."""
         if schedule_batch.is_prefill_only:
             if batch_result.next_token_ids is None:
                 batch_result.next_token_ids = torch.zeros(
@@ -436,21 +351,13 @@ class ModelRunner:
     def custom_prefill_forward(
         self, forward_batch: Any, schedule_batch: Any, requests: list
     ) -> Any | None:
-        """Run a model-specific prefill forward.
-
-        Return a batch result when the subclass owns the forward path for this
-        batch, or None to use the standard tp_worker forward path.
-        """
+        """Run a model-specific prefill forward; return a batch result when the subclass owns the forward path, or None to use the standard tp_worker path."""
         return None
 
     def custom_decode_forward(
         self, forward_batch: Any, schedule_batch: Any, requests: list
     ) -> Any | None:
-        """Run a model-specific decode forward.
-
-        Return a batch result when the subclass owns the forward path for this
-        batch, or None to use the standard tp_worker forward path.
-        """
+        """Run a model-specific decode forward; return a batch result when the subclass owns the forward path, or None to use the standard tp_worker path."""
         return None
 
     def post_prefill(
@@ -464,12 +371,7 @@ class ModelRunner:
         """Called after decode forward."""
 
     def lookahead_eligible(self, batch: Any) -> bool:
-        """Whether this batch may use one-step async-decode lookahead.
-
-        Default True. A runner whose collect has a sync-only fallback (one that
-        would diverge from sync under a one-step lag) overrides this to route
-        those batches synchronously. The scheduler's async gate consults it.
-        """
+        """Whether this batch may use one-step async-decode lookahead (default True; runners with a sync-only collect override to route those batches synchronously)."""
         del batch
         return True
 
@@ -484,18 +386,7 @@ class ModelRunner:
     def post_decode_launch(
         self, result: Any, forward_batch: Any, requests: list
     ) -> Any:
-        """Async-decode GPU half of ``post_decode``: run the step's collect,
-        publish ``result.next_token_ids``, and return the resolve payload
-        (``launch_buf``), either a device-side correctness snapshot of the
-        published state (no host copy) or a pinned host staging buffer an async
-        host copy filled; only the latter provides host-D2H overlap. The caller
-        records a CUDA event immediately after publication.
-
-        Default raises: a model must implement this together with
-        ``post_decode_resolve`` to be async-decode-safe. The synchronous
-        ``post_decode`` reads live GPU buffers that the next launch would
-        overwrite, so it cannot simply be deferred (design.md §1.6).
-        """
+        """Async-decode GPU half of ``post_decode``: run the collect, publish ``result.next_token_ids``, and return the resolve payload (``launch_buf``); default raises (a model must implement this with ``post_decode_resolve``)."""
         raise NotImplementedError(
             f"{type(self).__name__} does not support async decode: implement "
             "post_decode_launch / post_decode_resolve"
@@ -509,11 +400,7 @@ class ModelRunner:
         schedule_batch: Any,
         requests: list,
     ) -> None:
-        """Async-decode host half of ``post_decode``: read ``launch_buf`` (the
-        launch's published collect, a device snapshot or pinned host staging)
-        and run the per-request collect loop, setting ``result.next_token_ids``.
-        Default raises (see ``post_decode_launch``).
-        """
+        """Async-decode host half of ``post_decode``: read ``launch_buf`` and run the per-request collect loop, setting ``result.next_token_ids``; default raises (see ``post_decode_launch``)."""
         raise NotImplementedError(
             f"{type(self).__name__} does not support async decode: implement "
             "post_decode_launch / post_decode_resolve"
@@ -576,16 +463,7 @@ class ModelRunner:
         return next_token_ids
 
     def _install_sampling_seeds(self, forward_batch: Any, requests: list) -> None:
-        """Install per-row ``seed``s onto ``sampling_info`` so SGLang routes to
-        ``multinomial_with_seed``. No-op when no request set a seed, or when a
-        subclass already installed its own (e.g. Qwen3-TTS).
-
-        Runs once per decode step. User-provided seeds are resolved once and
-        cached back onto ``sampling_params.sampling_seed``. In a mixed
-        seeded/unseeded batch the SGLang sampler is batch-wide, so unseeded rows
-        receive a request-id-derived fallback seed instead of a rank-local random
-        seed; this keeps TP ranks in sync without mutating the public request seed.
-        """
+        """Install per-row seeds onto ``sampling_info`` so SGLang routes to ``multinomial_with_seed``; unseeded rows in a mixed batch get a request-id-derived fallback seed to keep TP ranks in sync (no-op if no seed set or a subclass already installed its own)."""
         sampling_info = forward_batch.sampling_info
         if sampling_info.sampling_seed is not None:
             self._validate_seeded_sampling_supported(sampling_info)

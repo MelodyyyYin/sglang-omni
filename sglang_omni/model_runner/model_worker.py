@@ -322,6 +322,7 @@ class ModelWorker:
         shapes = payload.get("shapes")
         if names is None or dtypes is None or shapes is None:
             return False, "names, dtypes and shapes are required"
+        # Length check is the one guard that matters — sglang zips names/dtypes/shapes and silently truncates to the shortest, under-broadcasting weights.
         name_count = len(names)
         dtype_count = len(dtypes)
         shape_count = len(shapes)

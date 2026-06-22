@@ -412,6 +412,7 @@ async def send_stream_chunk(
                 }
             relay_metadata["chunk_metadata_tensors"] = metadata_refs
 
+    # Send control msg before wait_for_completion — else NIXL credit deadlock (receiver never starts reading, never triggers RDMA notification).
     msg = DataReadyMessage(
         request_id=request_id,
         from_stage=from_stage,
