@@ -11,7 +11,6 @@ logger = logging.getLogger(__name__)
 
 StreamOutputBuilder = Callable[[str, Any, Any], list[Any]]
 
-
 def create_thinker_scheduler(
     server_args: Any,
     *,
@@ -105,7 +104,6 @@ def create_thinker_scheduler(
         stream_output_builder=stream_output_builder,
     )
 
-
 def make_thinker_scheduler_adapters(
     *,
     tokenizer: Any,
@@ -132,9 +130,6 @@ def make_thinker_scheduler_adapters(
         if not hasattr(input_ids, "to"):
             raise TypeError("prompt.input_ids must be a torch.Tensor")
 
-        # Per-content pad_value substitution to defeat SGLang radix prefix-cache
-        # aliasing across multimodal requests that share the same generic
-        # image/audio/video patch token id.
         thinker_inputs_early = state.thinker_inputs or {}
         media_cache_keys = thinker_inputs_early.get("media_cache_keys") or {}
         pad_values: dict[str, int] = {}
@@ -247,7 +242,6 @@ def make_thinker_scheduler_adapters(
 
     return request_builder, result_adapter
 
-
 def make_combined_stream_output_builder(
     *builders: StreamOutputBuilder,
 ) -> StreamOutputBuilder:
@@ -260,7 +254,6 @@ def make_combined_stream_output_builder(
         return messages
 
     return _build_stream_output
-
 
 def _select_stream_output_builder(
     enable_streaming_tts: bool,
@@ -277,7 +270,6 @@ def _select_stream_output_builder(
             ),
         )
     return make_text_stream_output_builder()
-
 
 def make_text_stream_output_builder(*, text_decode_stage: str = "decode"):
     """Per-token stream callback for text-only pipelines.
@@ -313,8 +305,6 @@ def make_text_stream_output_builder(*, text_decode_stage: str = "decode"):
         if not is_streaming:
             return []
 
-        # Only emit text deltas when text output is actually requested.
-        # Mirrors the output_modalities check in talker_executor.py.
         if not text_output_requested(stage_payload.request):
             return []
 
@@ -322,7 +312,6 @@ def make_text_stream_output_builder(*, text_decode_stage: str = "decode"):
             OutgoingMessage(
                 request_id=request_id,
                 type="stream",
-                # Wrap int — relay_io.write_blob is tensor-only.
                 data=torch.tensor([token_id], dtype=torch.long),
                 target=text_decode_stage,
                 metadata={"token_id": token_id},
@@ -330,7 +319,6 @@ def make_text_stream_output_builder(*, text_decode_stage: str = "decode"):
         ]
 
     return _build_stream_output
-
 
 def make_thinker_stream_output_builder(
     *,
@@ -353,9 +341,6 @@ def make_thinker_stream_output_builder(
 
     def _build_stream_output(request_id, req_data, req_output):
         req = getattr(req_data, "req", None)
-        # Suppress while chunked prefill is still consuming prompt tokens —
-        # prompt-side states could otherwise masquerade as the first
-        # assistant token and leak prompt content into TTS.
         if req is not None and int(getattr(req, "is_chunked", 0) or 0) > 0:
             return []
         if req_output.data is None or req is None:
@@ -366,8 +351,6 @@ def make_thinker_stream_output_builder(
         except (TypeError, ValueError):
             return []
 
-        # Per-request state lives on ``req`` so it is automatically GC'd when
-        # the SGLang scheduler drops the request.
         token_ids = getattr(req, "_ming_stream_token_ids", None)
         if token_ids is None:
             token_ids = []
@@ -382,14 +365,12 @@ def make_thinker_stream_output_builder(
             return []
 
         decoded = tokenizer.decode(token_ids, skip_special_tokens=True)
-        # Buffer until the trailing multi-byte char completes.
         if "\ufffd" in decoded:
             return []
 
         if decoded.startswith(emitted):
             delta = decoded[len(emitted) :]
         else:
-            # Defensive: detokenizer rewrote earlier text — re-emit full.
             delta = decoded
         if not delta:
             return []
@@ -400,13 +381,6 @@ def make_thinker_stream_output_builder(
             list(delta.encode("utf-8")),
             dtype=torch.uint8,
         )
-        # Only emit to the segmenter. The thinker is not a terminal stage,
-        # so it cannot send chunks directly to the coordinator via
-        # target=None — the runtime would fan that out to ``stream_to``
-        # peers, and the relay transport requires torch.Tensor payloads.
-        # Streaming text deltas to the client requires either a stream-
-        # aware decode stage or a dedicated text fan-out stage; left as a
-        # follow-up. Streaming audio still works via the talker_stream.
         return [
             OutgoingMessage(
                 request_id=request_id,
@@ -424,18 +398,15 @@ def make_thinker_stream_output_builder(
 
     return _build_stream_output
 
-
 def _torch_long():
     import torch
 
     return torch.long
 
-
 def _collect_eos_token_ids(tokenizer: Any) -> set[int] | None:
     """Match Ming V0: let the SGLang request stop only on tokenizer EOS."""
     eid = getattr(tokenizer, "eos_token_id", None)
     return {int(eid)} if isinstance(eid, int) and eid >= 0 else None
-
 
 def _stop_hits(output_ids: list[int], tokenizer: Any) -> list[int]:
     stop_ids = _collect_eos_token_ids(tokenizer) or set()
