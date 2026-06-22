@@ -51,6 +51,7 @@ _MOSS_TTS_LOCAL_INSTALL_HINT = (
 )
 
 
+# NOTE: preprocessing and vocoder stages each load their own processor/codec: model.streaming() flips module-global codec state, so a decode on a shared instance would corrupt a concurrent reference encode.
 @dataclass(frozen=True)
 class _ArMemoryBudget:
     effective_total_gpu_memory_fraction: float | None
@@ -122,14 +123,7 @@ def _normalize_processor_config(processor: Any) -> None:
 
 
 def _resolve_codec_device(device: str | None, gpu_id: int | None) -> str:
-    """Pick the codec GPU for the preprocessing/vocoder stages.
-
-    The ~1B-param codec encoder costs ~0.25 GPU-seconds per reference, which
-    at concurrency 16 starves the AR engine when both share one device.
-    The default config passes an explicit ``device`` so the second-GPU codec
-    placement is visible in the pipeline config. ``gpu_id`` remains a fallback
-    for custom colocated configs and launcher-injected runtime defaults.
-    """
+    """Pick the codec GPU for the preprocessing/vocoder stages."""
     if device:
         return device
     if gpu_id is not None:
@@ -158,20 +152,13 @@ def _load_moss_tts_local_processor(model_path: str, *, device: str) -> Any:
         if hasattr(audio_tokenizer, "eval"):
             audio_tokenizer.eval()
         if hasattr(audio_tokenizer, "to"):
+            # Device move only: the v2 codec manages its own dtypes (fp32 quantizer); a blanket dtype cast would corrupt the quantizer codebooks.
             audio_tokenizer.to(device)
     return processor
 
 
 class _BatchedReferenceEncoder:
-    """Coalesces concurrent reference-audio encodes into batched codec calls.
-
-    Each request needs its reference run through the ~1B-param codec encoder
-    (~0.25 GPU-seconds). The preprocessing workers call :meth:`encode`
-    concurrently; a single daemon thread drains the queue and encodes up to
-    ``max_batch_size`` files in one ``batch_encode`` forward, which costs
-    barely more than a single encode. Failures fall back to per-item encodes
-    so one bad file only fails its own request.
-    """
+    """Coalesces concurrent reference-audio encodes into batched codec calls."""
 
     MAX_REFERENCE_SECONDS = 100.0
     ENCODE_TIMEOUT_S = 120.0
@@ -250,6 +237,7 @@ class _BatchedReferenceEncoder:
             for path, future in batch:
                 outcome = results.get(path)
                 if isinstance(outcome, Exception):
+                    # Fresh exception per future: a shared instance would be mutated concurrently by every waiter's traceback raise.
                     future.set_exception(
                         RuntimeError(f"reference encode failed for {path}: {outcome}")
                     )
@@ -262,12 +250,7 @@ class _BatchedReferenceEncoder:
 
 
 class CachedReferenceEncoder:
-    """Content-addressed LRU cache + single-flight dedup in front of _BatchedReferenceEncoder.
-
-    Every path (miss, hit, follower) returns an independent CPU long tensor, so
-    downstream sees one device/dtype regardless of cache temperature.
-    Stores codes as int32 on CPU (lossless for codebook values in [0, 1023]).
-    """
+    """Content-addressed LRU cache + single-flight dedup in front of _BatchedReferenceEncoder; every path returns an independent CPU long tensor."""
 
     LOG_INTERVAL_S = 60.0
 
@@ -300,6 +283,7 @@ class CachedReferenceEncoder:
         # Note(Jiaxin): duration gate runs first — a >100 s ref must never reach
         # the cache or the inflight dict.
         _BatchedReferenceEncoder._check_reference_duration(path)
+        # trust_stat left False: keep the sentinel byte-read so a same-size+mtime+ctime overwrite cannot stale-hit.
         key = _reference_path_cache_key(path)
         if key is None:
             return self._encoder.encode(path)
@@ -313,12 +297,7 @@ class CachedReferenceEncoder:
     def _cached_encode(
         self, key: str, encode_fn, *, desc: str, revalidate=None
     ) -> torch.Tensor:
-        """Single-flight skeleton shared by encode() and encode_data_uri().
-
-        All paths return an independent CPU long tensor. revalidate(), if given,
-        is evaluated outside the lock and gates the put (TOCTOU guard for file
-        paths).
-        """
+        """Single-flight skeleton shared by encode() and encode_data_uri(); revalidate() runs outside the lock and gates the put (TOCTOU guard)."""
         leader_fut: concurrent.futures.Future | None = None
         follower_fut: concurrent.futures.Future | None = None
 
@@ -392,12 +371,7 @@ class CachedReferenceEncoder:
         )
 
     def encode_data_uri(self, ref_audio: str, *, processor: Any) -> torch.Tensor:
-        """Cache-aware encode for data-URI refs through the same LRU + single-flight
-        as file paths (adds the duration check _reference_for_processor lacks).
-
-        Note(Jiaxin): file: and bytes: keyspaces never collide — the two decode
-        chains differ, so codes aren't guaranteed identical for the "same" audio.
-        """
+        """Cache-aware encode for data-URI refs through the same LRU + single-flight as file paths (file:/bytes: keyspaces never collide)."""
         import base64
         import io
 
@@ -666,5 +640,6 @@ def create_vocoder_executor(
         cuda_graph_frames=cuda_graph_frames,
         cuda_graph_min_free_gb=cuda_graph_min_free_gb,
     )
+    # Capture graphs in the factory: it runs before the process is marked ready, so serving never races a half-captured graph (each stage warms its own).
     scheduler.warmup_now()
     return scheduler

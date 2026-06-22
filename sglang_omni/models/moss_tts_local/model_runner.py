@@ -16,15 +16,7 @@ from sglang_omni.scheduling.types import RequestOutput
 
 
 class MossTTSLocalModelRunner(ModelRunner):
-    """Drives the per-frame local-transformer decode and feedback embeddings.
-
-    Per step: the backbone (radix-cached, CUDA-graphed) produces one hidden
-    state per request; :meth:`_collect_frame` then runs the batched local
-    micro-decode — a binary continue/stop decision and 12 sequentially
-    sampled RVQ codes — and stages the next frame's summed embedding through
-    ``model._decode_input_embedding`` so the next decode step stays
-    CUDA-graph-replayable (decode input_ids are row indices).
-    """
+    """Drives the per-frame local-transformer decode and feedback embeddings."""
 
     _outbox: Any | None = None
     _vocoder_target = "vocoder"
@@ -86,11 +78,7 @@ class MossTTSLocalModelRunner(ModelRunner):
         self._collect_frame(result, forward_batch, schedule_batch, requests)
 
     def lookahead_eligible(self, batch: Any) -> bool:
-        """Route to sync when the batch cannot take the graphed frame-decode
-        path: any request with ``audio_repetition_penalty != 1`` (its eager
-        rep-history gather lags one frame under lookahead and would diverge from
-        sync) or ``bs > frame_graph_max_bs``.
-        """
+        """Route to sync when the batch cannot take the graphed frame-decode path (``audio_repetition_penalty != 1`` or ``bs > frame_graph_max_bs``)."""
         try:
             reqs = batch.reqs
         except AttributeError:
@@ -133,8 +121,10 @@ class MossTTSLocalModelRunner(ModelRunner):
             prefix_len = len(req.prefix_indices)
             pool = self.model._state_pool
             if data.output_rows:
+                # Retraction re-prefill spans already-generated frames living in output_rows, not prompt_rows; the resumed prefill resamples the next frame, superseding any feedback embedding stranded by the retraction.
                 generated = torch.stack(data.output_rows, dim=0)
                 rows = torch.cat([rows.to(generated.device), generated], dim=0)
+            # Realign the launch-side counter and clear any stranded pool row on every retraction re-prefill (incl. one retracted before emitting a frame); both are no-ops for a fresh prefill.
             generation_steps = int(data.generation_steps)
             data.sampling_steps = generation_steps
             pool.reset_for_refill(sched_req.request_id, generation_steps)
@@ -214,11 +204,7 @@ class MossTTSLocalModelRunner(ModelRunner):
         schedule_batch.output_ids = next_token_ids
 
     def _run_frame_decode(self, result: Any, forward_batch: Any, requests: list):
-        """GPU half shared by sync ``_collect_frame`` and async
-        ``post_decode_launch``. Returns ``(rows, end_id)`` and does NOT publish
-        ``next_token_ids``; the caller does, because the async path keeps a
-        private device snapshot of the published ids for resolve to restore.
-        """
+        """GPU half shared by sync ``_collect_frame`` and async ``post_decode_launch``; returns ``(rows, end_id)`` and does NOT publish ``next_token_ids`` (the caller does)."""
         try:
             hidden_states = result.logits_output.hidden_states
         except AttributeError as exc:
@@ -270,6 +256,7 @@ class MossTTSLocalModelRunner(ModelRunner):
         audio_top_p = params["audio_top_p"]
         audio_top_k = params["audio_top_k"]
         sampling_seeds = params["seeds"]
+        # Advance the launch-side counter only for emitted rows; non-final chunked rows take a read-only position so a mid-prefill chunk's frame cannot shift the final chunk's sampling position off the no-chunk path.
         emit_set = {
             i
             for i, sched_req in enumerate(requests)
@@ -333,6 +320,7 @@ class MossTTSLocalModelRunner(ModelRunner):
                 seeds=sampling_seeds,
                 base_positions=gen_steps * num_channels,
             )
+            # Graph outputs are static buffers the next replay overwrites; snapshot what we keep.
             codes = codes.clone()
             embeds = feedback.clone()
         else:
@@ -401,14 +389,7 @@ class MossTTSLocalModelRunner(ModelRunner):
         return rows, end_id
 
     def post_decode_launch(self, result: Any, forward_batch: Any, requests: list):
-        """Async-decode GPU half of ``post_decode``: run the frame micro-decode
-        (``_run_frame_decode``) and publish the device-computed radix ids, no
-        host sync. Returns a private device snapshot of those ids for resolve:
-        the base aliases ``next_token_ids`` onto ``output_ids``, which the next
-        step overwrites in place before this step's lagged resolve, clobbering
-        the stop id and silently dropping a bs=1 eos finish (4096-frame runaway).
-        The clone preserves it; resolve swaps it back.
-        """
+        """Async-decode GPU half of ``post_decode``; returns a cloned device snapshot of the published radix ids so the next step's in-place overwrite cannot clobber the stop id (else a dropped bs=1 eos = 4096-frame runaway)."""
         if not requests:
             return None
         rows, end_id = self._run_frame_decode(result, forward_batch, requests)
@@ -424,11 +405,7 @@ class MossTTSLocalModelRunner(ModelRunner):
         schedule_batch: Any,
         requests: list,
     ) -> None:
-        """Async-decode host half: restore the launch-time ``next_token_ids``
-        snapshot (a pointer swap) so the shared ``_finalize`` tail reads the real
-        stop id, which the next step's in-place write clobbered from the aliased
-        tensor before this lagged resolve.
-        """
+        """Async-decode host half: restore the launch-time ``next_token_ids`` snapshot so ``_finalize`` reads the real stop id (clobbered by the next step's in-place write before this lagged resolve)."""
         del forward_batch, schedule_batch, requests
         if launch_buf is not None and result is not None:
             result.next_token_ids = launch_buf
@@ -439,37 +416,12 @@ class MossTTSLocalModelRunner(ModelRunner):
         next_text: torch.Tensor,
         end_id: int,
     ) -> torch.Tensor:
-        """Radix-cache token ids for generated frames.
-
-        The scheduler appends one token id per frame to the request's KV
-        chain, and the radix tree keys on those ids. The text channel alone is
-        the same assistant-slot id for every continuing frame of every
-        request, so a re-prefill after retraction could falsely prefix-match
-        into another identical-prompt request's cached generated region. Hash
-        the full multi-channel row — the same keying used for prompt rows —
-        so a radix match implies identical audio content (a per-position id
-        clash is ~1/151643 and only matters on top of an identical full
-        prefix). The hash is folded below the special-token band because the
-        scheduler finishes any request whose generated id crosses the vocab
-        boundary (``Req._check_vocab_boundary_finish``); the stop decision
-        keeps the raw audio_end id so eos detection still fires.
-
-        Unlike the prompt path (``build_row_cache_key_ids``'s host-side
-        blake2b), this runs every decode step on a device tensor, so it uses
-        the capture-safe tensor-native polynomial hash in :mod:`radix_hash` —
-        no GPU->CPU sync. See ``docs/design/gpu_radix_hash.md``.
-        """
+        """Radix-cache token ids hashing the full multi-channel row (folded below the special-token band) so a match implies identical audio, never a false cross-request prefix-match on the shared assistant-slot text id."""
         return gpu_radix_row_hash(rows, next_text, end_id)
 
     @staticmethod
     def _advance_sampling_position(data: Any) -> int:
-        """RNG position for this collect, advancing the launch-side counter in
-        floor mode: ``max(sampling_steps or 0, generation_steps)``. On the sync
-        path the two stay equal (generation_steps increments after every collect)
-        so the floor is a no-op and the position is bit-identical to before;
-        under lookahead generation_steps lags, so the floor lifts launch(N+1) off
-        the stale N.
-        """
+        """RNG position for this collect, advancing the launch-side counter in floor mode ``max(sampling_steps or 0, generation_steps)`` so it stays bit-identical on the sync path and lifts off the stale step under lookahead."""
         try:
             sampling_steps = data.sampling_steps
         except AttributeError:
@@ -484,8 +436,7 @@ class MossTTSLocalModelRunner(ModelRunner):
         token_presence: torch.Tensor,
         penalties: torch.Tensor,
     ) -> None:
-        """In-place penalty on fp32 logits, matching upstream order (before
-        temperature scaling)."""
+        """In-place penalty on fp32 logits, matching upstream order (before temperature scaling)."""
         penalties = penalties.to(device=logits.device, dtype=logits.dtype)
         active = token_presence.to(device=logits.device, dtype=torch.bool) & (
             penalties != 1.0
@@ -509,14 +460,7 @@ class MossTTSLocalModelRunner(ModelRunner):
         return int(is_chunked) > 0
 
     def finalize_skip_rids(self, scheduler_output) -> set[str]:
-        """Non-final chunked-prefill rows must not advance ``generation_steps``.
-
-        Their micro-decode still runs (as today), but the spurious step would
-        shift the final chunk's sampling position off the no-chunk path; the
-        sampling is positional (``position = generation_steps * num_channels +
-        channel``), so suppressing the advance keeps the chunked path
-        bit-identical to the single-shot prefill path.
-        """
+        """Non-final chunked-prefill rows must not advance ``generation_steps``, else the positional sampling shifts the final chunk off the single-shot prefill path."""
         return {
             sched_req.request_id
             for sched_req in scheduler_output.requests
@@ -600,6 +544,7 @@ class MossTTSLocalModelRunner(ModelRunner):
             )
         rows_cpu: torch.Tensor | None = None
         for i, sched_req in enumerate(expected_reqs):
+            # Overrun: a request finished/retracted in a PRIOR step is still in this lagged resolve batch; its wasted frame must not reach output_rows / the vocoder. No-op on the sync path.
             req = sched_req.data.req
             if req is not None:
                 try:

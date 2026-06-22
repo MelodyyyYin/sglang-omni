@@ -34,13 +34,7 @@ def _new_moss_tts_sampling_seed() -> int:
 
 
 def derive_moss_tts_sampling_seed(public_seed: int) -> int:
-    """Derive a stable per-request sampling seed from a public ``seed``.
-
-    Mirrors the Qwen3-TTS pattern: ``multinomial_with_seed`` combines this
-    per-request seed with a per-(step, channel) position, so a row's sampled
-    token depends only on its own seed and position -- never on its batch
-    neighbours. This makes ``seed`` reproducible at any batch size, not just 1.
-    """
+    """Derive a stable per-request sampling seed from a public ``seed``."""
     return derive_sampling_seed("moss-tts", int(public_seed))
 
 
@@ -114,6 +108,7 @@ class MossTTSPreprocessingContext:
 _PREPROCESSING_CONTEXT: MossTTSPreprocessingContext | None = None
 _PREPARED_REQUESTS: dict[str, MossTTSPreparedRequest] = {}
 _INFLIGHT_REQUESTS: set[str] = set()
+# Abort arrived mid-preprocess: compute drops the pending insert, never leaking it into _PREPARED_REQUESTS.
 _ABORTED_REQUESTS: set[str] = set()
 _PREPARED_REQUESTS_LOCK = threading.Lock()
 
@@ -141,12 +136,7 @@ def clear_moss_tts_preprocessing_context() -> None:
 
 
 def cleanup_prepared_moss_tts_request(request_id: str) -> None:
-    """Drop any prepared MOSS-TTS handoff for an aborted request.
-
-    Only tombstone (so a pending insert is later dropped) when preprocessing is
-    actually in flight; an abort for a request that is not being preprocessed
-    leaves nothing behind.
-    """
+    """Drop any prepared MOSS-TTS handoff for an aborted request."""
 
     rid = str(request_id)
     with _PREPARED_REQUESTS_LOCK:
@@ -214,15 +204,7 @@ def _resolve_token_count(
     params: dict[str, Any],
     tts_params: dict[str, Any],
 ) -> tuple[str, int | None]:
-    """Resolve the duration token count and return ``(clean_text, count)``.
-
-    The upstream v1.5 processor takes the duration via ``build_user_message(
-    text=..., tokens=...)`` and writes it into the ``- Tokens:`` field, so the
-    inline ``${token:N}`` prefix must be stripped out of ``text`` while its value
-    becomes ``tokens``. Explicit ``token_count`` / ``duration_tokens`` / ``tokens``
-    params and the ``${token:N}`` prefix are all validated as ``> 0``. Other
-    markup ([pause Xs], pinyin, IPA, ...) is passed through unchanged.
-    """
+    """Resolve the duration token count and return ``(clean_text, count)``."""
     for source in (tts_params, params):
         for key in ("token_count", "duration_tokens", "tokens"):
             if source.get(key) is not None:
@@ -355,8 +337,7 @@ def build_generation_kwargs(
 
 
 def _validate_moss_tts_generation_kwargs(kwargs: dict[str, Any]) -> None:
-    """Validate public sampling fields (MOSS uses a custom sampler that bypasses
-    SGLang's SamplingParams.verify), raising ValueError on out-of-range values."""
+    """Validate public sampling fields, raising ValueError on out-of-range values (MOSS bypasses SamplingParams.verify)."""
     if int(kwargs["max_new_tokens"]) <= 0:
         raise ValueError(
             f"MOSS-TTS max_new_tokens must be > 0, got {kwargs['max_new_tokens']!r}"
