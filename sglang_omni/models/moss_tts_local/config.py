@@ -17,12 +17,9 @@ from sglang_omni.config import (
 
 _PKG = "sglang_omni.models.moss_tts_local"
 # Note (Ratish): in the default single-process topology preprocessing loads before AR, so its
-# codec memory is included by process-scoped SGLang accounting
-# the reserve is for the later vocoder codec instance and runtime headroom
 _COLOCATED_TOTAL_GPU_MEMORY_FRACTION = 0.90
 _COLOCATED_CODEC_MEM_RESERVE = 0.05
 _AR_MEM_FRACTION_STATIC = 0.85
-
 
 def _stages(*, codec_device: str, colocated: bool) -> list[StageConfig]:
     tts_engine_runtime = StageRuntimeConfig(
@@ -74,7 +71,6 @@ def _stages(*, codec_device: str, colocated: bool) -> list[StageConfig]:
         ),
     ]
 
-
 class MossTTSLocalPipelineConfig(PipelineConfig):
     """Single-GPU MOSS-TTS Local pipeline."""
 
@@ -101,8 +97,6 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
         default_factory=lambda: _stages(codec_device="cuda:0", colocated=True)
     )
 
-    # Streaming-vocoder CUDA-graph knobs, injected into the vocoder factory by model_post_init.
-    # Default on, fail-safe to eager; cuda_graph_frames=None uses the built-in broad-exact set.
     cuda_graph: bool = True
     cuda_graph_frames: list[int] | None = None
     cuda_graph_min_free_gb: float = 3.0
@@ -138,7 +132,6 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
     def supports_uploaded_voice_references(self) -> bool:
         return True
 
-
 class MossTTSLocalColocatedPipelineConfig(MossTTSLocalPipelineConfig):
     """Backward-compatible alias for the default single-GPU pipeline."""
 
@@ -146,14 +139,12 @@ class MossTTSLocalColocatedPipelineConfig(MossTTSLocalPipelineConfig):
         default_factory=lambda: _stages(codec_device="cuda:0", colocated=True)
     )
 
-
 class MossTTSLocalSplitPipelineConfig(MossTTSLocalPipelineConfig):
     """Two-GPU variant that places codec work on the second visible GPU."""
 
     stages: list[StageConfig] = Field(
         default_factory=lambda: _stages(codec_device="cuda:1", colocated=False)
     )
-
 
 EntryClass = MossTTSLocalPipelineConfig
 

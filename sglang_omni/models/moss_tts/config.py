@@ -9,7 +9,6 @@ from sglang_omni.config import PipelineConfig, StageConfig
 
 _PKG = "sglang_omni.models.moss_tts"
 
-
 class MossTTSPipelineConfig(PipelineConfig):
     """MOSS-TTS Delay pipeline: preprocessing -> AR engine -> vocoder."""
 
@@ -61,6 +60,5 @@ class MossTTSPipelineConfig(PipelineConfig):
 
     def supports_uploaded_voice_references(self) -> bool:
         return True
-
 
 EntryClass = MossTTSPipelineConfig

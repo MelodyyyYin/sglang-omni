@@ -50,17 +50,10 @@ _MOSS_TTS_LOCAL_INSTALL_HINT = (
     "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2."
 )
 
-# NOTE: preprocessing and vocoder stages each load their own processor (and
-# ~4.3 GB bf16 codec instance): `model.streaming()` flips module-global codec
-# state, so a decode on a shared instance would corrupt a concurrent
-# reference encode (see streaming_vocoder.py).
-
-
 @dataclass(frozen=True)
 class _ArMemoryBudget:
     effective_total_gpu_memory_fraction: float | None
     applied_codec_mem_reserve: float
-
 
 def _apply_colocated_ar_memory_budget(
     overrides: dict[str, Any],
@@ -115,7 +108,6 @@ def _apply_colocated_ar_memory_budget(
         applied_codec_mem_reserve=applied_codec_mem_reserve,
     )
 
-
 def _normalize_processor_config(processor: Any) -> None:
     model_config = getattr(processor, "model_config", None)
     if model_config is None:
@@ -124,7 +116,6 @@ def _normalize_processor_config(processor: Any) -> None:
     for attr, default in moss_tts_local_special_token_defaults(audio_vocab_size):
         if getattr(model_config, attr, None) is None:
             setattr(model_config, attr, default)
-
 
 def _resolve_codec_device(device: str | None, gpu_id: int | None) -> str:
     """Pick the codec GPU for the preprocessing/vocoder stages.
@@ -140,7 +131,6 @@ def _resolve_codec_device(device: str | None, gpu_id: int | None) -> str:
     if gpu_id is not None:
         return f"cuda:{int(gpu_id)}"
     return "cuda:0"
-
 
 def _load_moss_tts_local_processor(model_path: str, *, device: str) -> Any:
     checkpoint_dir = _resolve_checkpoint(model_path)
@@ -163,12 +153,8 @@ def _load_moss_tts_local_processor(model_path: str, *, device: str) -> Any:
         if hasattr(audio_tokenizer, "eval"):
             audio_tokenizer.eval()
         if hasattr(audio_tokenizer, "to"):
-            # Device move only: the v2 codec manages its own dtypes (bf16
-            # encoder/decoder with an fp32 quantizer); a blanket dtype cast
-            # would corrupt the quantizer codebooks.
             audio_tokenizer.to(device)
     return processor
-
 
 class _BatchedReferenceEncoder:
     """Coalesces concurrent reference-audio encodes into batched codec calls.
@@ -181,11 +167,7 @@ class _BatchedReferenceEncoder:
     so one bad file only fails its own request.
     """
 
-    # Mirrors the Higgs reference-audio cap: bounds both encoder runtime and
-    # the batch-padding memory amplification.
     MAX_REFERENCE_SECONDS = 100.0
-    # An encode batch takes well under a second; a result this late means the
-    # worker died or wedged, so fail the request instead of hanging the slot.
     ENCODE_TIMEOUT_S = 120.0
 
     def __init__(
@@ -212,7 +194,7 @@ class _BatchedReferenceEncoder:
             info = torchaudio.info(path)
             duration = info.num_frames / max(int(info.sample_rate), 1)
         except Exception:
-            return  # unreadable files fail with a clearer error in the codec
+            return
         if duration > cls.MAX_REFERENCE_SECONDS:
             raise ValueError(
                 f"reference audio is {duration:.1f}s long; the limit is "
@@ -262,8 +244,6 @@ class _BatchedReferenceEncoder:
             for path, future in batch:
                 outcome = results.get(path)
                 if isinstance(outcome, Exception):
-                    # Fresh exception per future: a shared instance would be
-                    # mutated concurrently by every waiter's traceback raise.
                     future.set_exception(
                         RuntimeError(f"reference encode failed for {path}: {outcome}")
                     )
@@ -274,7 +254,6 @@ class _BatchedReferenceEncoder:
                 else:
                     future.set_result(outcome)
 
-
 class CachedReferenceEncoder:
     """Content-addressed LRU cache + single-flight dedup in front of _BatchedReferenceEncoder.
 
@@ -283,7 +262,6 @@ class CachedReferenceEncoder:
     Stores codes as int32 on CPU (lossless for codebook values in [0, 1023]).
     """
 
-    # Cadence for the periodic stats log; class attr so it is easy to tune.
     LOG_INTERVAL_S = 60.0
 
     def __init__(
@@ -293,8 +271,6 @@ class CachedReferenceEncoder:
         max_items: int = 256,
         max_bytes: int = 64 * 1024 * 1024,
     ) -> None:
-        # Fail fast on non-positive capacities: a negative max_items makes
-        # StageOutputCache evict from an empty dict and KeyError at request time.
         if max_items < 1:
             raise ValueError(f"ref_audio_cache_max_items must be >= 1, got {max_items}")
         if max_bytes < 1:
@@ -315,19 +291,14 @@ class CachedReferenceEncoder:
     def encode(self, path: str) -> torch.Tensor:
         path = str(path)
         # Note(Jiaxin): duration gate runs first — a >100 s ref must never reach
-        # the cache or the inflight dict.
         _BatchedReferenceEncoder._check_reference_duration(path)
-        # trust_stat left False (review feedback): keep the sentinel byte-read so a
-        # same-size+mtime+ctime overwrite cannot stale-hit. The flag stays available
-        # in reference_path_cache_key for deployments that guarantee immutable refs.
         key = _reference_path_cache_key(path)
         if key is None:
-            return self._encoder.encode(path)  # uncacheable (URL/missing) -> bypass
+            return self._encoder.encode(path)
         return self._cached_encode(
             key,
             lambda: self._encoder.encode(path),
             desc=repr(path),
-            # TOCTOU re-stat: skip the put if the file changed during the encode.
             revalidate=lambda: _reference_path_cache_key(path) == key,
         )
 
@@ -362,8 +333,6 @@ class CachedReferenceEncoder:
 
         if follower_fut is not None:
             # Note(Jiaxin): each follower raises a FRESH RuntimeError — sharing one
-            # exception instance lets concurrent re-raises corrupt its traceback
-            # (same lesson as _BatchedReferenceEncoder._worker).
             timeout = _BatchedReferenceEncoder.ENCODE_TIMEOUT_S + 10
             try:
                 stored = follower_fut.result(timeout=timeout)
@@ -390,7 +359,6 @@ class CachedReferenceEncoder:
             self._inflight.pop(key, None)
         leader_fut.set_result(stored)
         self._maybe_log()
-        # CPU long like the hit path.
         return stored.to(torch.long)
 
     def _maybe_log(self) -> None:
@@ -440,8 +408,6 @@ class CachedReferenceEncoder:
                 io.BytesIO(raw), dtype="float32", always_2d=True
             )
             # Note(Jiaxin): the duration check runs inside the leader (not before
-            # inflight registration like the file path) so concurrent same-payload
-            # requests share one sf.read of a potentially large decoded buffer.
             duration = audio.shape[0] / max(int(sample_rate), 1)
             if duration > _BatchedReferenceEncoder.MAX_REFERENCE_SECONDS:
                 raise ValueError(
@@ -463,7 +429,6 @@ class CachedReferenceEncoder:
                 "bytes": self._cache.current_bytes,
             }
 
-
 def create_preprocessing_executor(
     model_path: str,
     *,
@@ -476,8 +441,6 @@ def create_preprocessing_executor(
     ref_audio_cache_max_items: int = 8192,
     ref_audio_cache_max_bytes: int = 64 * 1024 * 1024,
 ) -> SimpleScheduler:
-    # MOSS_REF_AUDIO_CACHE=0 disables the cache at startup (ops kill switch / A-B
-    # toggle) without a config edit; unset => kwarg default.
     env_toggle = os.environ.get("MOSS_REF_AUDIO_CACHE")
     if env_toggle is not None:
         ref_audio_cache = env_toggle.strip().lower() not in (
@@ -503,15 +466,11 @@ def create_preprocessing_executor(
     set_moss_tts_local_preprocessing_context(
         processor=processor, reference_encoder=reference_encoder
     )
-    # Reference encoding runs through the ~1B-param causal codec encoder, so
-    # unlike MOSS Delay the audio tokenizer must live on the GPU; threads
-    # release the GIL during the codec forward, keeping the AR engine fed.
     return SimpleScheduler(
         preprocess_moss_tts_local_payload,
         abort_callback=cleanup_prepared_moss_tts_local_request,
         max_concurrency=max_concurrency,
     )
-
 
 def create_sglang_tts_engine_executor(
     model_path: str,
@@ -552,9 +511,6 @@ def create_sglang_tts_engine_executor(
         "trust_remote_code": True,
     }
     if total_gpu_memory_fraction is None:
-        # without a typed stage budget, this path cannot use process-scoped
-        # colocated profiling
-        # keep the legacy static fraction for split/custom deployments
         overrides["mem_fraction_static"] = 0.6 if torch.cuda.device_count() > 1 else 0.5
     if server_args_overrides:
         overrides.update(server_args_overrides)
@@ -624,9 +580,6 @@ def create_sglang_tts_engine_executor(
     model = model_worker.model_runner.model
     if want_cuda_graph:
         model_worker.model_runner.init_device_graphs()
-        # Also graph the per-frame local-transformer decode (1 + n_vq
-        # micro-steps and 13 seeded sampling passes per frame): eager it is
-        # kernel-launch-bound at ~22 ms/frame independent of batch size.
         model.init_frame_decode_graphs(
             list(
                 overrides.get("cuda_graph_bs")
@@ -644,8 +597,6 @@ def create_sglang_tts_engine_executor(
     )
 
     def abort_request(request_id: str) -> None:
-        # Drop any prepared handoff and release any held pool row; both are
-        # idempotent no-ops if the request never reached them.
         cleanup_prepared_moss_tts_local_request(request_id)
         model.reset_request(request_id)
 
@@ -669,10 +620,8 @@ def create_sglang_tts_engine_executor(
     model_runner.set_stream_outbox(scheduler.outbox)
     return scheduler
 
-
 def create_tts_engine_executor(*args, **kwargs) -> Any:
     return create_sglang_tts_engine_executor(*args, **kwargs)
-
 
 def create_vocoder_executor(
     model_path: str,
@@ -701,7 +650,5 @@ def create_vocoder_executor(
         cuda_graph_frames=cuda_graph_frames,
         cuda_graph_min_free_gb=cuda_graph_min_free_gb,
     )
-    # Capture graphs in the factory: it runs before the process is marked ready, so serving never
-    # races a half-captured graph. Same-process guarantee (each colocate/split stage warms its own).
     scheduler.warmup_now()
     return scheduler
