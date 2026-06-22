@@ -16,7 +16,6 @@ _QWEN3_TTS_CUSTOM_VARIANT_MARKERS = (
     "voicedesign",
 )
 
-
 class Qwen3TTSPipelineConfig(PipelineConfig):
     """3-stage Qwen3-TTS Base pipeline: preprocessing -> engine -> vocoder."""
 
@@ -58,7 +57,6 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
     def supports_uploaded_voice_references(self) -> bool:
         return _is_qwen3_tts_base_model(self.model_path)
 
-
 def _is_qwen3_tts_base_model(model_path: str) -> bool:
     qwen3_tts_parts = [
         part.replace("-", "_").casefold()
@@ -72,6 +70,5 @@ def _is_qwen3_tts_base_model(model_path: str) -> bool:
     ):
         return False
     return any(part.endswith("_base") or "_base_" in part for part in qwen3_tts_parts)
-
 
 EntryClass = Qwen3TTSPipelineConfig

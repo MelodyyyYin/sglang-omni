@@ -27,7 +27,6 @@ _THINKER_EMBED_CANDIDATE_KEYS = (
     "model.embed_tokens.weight",
 )
 
-
 def _read_rows_from_safetensor(
     file_path: Path, tensor_name: str, row_ids: list[int]
 ) -> torch.Tensor:
@@ -39,7 +38,6 @@ def _read_rows_from_safetensor(
         except (IndexError, RuntimeError, TypeError, ValueError):
             tensor = handle.get_tensor(tensor_name)
             return tensor[row_ids]
-
 
 def load_thinker_embedding_rows(model_path: str, row_ids: list[int]) -> torch.Tensor:
     model_dir = Path(model_path)
@@ -62,7 +60,6 @@ def load_thinker_embedding_rows(model_path: str, row_ids: list[int]) -> torch.Te
 
     raise KeyError(f"Unable to locate thinker embedding weights in {model_path}")
 
-
 def coerce_feature_tensor(value: Any) -> torch.Tensor | None:
     if value is None:
         return None
@@ -81,7 +78,6 @@ def coerce_feature_tensor(value: Any) -> torch.Tensor | None:
     if tensor.dim() > 2:
         return tensor.reshape(-1, tensor.shape[-1])
     return tensor
-
 
 def merge_prompt_modality(
     prompt_ids: torch.Tensor,
@@ -107,7 +103,6 @@ def merge_prompt_modality(
     )
     prompt_hidden[mask] = 0.0
 
-
 def resolve_speaker_id(params: dict[str, Any], speaker_map: dict[str, int]) -> int:
     speaker_name = str(params.get("speaker", "Ethan")).lower()
     if speaker_name in speaker_map:
@@ -115,7 +110,6 @@ def resolve_speaker_id(params: dict[str, Any], speaker_map: dict[str, int]) -> i
     if speaker_map:
         return next(iter(speaker_map.values()))
     return int(params.get("speaker_id", 0))
-
 
 class TalkerPrefillBuilder:
     def __init__(

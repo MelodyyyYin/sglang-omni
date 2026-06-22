@@ -6,7 +6,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-
 @dataclass
 class Qwen3TTSState:
     """Per-request state for Qwen3-TTS generation."""
