@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 StreamOutputBuilder = Callable[[str, Any, Any], list[Any]]
 
+
 def create_thinker_scheduler(
     server_args: Any,
     *,
@@ -103,6 +104,7 @@ def create_thinker_scheduler(
         result_adapter=result_adapter,
         stream_output_builder=stream_output_builder,
     )
+
 
 def make_thinker_scheduler_adapters(
     *,
@@ -242,6 +244,7 @@ def make_thinker_scheduler_adapters(
 
     return request_builder, result_adapter
 
+
 def make_combined_stream_output_builder(
     *builders: StreamOutputBuilder,
 ) -> StreamOutputBuilder:
@@ -254,6 +257,7 @@ def make_combined_stream_output_builder(
         return messages
 
     return _build_stream_output
+
 
 def _select_stream_output_builder(
     enable_streaming_tts: bool,
@@ -270,6 +274,7 @@ def _select_stream_output_builder(
             ),
         )
     return make_text_stream_output_builder()
+
 
 def make_text_stream_output_builder(*, text_decode_stage: str = "decode"):
     """Per-token stream callback for text-only pipelines.
@@ -319,6 +324,7 @@ def make_text_stream_output_builder(*, text_decode_stage: str = "decode"):
         ]
 
     return _build_stream_output
+
 
 def make_thinker_stream_output_builder(
     *,
@@ -398,15 +404,18 @@ def make_thinker_stream_output_builder(
 
     return _build_stream_output
 
+
 def _torch_long():
     import torch
 
     return torch.long
 
+
 def _collect_eos_token_ids(tokenizer: Any) -> set[int] | None:
     """Match Ming V0: let the SGLang request stop only on tokenizer EOS."""
     eid = getattr(tokenizer, "eos_token_id", None)
     return {int(eid)} if isinstance(eid, int) and eid >= 0 else None
+
 
 def _stop_hits(output_ids: list[int], tokenizer: Any) -> list[int]:
     stop_ids = _collect_eos_token_ids(tokenizer) or set()

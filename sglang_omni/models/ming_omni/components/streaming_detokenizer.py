@@ -42,12 +42,14 @@ _DONE_SEEN_EVICT_TO = 5000
 _STATE_MAX = 10000
 _STATE_ORPHAN_IDLE_S = 300.0
 
+
 @dataclass
 class _RequestState:
     pending_tokens: list[int] = field(default_factory=list)
     payload: StagePayload | None = None
     done: bool = False
     last_seen: float = 0.0
+
 
 class MingStreamingDetokenizeScheduler:
     """Stream-aware decode stage for Ming-Omni text-only pipelines.
@@ -275,6 +277,7 @@ class MingStreamingDetokenizeScheduler:
 
         return result
 
+
 def _event_to_dict(event: Any) -> dict[str, Any]:
     return {
         "type": event.type,
@@ -282,6 +285,7 @@ def _event_to_dict(event: Any) -> dict[str, Any]:
         "payload": dict(event.payload),
         "is_final": bool(event.is_final),
     }
+
 
 def text_output_requested(request: Any) -> bool:
     """Return True if text is among the requested output modalities.
@@ -301,6 +305,7 @@ def text_output_requested(request: Any) -> bool:
         return any(str(m).lower() == "text" for m in modalities)
     return True
 
+
 def _attach_decode_final_metadata(
     result: dict[str, Any],
     state: MingOmniPipelineState,
@@ -310,6 +315,7 @@ def _attach_decode_final_metadata(
     if finish_reason is not None:
         result.setdefault("finish_reason", finish_reason)
     result.setdefault("usage", build_text_usage(state, thinker_out))
+
 
 def create_ming_streaming_detokenize_scheduler(
     model_path: str,
