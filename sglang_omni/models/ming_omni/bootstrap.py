@@ -132,6 +132,7 @@ def make_thinker_scheduler_adapters(
         if not hasattr(input_ids, "to"):
             raise TypeError("prompt.input_ids must be a torch.Tensor")
 
+        # Per-content pad_value substitution to defeat radix prefix-cache aliasing across multimodal requests sharing the same generic patch token id.
         thinker_inputs_early = state.thinker_inputs or {}
         media_cache_keys = thinker_inputs_early.get("media_cache_keys") or {}
         pad_values: dict[str, int] = {}
@@ -277,13 +278,7 @@ def _select_stream_output_builder(
 
 
 def make_text_stream_output_builder(*, text_decode_stage: str = "decode"):
-    """Per-token stream callback for text-only pipelines.
-
-    Sends the raw token_id to the decode stage on every thinker step when
-    stream=true AND text output is requested. The decode stage
-    (MingStreamingDetokenizeScheduler) does incremental detokenization and
-    emits text deltas to the Coordinator.
-    """
+    """Per-token stream callback for text-only pipelines: sends raw token_id to the decode stage when stream=true and text output is requested."""
     import torch
 
     from sglang_omni.models.ming_omni.components.streaming_detokenizer import (
@@ -332,21 +327,14 @@ def make_thinker_stream_output_builder(
     eos_token_id: int | None,
     target_stage: str = "segmenter",
 ):
-    """Build a per-token stream callback that emits text deltas to the segmenter.
-
-    OmniScheduler calls this on every model step with the freshly generated
-    token id. We maintain per-request running output_ids on ``req`` so we can
-    incrementally decode and compute the text delta to push to the segmenter.
-
-    Incomplete UTF-8 sequences (``\\ufffd`` in the decoded result) are buffered
-    until the next token completes them.
-    """
+    """Build a per-token stream callback that incrementally decodes and emits text deltas to the segmenter, buffering incomplete UTF-8 sequences until the next token completes them."""
     import torch
 
     from sglang_omni.scheduling.messages import OutgoingMessage
 
     def _build_stream_output(request_id, req_data, req_output):
         req = getattr(req_data, "req", None)
+        # Suppress during chunked prefill — else prompt-side states masquerade as the first assistant token and leak prompt content into TTS.
         if req is not None and int(getattr(req, "is_chunked", 0) or 0) > 0:
             return []
         if req_output.data is None or req is None:

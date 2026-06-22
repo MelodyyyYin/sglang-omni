@@ -1,21 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Streaming detokenizer scheduler for the Ming-Omni decode stage.
-
-Replaces the one-shot SimpleScheduler-based decode for text-only pipelines.
-Consumes per-token ``stream_chunk`` IncomingMessages from the thinker (each
-carrying a single token id as a torch.LongTensor), incrementally detokenizes
-with UTF-8 boundary safety, and emits text deltas as
-``OutgoingMessage(type="stream", target=None)`` which the stage runtime
-forwards to the Coordinator.
-
-Final result is emitted on ``new_request`` (the thinker's terminal payload),
-preserving the existing non-streaming result shape. When streaming, ``text``
-is stripped from the final result to avoid sending the full response twice.
-
-Incremental decode runs on the held ``pending_tokens`` buffer only, which is
-equality-safe for suffix-additive tokenizers (byte-level BPE, as Ming uses)
-but would drop inter-word spaces with a sentencepiece/metaspace tokenizer.
-"""
+"""Streaming detokenizer for the Ming-Omni decode stage: incrementally detokenizes per-token stream_chunks (UTF-8-boundary-safe) into text deltas to the Coordinator; equality-safe only for suffix-additive/byte-level-BPE tokenizers (Ming's), not sentencepiece/metaspace (would drop inter-word spaces)."""
 from __future__ import annotations
 
 import logging
@@ -39,6 +23,7 @@ logger = logging.getLogger(__name__)
 _DONE_SEEN_MAX = 10000
 _DONE_SEEN_EVICT_TO = 5000
 
+# Safety net against orphan _state entries if an abort is ever lost; only entries idle for _STATE_ORPHAN_IDLE_S are evicted so live/done requests are never dropped or hung.
 _STATE_MAX = 10000
 _STATE_ORPHAN_IDLE_S = 300.0
 
@@ -73,6 +58,7 @@ class MingStreamingDetokenizeScheduler:
         self._running = False
         self._state: dict[str, _RequestState] = {}
         self._done_seen: OrderedDict[str, None] = OrderedDict()
+        # abort() runs on the event-loop thread while start() runs on the scheduler thread; guards iteration/multi-op sections.
         self._state_lock = threading.Lock()
 
     def start(self) -> None:
@@ -263,6 +249,7 @@ class MingStreamingDetokenizeScheduler:
             result.update(final_event.payload)
             result.setdefault("modality", final_event.modality)
 
+        # Strip text from the terminal result when streaming to avoid double-sending; must mirror the emission gate in make_text_stream_output_builder (no deltas emitted when text not requested, so keep text then).
         if is_streaming and text_output_requested(payload.request):
             result.pop("text", None)
         elif "text" not in result:
@@ -288,11 +275,7 @@ def _event_to_dict(event: Any) -> dict[str, Any]:
 
 
 def text_output_requested(request: Any) -> bool:
-    """Return True if text is among the requested output modalities.
-
-    Reads ``request.metadata["output_modalities"]``; defaults to True when
-    the field is absent (text is always produced unless explicitly excluded).
-    """
+    """Return True if text is among the requested output modalities (defaults to True when the field is absent)."""
     metadata = getattr(request, "metadata", None)
     if not isinstance(metadata, dict):
         return True
