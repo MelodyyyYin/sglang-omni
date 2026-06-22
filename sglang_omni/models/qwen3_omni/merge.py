@@ -17,6 +17,7 @@ from sglang_omni.proto import StagePayload
 IMAGE_STAGE = "image_encoder"
 AUDIO_STAGE = "audio_encoder"
 
+
 def _cast_tensor(
     value: torch.Tensor | None, dtype: torch.dtype | None = None
 ) -> torch.Tensor | None:
@@ -24,8 +25,10 @@ def _cast_tensor(
         return None
     return value.to(dtype=dtype) if dtype is not None else value
 
+
 def _non_empty(tensor: torch.Tensor | None) -> bool:
     return tensor is not None and tensor.numel() > 0
+
 
 def merge_for_thinker(payloads: dict[str, StagePayload]) -> StagePayload:
     """Aggregate preprocessing + encoder outputs into thinker inputs."""
@@ -51,6 +54,7 @@ def merge_for_thinker(payloads: dict[str, StagePayload]) -> StagePayload:
     state.encoder_outs = {}
     base.data = state.to_dict()
     return base
+
 
 def build_thinker_inputs(
     state: Qwen3OmniPipelineState,
@@ -159,6 +163,7 @@ def build_thinker_inputs(
         result["media_cache_keys"] = media_cache_keys
     return result
 
+
 def _prune_preprocessing_for_thinker(
     state: Qwen3OmniPipelineState,
     encoder_outs: dict[str, Any],
@@ -211,6 +216,7 @@ def _prune_preprocessing_for_thinker(
             "use_audio_in_video": use_audio_in_video,
         },
     }
+
 
 def decode_events(
     *,
