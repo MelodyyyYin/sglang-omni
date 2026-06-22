@@ -24,11 +24,9 @@ from sglang_omni.preprocessing.audio import AudioMediaIO
 from sglang_omni.preprocessing.base import _is_url
 from sglang_omni.preprocessing.resource_connector import global_http_connection
 
-# Codec-vocab specials (inside the [N*V] codebook space, NOT the text vocab).
 BOC_ID = 1024
 EOC_ID = 1025
 
-# Shared between audio_encoder + vocoder; one codec load saves ~1 GB VRAM.
 _CODEC_CACHE: dict[tuple[str, str, str], HiggsAudioCodec] = {}
 
 

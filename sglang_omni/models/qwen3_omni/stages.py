@@ -43,11 +43,9 @@ THINKER_STAGE = "thinker"
 
 logger = logging.getLogger(__name__)
 
-# Image-encoder batching budget; the multiplier accounts for transient activations.
 QWEN3_IMAGE_ENCODER_BATCH_BUDGET_BYTES = 10 * 1024**3
 QWEN3_IMAGE_ENCODER_ACTIVATION_MULTIPLIER = 5
 
-# CPU LRU cap for repeated-media encoder outputs.
 QWEN3_ENCODER_CACHE_MAX_BYTES = 4 * 1024**3
 QWEN3_ENCODER_CACHE_MAX_ENTRIES = 64
 
@@ -737,9 +735,6 @@ def _batch_audio_encoder_payloads(
     return [result for result in results if result is not None]
 
 
-# ---------------------------------------------------------------------------
-# Simple stages — return SimpleScheduler
-# ---------------------------------------------------------------------------
 
 
 def create_preprocessing_executor(
@@ -839,8 +834,6 @@ def create_image_encoder_executor(
                     metadata={"modality": "image", "batch_size": len(payloads)},
                 )
 
-    # Preserve the calibrated image-encoder batching shape and add a small
-    # batch_wait so video benchmarks at concurrency=16 batch together.
     return SimpleScheduler(
         _encode,
         batch_compute_fn=_encode_batch,
@@ -923,9 +916,6 @@ def create_decode_executor(model_path: str):
     return create_streaming_detokenize_scheduler(model_path)
 
 
-# ---------------------------------------------------------------------------
-# AR stages — return OmniScheduler
-# ---------------------------------------------------------------------------
 
 
 def create_sglang_thinker_executor_from_config(

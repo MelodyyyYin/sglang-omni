@@ -81,14 +81,8 @@ def build_sglang_higgs_request(
     if state.seed is not None:
         sp_kwargs["sampling_seed"] = int(state.seed)
     sampling_params = SamplingParams(**sp_kwargs)
-    # tokenizer_manager.normalize() is bypassed in our custom pipeline;
-    # without it stop_strs / stop_regex_strs stay None and the upstream
-    # scheduler's check_finished trips on ``len(None)``.
     sampling_params.normalize(tokenizer=None)
 
-    # vocab_size = backbone text vocab so cb0 rides sglang's standard sampler path.
-    # extra_key namespaces the radix cache per ref-audio fingerprint so prompts
-    # sharing the -100 placeholder prefix can never cross-contaminate KV.
     req = Req(
         rid=request_id,
         origin_input_text="",
@@ -97,7 +91,6 @@ def build_sglang_higgs_request(
         vocab_size=151_936,
         extra_key=_ref_audio_fingerprint(state.reference_codes_delayed),
     )
-    # V1's prefill manager probes these attrs; absence triggers AttributeError.
     req._codec_suppress_tokens = None
     req._input_embeds_are_projected = False
 

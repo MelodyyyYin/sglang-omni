@@ -316,9 +316,6 @@ def _resolve_nccl_port() -> int:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             port = sock.getsockname()[1]
     except PermissionError:
-        # Some restricted CI / sandbox environments do not allow ephemeral socket
-        # binding during test-time configuration. Fall back to a stable default so
-        # callers still receive a valid NCCL port choice.
         port = 29500
 
     os.environ["MASTER_PORT"] = str(port)
@@ -407,8 +404,6 @@ def _apply_model_worker_backend_policy(
         and has_native_fp8_block_quant
         and fp8_gemm_backend in (None, "auto")
     ):
-        # Projected talker prefill has request-dependent FP8 dense GEMM shapes
-        # outside decode CUDA graph replay; DeepGEMM can otherwise JIT there.
         server_args.fp8_gemm_runner_backend = "triton"
         fp8_gemm_backend = server_args.fp8_gemm_runner_backend
 

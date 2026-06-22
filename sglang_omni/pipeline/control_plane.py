@@ -156,7 +156,6 @@ class PubSocket:
         ctx = ControlPlaneContext.get()
         self._socket = ctx.socket(zmq.PUB)
         self._socket.bind(self.endpoint)
-        # Give subscribers time to connect
         await asyncio.sleep(0.1)
         logger.debug("PUB socket bound to %s", self.endpoint)
 
@@ -187,7 +186,7 @@ class SubSocket:
         ctx = ControlPlaneContext.get()
         self._socket = ctx.socket(zmq.SUB)
         self._socket.connect(self.endpoint)
-        self._socket.setsockopt(zmq.SUBSCRIBE, b"")  # Subscribe to all messages
+        self._socket.setsockopt(zmq.SUBSCRIBE, b"")
         logger.debug("SUB socket connected to %s", self.endpoint)
 
     async def recv(self) -> AbortMessage:
@@ -243,15 +242,12 @@ class StageControlPlane:
 
     async def start(self) -> None:
         """Initialize all sockets."""
-        # Socket to receive work
         self._recv_socket = PullSocket(self.recv_endpoint, bind=True)
         await self._recv_socket.start()
 
-        # Socket to send completions to coordinator
         self._coordinator_socket = PushSocket(self.coordinator_endpoint)
         await self._coordinator_socket.connect()
 
-        # Socket to receive abort broadcasts
         self._abort_socket = SubSocket(self.abort_endpoint)
         await self._abort_socket.connect()
 
@@ -359,11 +355,9 @@ class CoordinatorControlPlane:
 
     async def start(self) -> None:
         """Initialize all sockets."""
-        # Socket to receive completions
         self._completion_socket = PullSocket(self.completion_endpoint, bind=True)
         await self._completion_socket.start()
 
-        # Socket to broadcast aborts
         self._abort_socket = PubSocket(self.abort_endpoint)
         await self._abort_socket.bind()
 

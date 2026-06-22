@@ -31,10 +31,8 @@ def _decode_audio_bytes_av(data: bytes) -> tuple[np.ndarray, int]:
         sample_rate = audio_stream.rate
         frames = []
         for frame in container.decode(audio_stream):
-            arr = frame.to_ndarray()  # shape varies by format
+            arr = frame.to_ndarray()
             if arr.ndim == 2:
-                # Planar formats (fltp, s16p, etc.): shape is (channels, samples)
-                # Average channels to mono
                 arr = arr.mean(axis=0)
             frames.append(arr.flatten().astype(np.float32))
     finally:
@@ -44,7 +42,6 @@ def _decode_audio_bytes_av(data: bytes) -> tuple[np.ndarray, int]:
         raise ValueError("No audio frames decoded")
 
     audio = np.concatenate(frames)
-    # Normalize integer formats to [-1, 1] float range
     if audio.max() > 1.0 or audio.min() < -1.0:
         peak = max(abs(audio.max()), abs(audio.min()))
         if peak > 0:
@@ -96,14 +93,12 @@ def _parse_wav_bytes(data: bytes, source: str = "bytes") -> tuple[np.ndarray, in
     if not data_bytes:
         raise ValueError(f"Missing data chunk in WAV: {source}")
 
-    if fmt_tag == 3:  # IEEE float
         if bits_per_sample == 32:
             audio = np.frombuffer(data_bytes, dtype="<f4")
         elif bits_per_sample == 64:
             audio = np.frombuffer(data_bytes, dtype="<f8").astype(np.float32)
         else:
             raise ValueError(f"Unsupported float WAV bit depth: {bits_per_sample}")
-    elif fmt_tag == 1:  # PCM
         if bits_per_sample == 16:
             audio_i16 = np.frombuffer(data_bytes, dtype="<i2")
             audio = (audio_i16.astype(np.float32) / 32768.0).astype(np.float32)
@@ -240,40 +235,32 @@ async def ensure_audio_list_async(
         return []
     items = audios if isinstance(audios, list) else [audios]
 
-    # Import here to avoid circular dependency
     if resource_connector is None:
         from .resource_connector import get_global_resource_connector
 
         resource_connector = get_global_resource_connector()
 
-    # Collect coroutines for URL items
     coroutines: list[asyncio.Task[tuple[npt.NDArray, float]] | None] = []
     url_indices: list[int] = []
     normalized: list[Any] = []
 
-    # First pass: identify URL items and create coroutines
     for idx, item in enumerate(items):
         if isinstance(item, (str, Path)):
             if _is_url(item):
-                # Create coroutine for async URL fetching
                 coro = resource_connector.fetch_audio_async(
                     str(item), target_sr=target_sr
                 )
                 task = asyncio.create_task(coro)
                 coroutines.append(task)
                 url_indices.append(idx)
-                normalized.append(None)  # Placeholder
+                normalized.append(None)
             else:
-                # Local path - can be loaded synchronously
                 normalized.append(load_audio_path(item, target_sr=target_sr))
         else:
-            # Already processed (numpy array, etc.)
             normalized.append(item)
 
-    # Wait for all URL fetches to complete
     if coroutines:
         results = await asyncio.gather(*coroutines)
-        # Fill in the results at the correct indices (extract audio array, ignore sample rate)
         for url_idx, (audio, _) in zip(url_indices, results):
             normalized[url_idx] = audio
 

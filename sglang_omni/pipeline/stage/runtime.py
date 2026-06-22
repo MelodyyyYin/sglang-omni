@@ -107,7 +107,6 @@ class Stage:
         self._is_terminal = is_terminal
         self._owns_external_io = role in {"single", "leader"}
 
-        # --- Relay ---
         if relay is not None:
             self.relay = relay
         else:
@@ -133,13 +132,11 @@ class Stage:
                 recv_from_ranks=config.get("recv_from_ranks", []),
             )
 
-        # --- State ---
         self._running = False
         self._aborted: set[str] = set()
         self._active_requests: set[str] = set()
         self._stream_queue: StreamQueue | None = None
         self._stream_chunk_counters: dict[tuple[str, str], int] = {}
-        # Per-request: did we already emit the first stream-chunk event?
         self._first_stream_chunk_seen: set[str] = set()
         self._local_stream_targets: dict[str, set[str]] = {}
         self._nonlocal_stream_targets: dict[str, set[str]] = {}
@@ -155,12 +152,9 @@ class Stage:
         self._loop = asyncio.get_running_loop()
         self._running = True
 
-        # Start scheduler in dedicated thread
         if self.scheduler is not None:
 
             def _run_scheduler():
-                # Active-stage binding so ``emit(stage=None)`` from
-                # scheduler-thread descendants resolves to this stage.
                 _set_active_stage(self.name)
                 try:
                     if self.gpu_id is not None:
@@ -288,7 +282,7 @@ class Stage:
             metadata={"from_stage": "coordinator", "kind": "submit"},
         )
 
-        payload = msg.data  # StagePayload from coordinator
+        payload = msg.data
         await self._execute(payload)
 
     async def _on_data_ready(self, msg: DataReadyMessage) -> None:
@@ -300,7 +294,6 @@ class Stage:
         if self._stream_queue is not None and not self._stream_queue.has(request_id):
             self._stream_queue.open(request_id)
 
-        # Read payload from relay
         try:
             payload = await relay_io.read_payload(
                 self.relay, request_id, msg.shm_metadata
@@ -400,7 +393,6 @@ class Stage:
             return
         self._active_requests.add(request_id)
 
-        # Same-GPU CUDA IPC
         if isinstance(msg.shm_metadata, dict) and msg.shm_metadata.get("_ipc"):
             try:
                 item = self._deserialize_ipc_chunk(msg)
@@ -423,7 +415,6 @@ class Stage:
             await self._route_stream_item_or_fail(request_id, item)
             return
 
-        # Cross-GPU: relay
         blob_key = f"{request_id}:stream:{msg.from_stage}:{msg.to_stage}:{msg.chunk_id}"
         try:
             data = await relay_io.read_blob(self.relay, blob_key, msg.shm_metadata)
@@ -660,10 +651,6 @@ class Stage:
             and self._tp_fanout is not None
             and getattr(self.scheduler, "requires_tp_work_fanout", False)
         ):
-            # Fan out the *unresolved* payload before materializing any
-            # tensor refs below — followers materialize refs themselves,
-            # on their own relay/device, rather than receiving an already
-            # resolved large CUDA tensor over the cross-process work queue.
             self._tp_fanout.fanout_work(payload)
         payload_for_scheduler = payload
         if tensor_refs_enabled():
@@ -789,10 +776,6 @@ class Stage:
             role=self.role,
         )
 
-    # ------------------------------------------------------------------
-    # Outbox drain: scheduler results → route downstream
-    # ------------------------------------------------------------------
-
     async def _drain_outbox(self) -> None:
         if self._owns_external_io:
             await self._drain_outbox_external()
@@ -866,7 +849,6 @@ class Stage:
         if not self._owns_external_io:
             self._clear_request_state(request_id)
             return
-        # Send stream done to the active stream targets for this request.
         stream_targets = self._stream_targets
         if self.get_stream_done_targets is not None:
             resolved = self.get_stream_done_targets(request_id, result)
@@ -886,7 +868,6 @@ class Stage:
 
         next_stages = self.get_next(request_id, result)
         if next_stages is None:
-            # Terminal: notify coordinator
             _emit_event(
                 request_id=request_id,
                 stage=self.name,
@@ -1034,9 +1015,6 @@ class Stage:
                 "projected local-object dispatch requires projectors to return "
                 f"StagePayload, got {type(projected_payload).__name__}"
             )
-        # A fan-out edge may use process-local dispatch only when projection
-        # gives the target its own mutable payload/data containers. Tensor leaves
-        # inside those containers may still be shared intentionally.
         if projected_payload.data is original_payload.data:
             return False
         return not Stage._shares_mutable_container(
@@ -1370,7 +1348,6 @@ class Stage:
                 )
 
     def _on_profiler_stop(self, msg: ProfilerStopMessage) -> None:
-        # run_id=None is a wildcard (stop whatever's active).
         if TorchProfiler.is_active() and (
             msg.run_id is None or TorchProfiler.get_active_run_id() == msg.run_id
         ):
