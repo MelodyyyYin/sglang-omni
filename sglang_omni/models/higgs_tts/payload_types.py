@@ -9,40 +9,35 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-
 @dataclass
 class HiggsTtsState:
     """Per-request state threaded through preprocessing → audio_encoder →
     tts_engine → vocoder. Fields populate lazily so a deserialised state is
     valid at any stage boundary."""
 
-    # preprocessing / audio_encoder
     prompt_token_ids: list[int] = field(default_factory=list)
     reference_codes_delayed: list[list[int]] | None = None
     target_text: str | None = None
     reference_text: str | None = None
-    reference_waveform: Any | None = None  # mono 24 kHz [1, 1, L] torch.Tensor
+    reference_waveform: Any | None = None
     reference_code_cache_key: str | None = None
     uploaded_voice_name: str | None = None
     uploaded_voice_created_at: int | None = None
 
     num_codebooks: int = 8
-    codebook_size: int = 1026  # 1024 data + <|boc|> + <|eoc|>
+    codebook_size: int = 1026
 
-    # generation params
     max_new_tokens: int = 2048
     temperature: float = 1.0
     top_p: float | None = None
     top_k: int | None = None
     seed: int | None = None
 
-    # tts_engine
     output_codes_delayed: list[list[int]] | None = None
     prompt_tokens: int = 0
     completion_tokens: int = 0
     engine_time_s: float = 0.0
 
-    # vocoder
     audio_samples: Any | None = None
     sample_rate: int = 24000
 
@@ -108,6 +103,5 @@ class HiggsTtsState:
             audio_samples=data.get("audio_samples"),
             sample_rate=data.get("sample_rate", 24000),
         )
-
 
 __all__ = ["HiggsTtsState"]
