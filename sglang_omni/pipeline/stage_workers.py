@@ -29,6 +29,7 @@ from sglang_omni.utils.imports import import_string
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass
 class StageLaunchConfig:
     """Resolved launch metadata for one logical stage instance.
@@ -97,6 +98,7 @@ class StageLaunchConfig:
     def is_follower(self) -> bool:
         return self.role == "follower"
 
+
 @dataclass
 class StageWorkerProcessSpec:
     """Everything one OS process needs to run one or more stages."""
@@ -104,6 +106,7 @@ class StageWorkerProcessSpec:
     process_name: str
     stage_specs: list[StageLaunchConfig]
     gpu_id: int | None = None
+
 
 def _get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
     """Return the spawn-time env overrides for *spec*.
@@ -123,6 +126,7 @@ def _get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
             f"stage_specs={[s.stage_name for s in spec.stage_specs]}"
         )
     return get_stage_process_env(tp_stages[0])
+
 
 @contextmanager
 def _patched_spawn_env(spec: StageWorkerProcessSpec):
@@ -166,6 +170,7 @@ def _patched_spawn_env(spec: StageWorkerProcessSpec):
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
 
 class StageGroup:
     """Lifecycle manager for one or more OS processes in a topology group."""
@@ -338,6 +343,7 @@ class StageGroup:
             self._ready_events.clear()
             self._startup_error_channels.clear()
 
+
 def stage_process_main(
     spec: StageWorkerProcessSpec,
     ready_event: multiprocessing.Event,
@@ -361,6 +367,7 @@ def stage_process_main(
         if startup_error_channel is not None:
             startup_error_channel.put(traceback.format_exc())
         sys.exit(1)
+
 
 def _run_process(
     spec: StageWorkerProcessSpec,
@@ -411,6 +418,7 @@ def _run_process(
                     await stage.stop()
 
     asyncio.run(_start_and_run())
+
 
 def _construct_stage(
     spec: StageLaunchConfig,
@@ -604,6 +612,7 @@ def _construct_stage(
 
     return stage
 
+
 def _construct_scheduler(
     spec: StageLaunchConfig,
     gpu_id: int | None,
@@ -619,11 +628,13 @@ def _construct_scheduler(
         log.info(f"Acquired GPU startup lock for stage {spec.stage_name}: {lock_path}")
         return factory(**spec.factory_args)
 
+
 def _factory_args_use_cuda(factory_args: Mapping[str, Any]) -> bool:
     for value in factory_args.values():
         if isinstance(value, str) and value.startswith("cuda"):
             return True
     return False
+
 
 def get_stage_process_env(
     spec: StageLaunchConfig,
@@ -653,6 +664,7 @@ def get_stage_process_env(
         "SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS": "true",
         "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
     }
+
 
 def _prepare_cuda_environment(
     spec: StageLaunchConfig,
@@ -686,12 +698,14 @@ def _prepare_cuda_environment(
         mapped_gpu,
     )
 
+
 def _normalize_spec_gpu_id_to_local_device(spec: StageLaunchConfig) -> None:
     if "gpu_id" in spec.factory_args:
         spec.factory_args["gpu_id"] = 0
     if "gpu_id" in spec.relay_config:
         spec.relay_config["gpu_id"] = 0
     spec.gpu_id = 0
+
 
 def _process_name(spec: StageWorkerProcessSpec) -> str:
     if len(spec.stage_specs) > 1:
@@ -702,6 +716,7 @@ def _process_name(spec: StageWorkerProcessSpec) -> str:
     if stage_spec.role == "leader":
         return f"stage-{stage_spec.stage_name}-leader"
     return f"stage-{stage_spec.stage_name}-tp{stage_spec.tp_rank}-follower"
+
 
 def _close_queue(q: object) -> None:
     q.close()

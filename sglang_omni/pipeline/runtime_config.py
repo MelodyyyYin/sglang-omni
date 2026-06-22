@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 _IPC_SUN_PATH_BUDGET = getattr(zmq, "IPC_PATH_MAX_LEN", 100)
 _TEMPFILE_RANDOM_SUFFIX_LEN = 8
 
+
 class IpcRuntimeDir:
     """Runtime-owned IPC directory for one pipeline instance."""
 
@@ -48,6 +49,7 @@ class IpcRuntimeDir:
         except OSError as exc:
             logger.warning("Failed to remove IPC runtime dir %s: %s", self.path, exc)
 
+
 @dataclass(frozen=True)
 class PipelineRuntimePrep:
     """Prepared stage, endpoint, placement, and topology state."""
@@ -60,6 +62,7 @@ class PipelineRuntimePrep:
     process_plan: ProcessTopologyPlan
     runtime_dir: IpcRuntimeDir
     runtime_dir_created_here: bool
+
 
 def create_ipc_runtime_dir(
     config: PipelineConfig,
@@ -83,6 +86,7 @@ def create_ipc_runtime_dir(
     dir_prefix = f"{namespace_prefix}-" if namespace_prefix else ""
     path = Path(tempfile.mkdtemp(prefix=dir_prefix, dir=base_root))
     return IpcRuntimeDir(path)
+
 
 def prepare_pipeline_runtime(
     config: PipelineConfig,
@@ -125,6 +129,7 @@ def prepare_pipeline_runtime(
         runtime_dir_created_here=runtime_dir_created_here,
     )
 
+
 def build_relay_config(
     stage_cfg: StageConfig,
     global_cfg: PipelineConfig,
@@ -160,6 +165,7 @@ def build_relay_config(
         "gpu_id": gpu_id,
     }
 
+
 def parse_gpu_id(device: str) -> int | None:
     if device == "cpu":
         return None
@@ -168,6 +174,7 @@ def parse_gpu_id(device: str) -> int | None:
     if device.startswith("cuda:"):
         return int(device.split(":", 1)[1])
     raise ValueError(f"Unsupported device string: {device}")
+
 
 def allocate_endpoints(
     *,
@@ -183,6 +190,7 @@ def allocate_endpoints(
     for stage in stages:
         endpoints[f"stage_{stage.name}"] = f"ipc://{base_dir}/stage_{stage.name}.sock"
     return endpoints
+
 
 def _truncate_ipc_namespace_prefix(
     namespace_prefix: str,
@@ -215,6 +223,7 @@ def _truncate_ipc_namespace_prefix(
         return ""
     return namespace_prefix[:max_prefix_len]
 
+
 def _validate_ipc_endpoint_budget(
     *,
     stages: list[StageConfig],
@@ -229,10 +238,12 @@ def _validate_ipc_endpoint_budget(
             path_len=path_len,
         )
 
+
 def _longest_endpoint_suffix_len(stages: list[StageConfig]) -> int:
     suffixes = [len("/completion.sock"), len("/abort.sock")]
     suffixes.extend(len(f"/stage_{stage.name}.sock") for stage in stages)
     return max(suffixes)
+
 
 def _ipc_dir_len(
     *,
@@ -244,6 +255,7 @@ def _ipc_dir_len(
     if namespace_prefix_len:
         dir_name_len += len("-")
     return len(str(base_root)) + len("/") + dir_name_len + endpoint_suffix_len
+
 
 def _raise_ipc_path_budget_error(
     *,

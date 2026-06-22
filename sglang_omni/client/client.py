@@ -32,6 +32,7 @@ from sglang_omni.client.types import (
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import OmniRequest, RequestState, StreamMessage
 
+
 class Client:
     """Internal client used by API adapters."""
 
@@ -557,6 +558,7 @@ class Client:
         chunk.text = str(data)
         return chunk
 
+
 def _extract_inputs(request: GenerateRequest) -> Any:
     choices = [
         request.prompt is not None,
@@ -599,6 +601,7 @@ def _extract_inputs(request: GenerateRequest) -> Any:
                 result[key] = value
         return result
     return messages
+
 
 def _build_params(request: GenerateRequest) -> dict[str, Any]:
     params = request.sampling.to_dict()

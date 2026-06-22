@@ -29,12 +29,14 @@ from sglang_omni.proto import (
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass
 class _AdminPendingOperation:
     expected_stages: set[str]
     action: str
     results: dict[str, AdminResult] = field(default_factory=dict)
     future: asyncio.Future | None = None
+
 
 class Coordinator:
     """Central coordinator for the multi-stage pipeline.
@@ -698,6 +700,7 @@ class Coordinator:
             "pending_completions": len(self._completion_futures),
             "request_states": state_counts,
         }
+
 
 async def run_coordinator(
     completion_endpoint: str,

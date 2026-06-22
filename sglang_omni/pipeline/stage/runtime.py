@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 GetNextFn = Callable[[str, Any], str | list[str] | None]
 GetStreamDoneTargetsFn = Callable[[str, Any], str | list[str] | None]
 
+
 class Stage:
     """IO shell for one pipeline stage.
 

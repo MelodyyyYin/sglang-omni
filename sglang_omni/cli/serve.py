@@ -28,10 +28,12 @@ _QWEN_PARTIAL_START_TALKER_FACTORY = (
     "sglang_omni.models.qwen3_omni.stages.create_talker_ar_executor_from_config"
 )
 
+
 def launch_server(*args: object, **kwargs: object) -> object:
     from sglang_omni.serve.launcher import launch_server as _launch_server
 
     return _launch_server(*args, **kwargs)
+
 
 def _normalize_stage_toggle_mode(flag_name: str, value: str) -> _STAGE_TOGGLE_MODE:
     normalized = value.strip().lower()
@@ -39,11 +41,13 @@ def _normalize_stage_toggle_mode(flag_name: str, value: str) -> _STAGE_TOGGLE_MO
         raise typer.BadParameter(f"{flag_name} must be one of: default, on, off")
     return normalized  # type: ignore[return-value]
 
+
 def _normalize_decode_mode(value: str) -> _DECODE_MODE:
     normalized = value.strip().lower()
     if normalized not in {"async", "sync"}:
         raise typer.BadParameter("--decode-mode must be one of: async, sync")
     return normalized  # type: ignore[return-value]
+
 
 def _validate_colocate_cli_request(
     *,
@@ -58,16 +62,19 @@ def _validate_colocate_cli_request(
     if not config:
         raise typer.BadParameter("--colocate requires --config")
 
+
 def _validate_colocate_config(pipeline_config: PipelineConfig) -> None:
     if type(pipeline_config).__name__ != _QWEN_COLOCATED_CONFIG_CLASS:
         raise typer.BadParameter(
             f"--colocate requires a {_QWEN_COLOCATED_CONFIG_CLASS} config file"
         )
 
+
 def _should_print_merged_config(*, colocate: bool, log_level: str) -> bool:
     """Return whether to print the full resolved pipeline config."""
 
     return colocate or log_level.lower() == "debug"
+
 
 def _print_merged_config(pipeline_config: PipelineConfig) -> None:
     print("=" * 20, "Merged Configuration", "=" * 20)
@@ -80,6 +87,7 @@ def _print_merged_config(pipeline_config: PipelineConfig) -> None:
         )
     )
     print("=" * 50)
+
 
 def _find_matching_stages(
     pipeline_config: PipelineConfig,
@@ -96,6 +104,7 @@ def _find_matching_stages(
         )
     return matching_stages
 
+
 def _raise_unsupported_flag(
     pipeline_config: PipelineConfig,
     flag_name: str,
@@ -103,6 +112,7 @@ def _raise_unsupported_flag(
     raise typer.BadParameter(
         f"{flag_name} is not supported by {type(pipeline_config).__name__}"
     )
+
 
 def _resolve_talker_stage(
     pipeline_config: PipelineConfig,
@@ -114,6 +124,7 @@ def _resolve_talker_stage(
         _raise_unsupported_flag(pipeline_config, flag_name)
     return stage_name
 
+
 def _resolve_talker_sglang_stage(
     pipeline_config: PipelineConfig,
     *,
@@ -123,6 +134,7 @@ def _resolve_talker_sglang_stage(
     if stage_name is None:
         _raise_unsupported_flag(pipeline_config, flag_name)
     return stage_name
+
 
 def _apply_stage_server_args_override(
     pipeline_config: PipelineConfig,
@@ -157,6 +169,7 @@ def _apply_stage_server_args_override(
             if isinstance(runtime_server_args, dict):
                 runtime_server_args.update(updates)
 
+
 def _apply_stage_mem_fraction_override(
     pipeline_config: PipelineConfig,
     *,
@@ -170,6 +183,7 @@ def _apply_stage_mem_fraction_override(
     )
     for stage in matching_stages:
         stage.runtime.sglang_server_args.mem_fraction_static = value
+
 
 def _stage_has_explicit_mem_fraction_static(
     pipeline_config: PipelineConfig,
@@ -198,6 +212,7 @@ def _stage_has_explicit_mem_fraction_static(
     )
     return runtime_server_args_overrides.get("mem_fraction_static") is not None
 
+
 def _validate_mem_fraction_static(flag_name: str, value: float | None) -> float | None:
     if value is None:
         return None
@@ -205,12 +220,14 @@ def _validate_mem_fraction_static(flag_name: str, value: float | None) -> float 
         raise typer.BadParameter(f"{flag_name} must be > 0 and < 1, got {value}")
     return float(value)
 
+
 def _validate_encoder_mem_reserve(value: float | None) -> float | None:
     if value is None:
         return None
     if not 0.0 <= value < 1.0:
         raise typer.BadParameter("--encoder-mem-reserve must be in [0, 1)")
     return float(value)
+
 
 def _validate_allowed_local_media_path(value: str | None) -> str | None:
     if value is None:
@@ -220,6 +237,7 @@ def _validate_allowed_local_media_path(value: str | None) -> str | None:
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
 
+
 def _normalize_allowed_media_domains(values: list[str] | None) -> list[str]:
     domains: list[str] = []
     for value in values or []:
@@ -228,10 +246,12 @@ def _normalize_allowed_media_domains(values: list[str] | None) -> list[str]:
         )
     return domains
 
+
 def _validate_tts_batch_max_items(value: int) -> int:
     if value < 1:
         raise typer.BadParameter("tts batch max items must be greater than 0")
     return value
+
 
 def apply_mem_fraction_cli_overrides(
     pipeline_config: PipelineConfig,
@@ -294,6 +314,7 @@ def apply_mem_fraction_cli_overrides(
             )
     return pipeline_config
 
+
 def apply_encoder_mem_reserve_cli_override(
     pipeline_config: PipelineConfig,
     *,
@@ -343,6 +364,7 @@ def apply_encoder_mem_reserve_cli_override(
             stage_runtime_overrides["encoder_mem_reserve"] = encoder_mem_reserve
     return pipeline_config
 
+
 def _parse_gpu_placement(flag_name: str, value: str) -> int | list[int]:
     text = value.strip()
     if not text:
@@ -390,6 +412,7 @@ def _parse_gpu_placement(flag_name: str, value: str) -> int | list[int]:
 
     return gpus[0] if len(gpus) == 1 else gpus
 
+
 def _validate_stage_parallelism_config(stage_name: str, tp_size: int, gpu) -> None:
     if tp_size < 1:
         raise typer.BadParameter(f"{stage_name}_tp_size must be >= 1")
@@ -412,6 +435,7 @@ def _validate_stage_parallelism_config(stage_name: str, tp_size: int, gpu) -> No
             f"{stage_name}_gpus must not contain duplicate GPU ids"
         )
 
+
 def _apply_stage_gpu_override(
     pipeline_config: PipelineConfig,
     *,
@@ -429,6 +453,7 @@ def _apply_stage_gpu_override(
     )
     for stage in matching_stages:
         stage.gpu = int(gpu)
+
 
 def _validate_colocated_gpu_override(
     pipeline_config: PipelineConfig,
@@ -450,6 +475,7 @@ def _validate_colocated_gpu_override(
             f"{flag_name} cannot move {stage_name} away from the colocated GPU"
         )
 
+
 def _apply_tensor_parallel_server_args_overrides(
     pipeline_config: PipelineConfig,
 ) -> None:
@@ -468,11 +494,13 @@ def _apply_tensor_parallel_server_args_overrides(
             reason=f"tensor parallel server args for {stage.name}",
         )
 
+
 def _validate_parallelism_config(pipeline_config: PipelineConfig) -> None:
     try:
         type(pipeline_config)(**pipeline_config.model_dump())
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
+
 
 def apply_thinker_server_args_cli_overrides(
     pipeline_config: PipelineConfig,
@@ -499,6 +527,7 @@ def apply_thinker_server_args_cli_overrides(
             reason="thinker SGLang ServerArgs override",
         )
     return pipeline_config
+
 
 def apply_parallelism_cli_overrides(
     pipeline_config: PipelineConfig,
@@ -599,6 +628,7 @@ def apply_parallelism_cli_overrides(
     _validate_parallelism_config(pipeline_config)
     return pipeline_config
 
+
 def _apply_stage_cuda_graph_override(
     pipeline_config: PipelineConfig,
     *,
@@ -614,6 +644,7 @@ def _apply_stage_cuda_graph_override(
         updates={"disable_cuda_graph": mode != "on"},
         reason=f"CUDA graph mode to {mode!r}",
     )
+
 
 def _apply_stage_torch_compile_override(
     pipeline_config: PipelineConfig,
@@ -640,6 +671,7 @@ def _apply_stage_torch_compile_override(
         reason=(f"torch compile settings (mode={mode!r}, max_bs={max_bs})"),
     )
 
+
 def apply_cuda_graph_cli_overrides(
     pipeline_config: PipelineConfig,
     *,
@@ -665,6 +697,7 @@ def apply_cuda_graph_cli_overrides(
             mode=talker_mode,
         )
     return pipeline_config
+
 
 def apply_partial_start_cli_overrides(
     pipeline_config: PipelineConfig,
@@ -698,6 +731,7 @@ def apply_partial_start_cli_overrides(
     )
     return pipeline_config
 
+
 def _apply_stage_factory_args_override(
     pipeline_config: PipelineConfig,
     *,
@@ -727,6 +761,7 @@ def _apply_stage_factory_args_override(
         stage_runtime_overrides = pipeline_config.runtime_overrides.get(stage.name)
         if isinstance(stage_runtime_overrides, dict):
             stage_runtime_overrides.update(updates)
+
 
 def apply_decode_mode_cli_overrides(
     pipeline_config: PipelineConfig,
@@ -759,6 +794,7 @@ def apply_decode_mode_cli_overrides(
         flag_name="--decode-mode/--async-lookahead-min-batch-size",
     )
     return pipeline_config
+
 
 def apply_torch_compile_cli_overrides(
     pipeline_config: PipelineConfig,
@@ -796,6 +832,7 @@ def apply_torch_compile_cli_overrides(
             max_bs=talker_torch_compile_max_bs,
         )
     return pipeline_config
+
 
 def serve(
     ctx: typer.Context,

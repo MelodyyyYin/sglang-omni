@@ -25,6 +25,7 @@ from sglang_omni.scheduling.types import (
 
 logger = logging.getLogger(__name__)
 
+
 def _current_sglang_sampling_backend() -> str | None:
     try:
         from sglang.srt.server_args import get_global_server_args
@@ -32,6 +33,7 @@ def _current_sglang_sampling_backend() -> str | None:
         return get_global_server_args().sampling_backend
     except ValueError:
         return None
+
 
 def _rank_shared_unseeded_sampling_seed(request: Any, row_idx: int) -> int:
     request_id = getattr(request, "request_id", None)
@@ -43,6 +45,7 @@ def _rank_shared_unseeded_sampling_seed(request: Any, row_idx: int) -> int:
     if request_id is None:
         request_id = f"row-{row_idx}"
     return derive_sampling_seed("sglang-omni-unseeded-row", request_id)
+
 
 @dataclass
 class _PendingStep:
@@ -71,6 +74,7 @@ class _PendingStep:
     model_worker_batch: Any
     batch_result: Any
     n_real: int
+
 
 class ModelRunner:
     """Base AR model runner.

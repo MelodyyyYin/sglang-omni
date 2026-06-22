@@ -48,11 +48,13 @@ logger = logging.getLogger(__name__)
 
 _FAILED_BATCH_RESULT = object()
 
+
 class _NoOpSender:
     """Stub for send_to_detokenizer — stream_output handles emission."""
 
     def send_output(self, *args, **kwargs):
         pass
+
 
 class _NoOpGrammarManager:
     """Stub — OmniScheduler never uses constrained decoding."""
@@ -73,6 +75,7 @@ class _NoOpGrammarManager:
 
     def __len__(self) -> int:
         return 0
+
 
 class OmniScheduler:
     """Stage-facing scheduler for AR stages.
@@ -1564,6 +1567,7 @@ class OmniScheduler:
             req_data.stream_done = True
             return
         self._stream_done_handler(req_data)
+
 
 def _remove_from_batch(batch: Any, request_id: str) -> None:
     if batch is None:

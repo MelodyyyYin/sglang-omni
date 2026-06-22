@@ -13,12 +13,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass
 class ModelWorkerConfig:
     model_arch_override: str | None = None
     weight_prefix: str | None = None
     nccl_port: int | None = None
     total_gpu_memory_fraction: float | None = None
+
 
 _ARCH_CONFIG_MAP: dict[str, tuple[str, str | None]] = {
     "BailingMoeV2ForCausalLM": ("llm_config", None),
@@ -29,6 +31,7 @@ _ARCH_CONFIG_MAP: dict[str, tuple[str, str | None]] = {
     "MossTTSDelaySGLangModel": ("language_config", None),
     "MossTTSLocalSGLangModel": ("language_config", None),
 }
+
 
 class ModelWorker:
     def __init__(
@@ -363,6 +366,7 @@ class ModelWorker:
         success, message = method(recv_req)
         return bool(success), str(message)
 
+
 def _resolve_nccl_port() -> int:
     master_port = os.environ.get("MASTER_PORT")
     if master_port:
@@ -378,6 +382,7 @@ def _resolve_nccl_port() -> int:
 
     os.environ["MASTER_PORT"] = str(port)
     return port
+
 
 def _apply_model_worker_backend_policy(
     server_args: ServerArgs,
@@ -474,10 +479,12 @@ def _apply_model_worker_backend_policy(
     )
     return effective_quantization
 
+
 def _normalize_quantization(value: object) -> str | None:
     if value is None:
         return None
     return str(value).lower()
+
 
 def _model_config_has_moe(model_config: ModelConfig) -> bool:
     config_to_check = getattr(model_config, "hf_text_config", None)
@@ -485,6 +492,7 @@ def _model_config_has_moe(model_config: ModelConfig) -> bool:
         hf_config = getattr(model_config, "hf_config", None)
         config_to_check = getattr(hf_config, "text_config", hf_config)
     return hasattr(config_to_check, "num_experts_per_tok")
+
 
 def _model_config_has_native_fp8_block_quant(model_config: ModelConfig) -> bool:
     quant_config = _get_hf_quantization_config(model_config)
@@ -496,6 +504,7 @@ def _model_config_has_native_fp8_block_quant(model_config: ModelConfig) -> bool:
         _normalize_quantization(quant_method) == "fp8" and weight_block_size is not None
     )
 
+
 def _get_hf_quantization_config(model_config: ModelConfig) -> object | None:
     hf_config = getattr(model_config, "hf_config", None)
     quant_config = getattr(hf_config, "quantization_config", None)
@@ -505,10 +514,12 @@ def _get_hf_quantization_config(model_config: ModelConfig) -> object | None:
     hf_text_config = getattr(model_config, "hf_text_config", None)
     return getattr(hf_text_config, "quantization_config", None)
 
+
 def _get_config_value(config: object, key: str) -> object | None:
     if isinstance(config, dict):
         return config.get(key)
     return getattr(config, key, None)
+
 
 def _is_h20_device() -> bool:
     """True only on NVIDIA H20 (word-boundary match so "H200" isn't caught)."""
@@ -523,6 +534,7 @@ def _is_h20_device() -> bool:
     except Exception:
         return False
 
+
 def _is_fp8_cutlass_moe_supported() -> bool:
     """Mirror pinned SGLang 0.5.12.post1 FP8 CUTLASS MoE assertions."""
     try:
@@ -534,6 +546,7 @@ def _is_fp8_cutlass_moe_supported() -> bool:
     return bool(
         cutlass_fp8_supported() and (is_sm90_supported() or is_sm100_supported())
     )
+
 
 def _initialize_model_worker_backend_globals(
     server_args: ServerArgs,

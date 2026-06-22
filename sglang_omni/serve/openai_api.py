@@ -120,12 +120,15 @@ _BAD_REQUEST_MARKERS = (
     "Requested token count exceeds the model's maximum context length",
 )
 
+
 def _is_bad_request_error(exc: Exception) -> bool:
     message = str(exc)
     return any(marker in message for marker in _BAD_REQUEST_MARKERS)
 
+
 class _RequestBodyTooLarge(Exception):
     pass
+
 
 class VoiceUploadBodyLimitMiddleware:
     """Reject oversized voice uploads before Starlette parses multipart bodies."""
@@ -164,6 +167,7 @@ class VoiceUploadBodyLimitMiddleware:
             await self.app(scope, limited_receive, send)
         except _RequestBodyTooLarge:
             await _send_voice_upload_too_large(send, self.max_bytes)
+
 
 def create_app(
     client: Client,
@@ -246,6 +250,7 @@ def create_app(
 
     return app
 
+
 def _register_voices(app: FastAPI) -> None:
     @app.get("/v1/audio/voices")
     async def list_voices() -> JSONResponse:
@@ -295,6 +300,7 @@ def _register_voices(app: FastAPI) -> None:
             }
         )
 
+
 async def _read_voice_upload(audio_sample: UploadFile) -> bytes:
     audio_bytes = await audio_sample.read(MAX_VOICE_UPLOAD_BYTES + 1)
     if len(audio_bytes) > MAX_VOICE_UPLOAD_BYTES:
@@ -304,12 +310,14 @@ async def _read_voice_upload(audio_sample: UploadFile) -> bytes:
         )
     return audio_bytes
 
+
 def _is_voice_upload_scope(scope: dict[str, Any]) -> bool:
     return (
         scope.get("type") == "http"
         and scope.get("method") == "POST"
         and scope.get("path") == "/v1/audio/voices"
     )
+
 
 def _content_length(scope: dict[str, Any]) -> int | None:
     for name, value in scope.get("headers", ()):
@@ -320,6 +328,7 @@ def _content_length(scope: dict[str, Any]) -> int | None:
         except ValueError:
             return None
     return None
+
 
 async def _send_voice_upload_too_large(
     send: Callable[[dict[str, Any]], Awaitable[None]],
@@ -345,6 +354,7 @@ async def _send_voice_upload_too_large(
     )
     await send({"type": "http.response.body", "body": body})
 
+
 def _register_health(app: FastAPI) -> None:
     @app.get("/health")
     async def health() -> JSONResponse:
@@ -361,6 +371,7 @@ def _register_health(app: FastAPI) -> None:
             status_code=status_code,
         )
 
+
 def _register_models(app: FastAPI) -> None:
     @app.get("/v1/models")
     async def list_models() -> JSONResponse:
@@ -376,6 +387,7 @@ def _register_models(app: FastAPI) -> None:
             ]
         )
         return JSONResponse(content=model_list.model_dump())
+
 
 def _register_admin(app: FastAPI, admin_api_key: str | None = None) -> None:
     _auth = make_admin_auth_dependency(admin_api_key)
@@ -509,16 +521,20 @@ def _register_admin(app: FastAPI, admin_api_key: str | None = None) -> None:
             )
         )
 
+
 def _timeout_or_default(timeout_s: float | None, default: float) -> float:
     return default if timeout_s is None else timeout_s
 
+
 def _request_payload(req: AdminRequestBase) -> dict[str, Any]:
     return req.model_dump(exclude={"stages", "timeout_s"}, exclude_none=True)
+
 
 def _admin_response(result: dict[str, Any]) -> JSONResponse:
     if not result.get("success", False):
         raise HTTPException(status_code=400, detail=result)
     return JSONResponse(content=result)
+
 
 def _model_info_response(result: dict[str, Any]) -> JSONResponse:
     if not result.get("success", False):
@@ -542,6 +558,7 @@ def _model_info_response(result: dict[str, Any]) -> JSONResponse:
     )
     return JSONResponse(content=payload)
 
+
 def _extract_model_info_stage_data(result: dict[str, Any]) -> list[dict[str, Any]]:
     infos: list[dict[str, Any]] = []
     for item in result.get("results", []) or []:
@@ -557,6 +574,7 @@ def _extract_model_info_stage_data(result: dict[str, Any]) -> list[dict[str, Any
         stage_info.setdefault("success", item.get("success"))
         infos.append(stage_info)
     return infos
+
 
 def _common_model_info_value(
     result: dict[str, Any],
@@ -586,6 +604,7 @@ def _common_model_info_value(
             },
         )
     return None
+
 
 def _register_chat_completions(app: FastAPI) -> None:
     @app.post("/v1/chat/completions")
@@ -629,6 +648,7 @@ def _register_chat_completions(app: FastAPI) -> None:
             req,
             audio_format,
         )
+
 
 async def _chat_non_stream(
     client: Client,
@@ -697,6 +717,7 @@ async def _chat_non_stream(
     )
 
     return JSONResponse(content=response.model_dump())
+
 
 async def _chat_stream(
     client: Client,
@@ -803,6 +824,7 @@ async def _chat_stream(
 
     yield f"data: {STREAM_DONE_SENTINEL}\n\n"
 
+
 def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
     """Convert a ChatCompletionRequest into a client GenerateRequest."""
     stop: list[str] = []
@@ -890,6 +912,7 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
         metadata=metadata,
     )
 
+
 def _register_generate(app: FastAPI) -> None:
     @app.post("/generate")
     async def generate(req: RolloutGenerateRequest) -> Response:
@@ -934,6 +957,7 @@ def _register_generate(app: FastAPI) -> None:
         response = _build_generate_response(req, result, audio_format)
         return JSONResponse(content=response.model_dump())
 
+
 def _rollout_sampling_to_client(params: RolloutSamplingParams) -> SamplingParams:
     kwargs: dict[str, Any] = {
         key: value
@@ -956,6 +980,7 @@ def _rollout_sampling_to_client(params: RolloutSamplingParams) -> SamplingParams
     if "max_new_tokens" not in kwargs and params.max_tokens is not None:
         kwargs["max_new_tokens"] = params.max_tokens
     return SamplingParams(**kwargs)
+
 
 def _build_rollout_generate_request(req: RolloutGenerateRequest) -> GenerateRequest:
     """Convert a rollout GenerateRequest into a client GenerateRequest."""
@@ -995,6 +1020,7 @@ def _build_rollout_generate_request(req: RolloutGenerateRequest) -> GenerateRequ
         ),
         metadata=dict(req.metadata) if req.metadata else {},
     )
+
 
 def _build_generate_response(
     req: RolloutGenerateRequest,
@@ -1062,6 +1088,7 @@ def _build_generate_response(
     )
     return GenerateResponse(text=result.text, audio=audio, meta_info=meta_info)
 
+
 def _register_realtime(app: FastAPI) -> None:
     """Mount the OpenAI-compatible WebSocket Realtime endpoint."""
     from sglang_omni.serve.realtime import RealtimeSessionManager
@@ -1079,6 +1106,7 @@ def _register_realtime(app: FastAPI) -> None:
             await session.run()
         finally:
             await manager.close(session.session_id)
+
 
 def _register_speech(app: FastAPI) -> None:
     @app.post("/v1/audio/speech")
@@ -1156,6 +1184,7 @@ def _register_speech(app: FastAPI) -> None:
             headers=headers,
         )
 
+
 def _register_speech_batch(app: FastAPI) -> None:
     @app.post("/v1/audio/speech/batch")
     async def create_speech_batch(request: Request) -> JSONResponse:
@@ -1184,6 +1213,7 @@ def _register_speech_batch(app: FastAPI) -> None:
 
         response = SpeechBatchResponse.model_validate(response)
         return JSONResponse(content=response.model_dump(exclude_none=True))
+
 
 async def _create_speech_batch_with_disconnect_watch(
     request: Request,
@@ -1217,6 +1247,7 @@ async def _create_speech_batch_with_disconnect_watch(
         if not disconnect_task.done():
             await _cancel_task_bounded(disconnect_task)
 
+
 def _register_speech_ws(app: FastAPI) -> None:
     @app.websocket("/v1/audio/speech/stream")
     async def speech_stream(websocket: WebSocket) -> None:
@@ -1227,6 +1258,7 @@ def _register_speech_ws(app: FastAPI) -> None:
             speech_service=app.state.speech_service,
         )
         await session.run()
+
 
 def _speech_pcm_chunk_bytes(
     chunk: Any,
@@ -1249,6 +1281,7 @@ def _speech_pcm_chunk_bytes(
     if not audio_bytes:
         return None, emitted_samples, sample_rate
     return audio_bytes, emitted_samples, sample_rate
+
 
 async def _speech_audio_response(
     request: Request,
@@ -1357,6 +1390,7 @@ async def _speech_audio_response(
         },
     )
 
+
 async def _await_speech_response(
     request: Request,
     client: Client,
@@ -1399,6 +1433,7 @@ async def _await_speech_response(
         if not disconnect_task.done():
             await _cancel_task_bounded(disconnect_task)
 
+
 async def _cancel_task_bounded(task: asyncio.Task[Any]) -> None:
     task.cancel()
     done, _ = await asyncio.wait({task}, timeout=HTTP_DISCONNECT_CANCEL_TIMEOUT_S)
@@ -1406,6 +1441,7 @@ async def _cancel_task_bounded(task: asyncio.Task[Any]) -> None:
         await asyncio.gather(*done, return_exceptions=True)
     else:
         task.add_done_callback(_discard_cancelled_task_result)
+
 
 def _discard_cancelled_task_result(task: asyncio.Task[Any]) -> None:
     try:
@@ -1415,9 +1451,11 @@ def _discard_cancelled_task_result(task: asyncio.Task[Any]) -> None:
     except Exception:
         logger.debug("Cancelled request task finished with an error", exc_info=True)
 
+
 async def _wait_for_request_disconnect(request: Request) -> None:
     while not await request.is_disconnected():
         await asyncio.sleep(HTTP_DISCONNECT_POLL_INTERVAL_S)
+
 
 async def _close_async_iterator_if_supported(stream: AsyncIterator[Any]) -> None:
     try:
@@ -1425,6 +1463,7 @@ async def _close_async_iterator_if_supported(stream: AsyncIterator[Any]) -> None
     except AttributeError:
         return
     await close()
+
 
 async def _abort_and_close_speech_stream(
     client: Client,
@@ -1435,6 +1474,7 @@ async def _abort_and_close_speech_stream(
         await client.abort(request_id)
     finally:
         await _close_async_iterator_if_supported(stream)
+
 
 def _register_transcriptions(app: FastAPI) -> None:
     @app.post("/v1/audio/transcriptions")
@@ -1487,6 +1527,7 @@ def _register_transcriptions(app: FastAPI) -> None:
                 ),
             )
         return JSONResponse(content=TranscriptionResponse(text=text).model_dump())
+
 
 def build_transcription_generate_request(
     *,

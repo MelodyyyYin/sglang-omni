@@ -76,6 +76,7 @@ PYAV_ENCODE_CONFIGS = {
     },
 }
 
+
 @cache
 def audio_encoding_unavailable_reason(response_format: str) -> str | None:
     """Return why the requested response format cannot be encoded."""
@@ -102,6 +103,7 @@ def audio_encoding_unavailable_reason(response_format: str) -> str | None:
 
     return None
 
+
 def to_numpy(audio: Any) -> np.ndarray:
     """Convert audio data to a numpy float32 array.
 
@@ -127,6 +129,7 @@ def to_numpy(audio: Any) -> np.ndarray:
 
     raise TypeError(f"Unsupported audio type: {type(audio)}")
 
+
 def apply_speed(
     audio: np.ndarray, speed: float, sample_rate: int
 ) -> tuple[np.ndarray, int]:
@@ -147,6 +150,7 @@ def apply_speed(
     new_idx = np.linspace(0.0, len(audio) - 1, num=new_length, dtype=np.float64)
     resampled = np.interp(new_idx, old_idx, audio).astype(np.float32)
     return resampled, sample_rate
+
 
 def encode_wav(audio: np.ndarray, sample_rate: int) -> bytes:
     """Encode audio as a WAV file (16-bit PCM)."""
@@ -187,6 +191,7 @@ def encode_wav(audio: np.ndarray, sample_rate: int) -> bytes:
 
     return buf.getvalue()
 
+
 def _resample_linear(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
     if orig_sr == target_sr:
         return audio.astype(np.float32, copy=False)
@@ -197,6 +202,7 @@ def _resample_linear(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndar
     old_idx = np.arange(audio.shape[0], dtype=np.float64)
     new_idx = np.linspace(0.0, audio.shape[0] - 1, num=new_len, dtype=np.float64)
     return np.interp(new_idx, old_idx, audio).astype(np.float32)
+
 
 def _encode_with_pyav(
     audio: np.ndarray,
@@ -248,6 +254,7 @@ def _encode_with_pyav(
     container.close()
     return buf.getvalue()
 
+
 def encode_pcm(audio: np.ndarray, sample_rate: int) -> bytes:
     """Encode audio as raw 16-bit PCM bytes."""
     audio = np.clip(audio, -1.0, 1.0)
@@ -255,6 +262,7 @@ def encode_pcm(audio: np.ndarray, sample_rate: int) -> bytes:
     if pcm.ndim == 2:
         pcm = np.ascontiguousarray(pcm.T)
     return pcm.tobytes()
+
 
 def select_audio_delta(
     audio_data: Any,
@@ -277,6 +285,7 @@ def select_audio_delta(
     if total_samples <= emitted_samples:
         return None, emitted_samples
     return audio[emitted_samples:], total_samples
+
 
 def encode_audio(
     audio: Any,
@@ -391,6 +400,7 @@ def encode_audio(
         raise ValueError(f"Unsupported audio format: {response_format!r}")
     logger.warning("Unknown audio format '%s'; falling back to WAV", fmt)
     return encode_wav(arr, sample_rate), FORMAT_MIME_TYPES["wav"]
+
 
 def audio_to_base64(
     audio: Any,

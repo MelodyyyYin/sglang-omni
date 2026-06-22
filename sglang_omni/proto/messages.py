@@ -7,6 +7,7 @@ from typing import Any
 from sglang_omni.proto.admin import AdminOperation, AdminResult
 from sglang_omni.proto.request import StagePayload
 
+
 @dataclass
 class DataReadyMessage:
     """Notify next stage that data is ready.
@@ -108,6 +109,7 @@ class DataReadyMessage:
             error=d.get("error"),
         )
 
+
 @dataclass
 class AbortMessage:
     """Broadcast abort signal to all stages."""
@@ -120,6 +122,7 @@ class AbortMessage:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "AbortMessage":
         return cls(request_id=d["request_id"])
+
 
 @dataclass
 class CompleteMessage:
@@ -150,6 +153,7 @@ class CompleteMessage:
             result=d.get("result"),
             error=d.get("error"),
         )
+
 
 @dataclass
 class StreamMessage:
@@ -189,6 +193,7 @@ class StreamMessage:
             chunk_id=d.get("chunk_id"),
         )
 
+
 @dataclass
 class SubmitMessage:
     """Submit a new request to the entry stage."""
@@ -209,6 +214,7 @@ class SubmitMessage:
             data = StagePayload.from_dict(data)
         return cls(request_id=d["request_id"], data=data)
 
+
 @dataclass
 class ShutdownMessage:
     """Signal graceful shutdown to a stage."""
@@ -219,6 +225,7 @@ class ShutdownMessage:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "ShutdownMessage":
         return cls()
+
 
 @dataclass
 class ProfilerStartMessage:
@@ -247,6 +254,7 @@ class ProfilerStartMessage:
             enable_torch=bool(d.get("enable_torch", True)),
         )
 
+
 @dataclass
 class ProfilerStopMessage:
     """Profiler stop. ``run_id=None`` is a wildcard (stop active session)."""
@@ -259,6 +267,7 @@ class ProfilerStopMessage:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "ProfilerStopMessage":
         return cls(run_id=d.get("run_id"))
+
 
 @dataclass
 class AdminMessage:
@@ -273,6 +282,7 @@ class AdminMessage:
     def from_dict(cls, d: dict[str, Any]) -> "AdminMessage":
         return cls(operation=AdminOperation.from_dict(d["operation"]))
 
+
 @dataclass
 class AdminResultMessage:
     """Return an administrative result to the coordinator."""
@@ -285,6 +295,7 @@ class AdminResultMessage:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "AdminResultMessage":
         return cls(result=AdminResult.from_dict(d["result"]))
+
 
 def parse_message(
     d: dict[str, Any],

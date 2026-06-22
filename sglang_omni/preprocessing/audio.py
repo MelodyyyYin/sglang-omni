@@ -15,6 +15,7 @@ import torch
 
 from .base import MediaIO, _is_url
 
+
 def _decode_audio_bytes_av(data: bytes) -> tuple[np.ndarray, int]:
     """Decode audio bytes using PyAV (supports WebM/Opus, MP3, OGG, FLAC, etc.)."""
     import io
@@ -46,6 +47,7 @@ def _decode_audio_bytes_av(data: bytes) -> tuple[np.ndarray, int]:
         if peak > 0:
             audio = audio / peak
     return audio, int(sample_rate)
+
 
 def _parse_wav_bytes(data: bytes, source: str = "bytes") -> tuple[np.ndarray, int]:
     """Parse PCM/IEEE-float WAV from bytes without external deps."""
@@ -118,11 +120,13 @@ def _parse_wav_bytes(data: bytes, source: str = "bytes") -> tuple[np.ndarray, in
 
     return audio.astype(np.float32, copy=False), int(sample_rate)
 
+
 def _read_wav_bytes(path: str) -> tuple[np.ndarray, int]:
     """Read PCM/IEEE-float WAV from file path without external deps."""
     with open(path, "rb") as f:
         data = f.read()
     return _parse_wav_bytes(data, source=path)
+
 
 def _resample_linear(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
     if orig_sr == target_sr:
@@ -135,6 +139,7 @@ def _resample_linear(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndar
     new_idx = np.linspace(0.0, audio.shape[0] - 1, num=new_len, dtype=np.float64)
     return np.interp(new_idx, old_idx, audio).astype(np.float32)
 
+
 def load_audio_path(path: str | Path, *, target_sr: int = 16000) -> np.ndarray:
     with open(path, "rb") as f:
         data = f.read()
@@ -143,6 +148,7 @@ def load_audio_path(path: str | Path, *, target_sr: int = 16000) -> np.ndarray:
     except ValueError:
         audio, sr = _decode_audio_bytes_av(data)
     return _resample_linear(audio, sr, target_sr)
+
 
 def pcm16_bytes_to_float32(
     data: bytes,
@@ -165,6 +171,7 @@ def pcm16_bytes_to_float32(
     if channels > 1:
         audio = audio.reshape(-1, channels).mean(axis=1).astype(np.float32)
     return _resample_linear(audio, source_sr, target_sr)
+
 
 class AudioMediaIO(MediaIO[tuple[npt.NDArray, float]]):
     """MediaIO implementation for audio files."""
@@ -207,6 +214,7 @@ class AudioMediaIO(MediaIO[tuple[npt.NDArray, float]]):
             audio, sr = _decode_audio_bytes_av(data)
         resampled = _resample_linear(audio, sr, self.target_sr)
         return resampled, float(self.target_sr)
+
 
 async def ensure_audio_list_async(
     audios: Any,
@@ -260,6 +268,7 @@ async def ensure_audio_list_async(
 
     return normalized
 
+
 def build_audio_mm_inputs(hf_inputs: dict[str, Any]) -> dict[str, Any]:
     """Extract standard audio tensors from HF processor outputs."""
     feature_attention_mask = hf_inputs.get("feature_attention_mask")
@@ -275,6 +284,7 @@ def build_audio_mm_inputs(hf_inputs: dict[str, Any]) -> dict[str, Any]:
         "feature_attention_mask": feature_attention_mask,
         "audio_feature_lengths": audio_feature_lengths,
     }
+
 
 def compute_audio_cache_key(audios: Any) -> str | None:
     """Compute cache key from raw audio inputs (paths, numpy arrays).
