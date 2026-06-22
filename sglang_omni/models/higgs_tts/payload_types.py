@@ -16,7 +16,6 @@ class HiggsTtsState:
     tts_engine → vocoder. Fields populate lazily so a deserialised state is
     valid at any stage boundary."""
 
-    # preprocessing / audio_encoder
     prompt_token_ids: list[int] = field(default_factory=list)
     reference_codes_delayed: list[list[int]] | None = None
     target_text: str | None = None
@@ -29,20 +28,17 @@ class HiggsTtsState:
     num_codebooks: int = 8
     codebook_size: int = 1026  # 1024 data + <|boc|> + <|eoc|>
 
-    # generation params
     max_new_tokens: int = 2048
     temperature: float = 1.0
     top_p: float | None = None
     top_k: int | None = None
     seed: int | None = None
 
-    # tts_engine
     output_codes_delayed: list[list[int]] | None = None
     prompt_tokens: int = 0
     completion_tokens: int = 0
     engine_time_s: float = 0.0
 
-    # vocoder
     audio_samples: Any | None = None
     sample_rate: int = 24000
 

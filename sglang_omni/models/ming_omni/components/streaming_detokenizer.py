@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 _DONE_SEEN_MAX = 10000
 _DONE_SEEN_EVICT_TO = 5000
 
-# The Stage runtime delivers abort(request_id) whenever a request fails or is
+# note (Yue Yin): the Stage runtime delivers abort(request_id) whenever a request fails or is
 # cancelled, which calls our abort() and removes the entry from _state. This
 # cap is a safety net against orphan entries if abort is ever lost (e.g. a
 # stream_chunk arrived before new_request, and the request was aborted before
@@ -81,7 +81,7 @@ class MingStreamingDetokenizeScheduler:
         self._running = False
         self._state: dict[str, _RequestState] = {}
         self._done_seen: OrderedDict[str, None] = OrderedDict()
-        # abort() runs on the stage's event-loop thread while start() runs on
+        # note (Yue Yin): abort() runs on the stage's event-loop thread while start() runs on
         # the scheduler thread; guards iteration/multi-op sections.
         self._state_lock = threading.Lock()
 
@@ -149,7 +149,7 @@ class MingStreamingDetokenizeScheduler:
             )
 
     def _on_stream_chunk(self, request_id: str, item: Any) -> None:
-        # item is the StreamItem the runtime wraps around the thinker's
+        # note (Yue Yin): item is the StreamItem the runtime wraps around the thinker's
         # torch.tensor([token_id], dtype=torch.long)
         data = item.data
         token_id = int(data.item()) if hasattr(data, "item") else int(data)
@@ -158,7 +158,7 @@ class MingStreamingDetokenizeScheduler:
         s.pending_tokens.append(token_id)
 
         candidate = self._tokenizer.decode(s.pending_tokens, skip_special_tokens=True)
-        # A trailing U+FFFD means an incomplete multi-byte UTF-8 char; hold
+        # note (Yue Yin): a trailing U+FFFD means an incomplete multi-byte UTF-8 char; hold
         # until the next token. Interior U+FFFD (model emitting a literal
         # replacement char) flushes normally — holding would stall streaming
         # for the rest of the request.
@@ -186,7 +186,7 @@ class MingStreamingDetokenizeScheduler:
     def _on_stream_done(self, request_id: str) -> None:
         s = self._state.get(request_id)
         if s is None:
-            # Zero-token generation or late duplicate done — latch for
+            # note (Yue Yin): zero-token generation or late duplicate done — latch for
             # _on_new_request to consume.
             self._done_seen[request_id] = None
             if len(self._done_seen) > _DONE_SEEN_MAX:
@@ -214,7 +214,7 @@ class MingStreamingDetokenizeScheduler:
         if s is None or s.payload is None:
             return
 
-        # Flush any remaining pending tokens (e.g. truncated UTF-8 on max_tokens).
+        # note (Yue Yin): flush any remaining pending tokens (e.g. truncated UTF-8 on max_tokens)
         if s.pending_tokens:
             leftover = self._tokenizer.decode(
                 s.pending_tokens, skip_special_tokens=True
@@ -282,7 +282,7 @@ class MingStreamingDetokenizeScheduler:
             result.update(final_event.payload)
             result.setdefault("modality", final_event.modality)
 
-        # Streaming clients already received the full output as per-token
+        # note (Yue Yin): streaming clients already received the full output as per-token
         # deltas; strip text from the terminal result to prevent
         # double-sending. Must mirror the emission gate in
         # make_text_stream_output_builder: when text output was not requested

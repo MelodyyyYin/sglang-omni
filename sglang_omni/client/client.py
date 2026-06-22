@@ -46,10 +46,6 @@ class Client:
         self._result_builder = result_builder or self._default_result_builder
         self._stream_builder = stream_builder or self._default_stream_builder
 
-    # ------------------------------------------------------------------
-    # Low-level generate (backward compatible)
-    # ------------------------------------------------------------------
-
     async def generate(
         self,
         request: GenerateRequest,
@@ -67,10 +63,6 @@ class Client:
 
         result = await self._coordinator.submit(req_id, omni_request)
         yield self._result_builder(req_id, result)
-
-    # ------------------------------------------------------------------
-    # High-level: non-streaming completion
-    # ------------------------------------------------------------------
 
     async def completion(
         self,
@@ -136,10 +128,6 @@ class Client:
             usage=last_chunk.usage,
         )
 
-    # ------------------------------------------------------------------
-    # High-level: streaming completion
-    # ------------------------------------------------------------------
-
     async def completion_stream(
         self,
         request: GenerateRequest,
@@ -170,10 +158,6 @@ class Client:
                 usage=chunk.usage,
                 stage_name=chunk.stage_name,
             )
-
-    # ------------------------------------------------------------------
-    # High-level: text-to-speech
-    # ------------------------------------------------------------------
 
     async def speech(
         self,
@@ -225,8 +209,7 @@ class Client:
             encode_audio, audio_data, **encode_kwargs
         )
 
-        # Derive actual format from MIME type (encode_audio may fall back
-        # to WAV if the requested codec is unavailable).
+        # note (Yue Yin): derive actual format from MIME type; encode_audio may fall back to WAV if codec unavailable
         actual_format = response_format
         for ext, mt in FORMAT_MIME_TYPES.items():
             if mt == mime_type:
@@ -239,10 +222,6 @@ class Client:
             format=actual_format,
             usage=last_chunk.usage if last_chunk else None,
         )
-
-    # ------------------------------------------------------------------
-    # Other operations
-    # ------------------------------------------------------------------
 
     async def abort(
         self,
@@ -339,10 +318,6 @@ class Client:
             timeout_s=timeout_s,
         )
 
-    # ------------------------------------------------------------------
-    # Internals
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _set_audio_data(chunk: GenerateChunk, data: dict[str, Any]) -> None:
         audio_data = data.get("audio_data") or data.get("audio")
@@ -400,8 +375,7 @@ class Client:
             result.request_id = request_id
             return result
         if isinstance(result, dict):
-            # Multi-terminal merged result, e.g. decode + code2wav/talker/
-            # talker_stream.
+            # note (Yue Yin): multi-terminal merged result, e.g. decode + code2wav/talker/talker_stream
             audio_result = None
             if "decode" in result:
                 for audio_stage in ("code2wav", "talker", "talker_stream"):
@@ -520,16 +494,12 @@ def _extract_inputs(request: GenerateRequest) -> Any:
     if request.prompt_token_ids is not None:
         return list(request.prompt_token_ids)
 
-    # Build messages list
     messages = [msg.to_dict() for msg in request.messages or []]
 
-    # Check if we have audios, images, or videos in metadata
     audios = request.metadata.get("audios")
     images = request.metadata.get("images")
     videos = request.metadata.get("videos")
 
-    # If we have any media, return a dict with messages and media
-    # Otherwise, return just the messages list (for backward compatibility)
     if audios or images or videos:
         result = {"messages": messages}
         if images:

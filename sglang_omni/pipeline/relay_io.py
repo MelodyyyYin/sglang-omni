@@ -38,11 +38,6 @@ def _pad_offset(offset: int, alignment: int) -> int:
     return (-offset) % alignment
 
 
-# ---------------------------------------------------------------------------
-# Tensor extraction / restoration (recursive, nested dicts/lists)
-# ---------------------------------------------------------------------------
-
-
 def extract_tensors(obj: Any, path: str = "") -> tuple[Any, dict[str, torch.Tensor]]:
     """Recursively extract tensors from nested structure, replacing with placeholders."""
     tensors = {}
@@ -95,11 +90,9 @@ def restore_tensors(obj: Any, tensor_dict: dict[str, torch.Tensor]) -> Any:
         return obj
 
 
-# ---------------------------------------------------------------------------
-# Lazy TensorRef: externalize large allowlisted tensors instead of inlining
+# note (Yue Yin): Lazy TensorRef: externalize large allowlisted tensors instead of inlining
 # them into the payload buffer. Intermediate stages forward the small ref
 # dict untouched; only the declared consumer stage resolves it.
-# ---------------------------------------------------------------------------
 
 _BACKGROUND_REF_TASKS: set[asyncio.Task] = set()
 _LOGGED_REF_EDGES: set[tuple[str, str]] = set()
@@ -284,7 +277,7 @@ async def materialize_tensor_refs(
             return await read_tensor_ref(relay, ref)
         return obj
 
-    # Containers are rebuilt only when a descendant ref was actually resolved;
+    # note (Yue Yin): containers are rebuilt only when a descendant ref was actually resolved;
     # otherwise the original object is returned unchanged so ref-free payloads
     # (every non-consumer stage) skip per-request container churn.
     if isinstance(obj, dict):
@@ -336,9 +329,6 @@ async def materialize_payload_tensor_refs(
     )
 
 
-# ---------------------------------------------------------------------------
-# Payload read/write (full StagePayload via relay)
-# ---------------------------------------------------------------------------
 
 
 async def write_payload(
@@ -462,9 +452,6 @@ async def read_payload(
     return payload
 
 
-# ---------------------------------------------------------------------------
-# Blob read/write (raw tensor via relay, for streaming chunks)
-# ---------------------------------------------------------------------------
 
 
 async def write_blob(
@@ -518,9 +505,6 @@ async def read_blob(
     return recv_buf[offset:].view(dtype).reshape(shape)
 
 
-# ---------------------------------------------------------------------------
-# Stream chunk send
-# ---------------------------------------------------------------------------
 
 _IPC_INLINE_CPU_BYTES_LIMIT = 64 * 1024
 
@@ -653,7 +637,7 @@ async def send_stream_chunk(
     same_gpu_targets: set[str] | None = None,
 ) -> None:
     """Send a streaming chunk to a downstream stage."""
-    # Keep CUDA IPC limited to CUDA-dominant chunks with no CPU tensors and only
+    # note (Yue Yin): keep CUDA IPC limited to CUDA-dominant chunks with no CPU tensors and only
     # small inline Python metadata; otherwise the relay path keeps CPU-heavy
     # pieces out of the IPC control-plane pickle.
     if (
@@ -706,9 +690,9 @@ async def send_stream_chunk(
                 }
             relay_metadata["chunk_metadata_tensors"] = metadata_refs
 
-    # Send control message FIRST — receiver starts reading immediately.
-    # NIXL credit deadlock avoidance: if we wait_for_completion before notifying,
-    # the receiver never starts reading, never triggers RDMA notification, deadlock.
+    # note (Yue Yin): send control message FIRST — receiver starts reading immediately;
+    # if we wait_for_completion before notifying, the receiver never starts reading,
+    # never triggers RDMA notification, deadlock (NIXL credit deadlock avoidance).
     msg = DataReadyMessage(
         request_id=request_id,
         from_stage=from_stage,

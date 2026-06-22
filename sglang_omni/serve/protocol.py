@@ -30,7 +30,7 @@ class ChatCompletionAudio(BaseModel):
     """Audio data returned in a chat completion response."""
 
     id: str
-    data: str  # base64-encoded audio
+    data: str
     expires_at: int | None = None
     transcript: str | None = None
 
@@ -43,7 +43,6 @@ class ChatCompletionRequest(BaseModel):
     model: str | None = None
     messages: list[ChatMessage]
 
-    # Sampling parameters
     temperature: float | None = None
     top_p: float | None = None
     top_k: int | None = None
@@ -54,25 +53,14 @@ class ChatCompletionRequest(BaseModel):
     stop: str | list[str] | None = None
     seed: int | None = None
 
-    # Streaming
     stream: bool = False
 
-    # Multi-modal output control
-    modalities: list[str] | None = None  # e.g. ["text", "audio"]
+    modalities: list[str] | None = None
 
-    # Audio output configuration
-    audio: dict[str, Any] | None = None  # {"voice": "...", "format": "wav"}
+    audio: dict[str, Any] | None = None
 
-    # Audio input (sglang-omni extension)
-    # Can be a list of audio file paths (local paths or URLs)
     audios: list[str] | None = None
-
-    # Image input (sglang-omni extension)
-    # Can be a list of image file paths (local paths or URLs)
     images: list[str] | None = None
-
-    # Video input (sglang-omni extension)
-    # Can be a list of video file paths (local paths or URLs)
     videos: list[str] | None = None
     video_fps: float | None = None
     video_max_frames: int | None = None
@@ -80,18 +68,15 @@ class ChatCompletionRequest(BaseModel):
     video_max_pixels: int | None = None
     video_total_pixels: int | None = None
 
-    # Per-stage sampling overrides (sglang-omni specific)
     stage_sampling: dict[str, dict[str, Any]] | None = None
     stage_params: dict[str, dict[str, Any]] | None = None
 
-    # Talker-specific overrides for Qwen3-Omni speech output
     talker_temperature: float | None = None
     talker_top_p: float | None = None
     talker_top_k: int | None = None
     talker_repetition_penalty: float | None = None
     talker_max_new_tokens: int | None = None
 
-    # Misc
     request_id: str | None = None
     user: str | None = None
 
@@ -188,7 +173,6 @@ class CreateSpeechRequest(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    # Standard OpenAI fields
     model: str | None = None
     input: str
     voice: str = Field(
@@ -199,21 +183,17 @@ class CreateSpeechRequest(BaseModel):
     speed: float = 1.0
     stream: bool = False
 
-    # Advanced TTS extensions
-    task_type: str | None = None  # e.g. "Base", "CustomVoice", "VoiceDesign"
+    task_type: str | None = None
     language: str | None = None
-    instructions: str | None = None  # style/emotion instructions
-
-    # Voice cloning parameters
-    ref_audio: str | None = None  # path or URL to reference audio
-    ref_text: str | None = None  # transcript of reference audio
-    references: list[SpeechReference] | None = None  # S2-Pro-style refs
+    instructions: str | None = None
+    ref_audio: str | None = None
+    ref_text: str | None = None
+    references: list[SpeechReference] | None = None
     x_vector_only_mode: bool | None = None
-    token_count: int | None = None  # MOSS-TTS duration token target
-    duration_tokens: int | None = None  # alias for token_count
+    token_count: int | None = None
+    duration_tokens: int | None = None
     initial_codec_chunk_frames: int | None = Field(default=None, ge=0)
 
-    # Generation parameters
     max_new_tokens: int | None = None
     temperature: float | None = None
     top_p: float | None = None
@@ -221,7 +201,6 @@ class CreateSpeechRequest(BaseModel):
     repetition_penalty: float | None = None
     seed: int | None = None
 
-    # Per-stage overrides (sglang-omni specific)
     stage_params: dict[str, dict[str, Any]] | None = None
 
 
@@ -281,11 +260,6 @@ class ModelList(BaseModel):
 
     object: str = "list"
     data: list[ModelCard] = Field(default_factory=list)
-
-
-# ---------------------------------------------------------------------------
-# Administrative APIs
-# ---------------------------------------------------------------------------
 
 
 class AdminRequestBase(BaseModel):

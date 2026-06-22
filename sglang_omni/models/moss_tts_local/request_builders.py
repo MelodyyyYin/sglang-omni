@@ -38,7 +38,7 @@ class MossTTSLocalSGLangRequestData(ARRequestData):
     req: Any = None
     synced: bool = False
     generation_steps: int = 0
-    # Launch-side seeded-sampling step counter (async decode): advances at launch
+    # note (Yue Yin): launch-side seeded-sampling step counter (async decode): advances at launch
     # while generation_steps moves at resolve. Floored so the sync path is unchanged.
     sampling_steps: int | None = None
     suppress_tokens: list[int] | None = None
@@ -48,7 +48,7 @@ class MossTTSLocalSGLangRequestData(ARRequestData):
     model_config: Any = None
     prompt_rows: torch.Tensor | None = None
     output_rows: list[torch.Tensor] = field(default_factory=list)
-    # Checkpoint generate() defaults: the binary continue/stop head samples at
+    # note (Yue Yin): checkpoint generate() defaults: the binary continue/stop head samples at
     # plain temperature 1.0 while the audio channels use the model-card
     # recommendation (1.7 / 0.8 / 25, repetition penalty off).
     text_temperature: float = 1.0
@@ -61,7 +61,7 @@ class MossTTSLocalSGLangRequestData(ARRequestData):
     seed: int | None = None
     sampling_seed: int = field(default_factory=_new_moss_tts_sampling_seed)
     engine_start_s: float = 0.0
-    # Non-None marks a streaming request.
+    # note (Yue Yin): non-None marks a streaming request
     stream_metadata: dict[str, Any] | None = None
 
 
@@ -192,7 +192,7 @@ def build_generation_kwargs(
 
     generation_kwargs: dict[str, Any] = {
         "max_new_tokens": max_new_tokens,
-        # Checkpoint generate() / model-card defaults for v1.5.
+        # note (Yue Yin): checkpoint generate() / model-card defaults for v1.5
         "text_temperature": 1.0,
         "audio_temperature": 1.7,
         "text_top_p": 1.0,
@@ -255,10 +255,10 @@ def _build_processor_message(
     ref_audio = state.ref_audio
     if reference_encoder is not None and isinstance(ref_audio, str):
         if _DATA_URI_RE.match(ref_audio) is None:
-            # File-path refs share one batched codec forward via the coalescer.
+            # note (Yue Yin): file-path refs share one batched codec forward via the coalescer
             reference = [reference_encoder.encode(ref_audio)]
         elif hasattr(reference_encoder, "encode_data_uri"):
-            # Data-URI refs through the same LRU (bytes: keyspace).
+            # note (Yue Yin): data-URI refs through the same LRU (bytes: keyspace)
             reference = [
                 reference_encoder.encode_data_uri(ref_audio, processor=processor)
             ]
@@ -469,7 +469,7 @@ def make_moss_tts_local_scheduler_adapters(*, model: Any):
         try:
             return apply_sglang_moss_tts_local_result(data.stage_payload, data)
         finally:
-            # Release the finished request's decode-state pool row (mirrors
+            # note (Yue Yin): release the finished request's decode-state pool row (mirrors
             # Higgs request_builders.py:186); recycles the row for a waiter.
             model.reset_request(data.stage_payload.request_id)
 

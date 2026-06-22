@@ -291,8 +291,7 @@ def apply_mem_fraction_cli_overrides(
     }
     for role, stage_name in role_to_stage.items():
         role_value = role_values.get(role)
-        # Precedence: per-role flag wins over the global flag for this role;
-        # the global flag is the fallback when no per-role flag was given.
+        # note (Yue Yin): per-role flag wins over the global flag; global is the fallback.
         final_value = role_value if role_value is not None else mem_fraction_static
         if final_value is not None:
             _apply_stage_mem_fraction_override(
@@ -1101,7 +1100,6 @@ def serve(
         text_only=text_only,
     )
 
-    # --- Resolve config ---
     if config:
         config_manager = ConfigManager.from_file(config)
     elif text_only:
@@ -1113,8 +1111,6 @@ def serve(
             raise typer.BadParameter("--model-path is required unless --config is set")
         config_manager = ConfigManager.from_model_path(model_path)
 
-    # we use ctx to capture the arguments that are used to modify the configuration on the fly
-    # we do expect the extra arguments to be pairs of names and values
     extra_args = config_manager.parse_extra_args(ctx.args)
     merged_config = config_manager.merge_config(extra_args)
     if model_path is not None:

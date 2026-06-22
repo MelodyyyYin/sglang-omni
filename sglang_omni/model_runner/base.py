@@ -60,11 +60,11 @@ class ModelRunner:
         self.device = torch.device(f"cuda:{tp_worker.gpu_id}")
         self.model = tp_worker.model_runner.model
 
-        # Async decode (one-step lookahead). Inert unless ``_async_enabled`` is set.
+        # note (Yue Yin): async decode (one-step lookahead); inert unless ``_async_enabled`` is set
         self._async_enabled: bool = False
         self._staging_slot: int = 0
         self._host_staging_buffers: list[torch.Tensor] = []
-        # Observability: how often resolve found the launched step's event
+        # note (Yue Yin): observability — how often resolve found the launched step's event
         # already done (no blocking) vs had to block on synchronize(). This
         # counts whether the launched step's GPU work was published in time; it
         # does NOT measure host-D2H overlap (only host-staging runners like Higgs
@@ -162,14 +162,14 @@ class ModelRunner:
         launch_buf = self.post_decode_launch(
             batch_result, forward_batch, scheduler_output.requests
         )
-        # Publish this step's output token ids now (post_decode_launch set them
+        # note (Yue Yin): publish this step's output token ids now (post_decode_launch set them
         # from GPU state without a host sync) so the NEXT decode step's
         # get_next_batch_to_run / prepare_for_decode can build its input_ids;
         # under lookahead the host collect (resolve) lags by one step.
         if batch_result.next_token_ids is not None:
             schedule_batch.output_ids = batch_result.next_token_ids
         event = torch.cuda.Event()
-        # Recorded after post_decode_launch publishes this step, so
+        # note (Yue Yin): recorded after post_decode_launch publishes this step, so
         # event.query()==True means the launched step's GPU work is done and
         # launch_buf is ready (design.md section 3).
         event.record()
@@ -201,7 +201,7 @@ class ModelRunner:
         else:
             pending.event.synchronize()
             self._async_query_miss += 1
-        # Skip reqs finished or retracted in a prior (lagged) step so _finalize
+        # note (Yue Yin): skip reqs finished or retracted in a prior (lagged) step so _finalize
         # neither re-emits nor re-frees their KV (mirrors _resolve_and_process).
         skip_rids = {
             req.request_id
@@ -403,10 +403,6 @@ class ModelRunner:
             can_run_cuda_graph=bool(batch_result.can_run_cuda_graph),
         )
 
-    # ------------------------------------------------------------------
-    # Hooks — override in subclasses
-    # ------------------------------------------------------------------
-
     def before_prefill(
         self, forward_batch: Any, schedule_batch: Any, requests: list
     ) -> None:
@@ -528,10 +524,6 @@ class ModelRunner:
         self, schedule_batch: Any, requests: list
     ) -> Any | None:
         return None
-
-    # ------------------------------------------------------------------
-    # Shared logit processing
-    # ------------------------------------------------------------------
 
     def _sample_next_token_ids(
         self,

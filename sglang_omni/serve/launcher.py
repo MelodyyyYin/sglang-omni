@@ -51,11 +51,6 @@ from sglang_omni.utils.gpu_memory import (
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Built-in pipeline registry
-# ---------------------------------------------------------------------------
-
-
 def _find_available_port(host: str, port: int) -> int:
     """Return *port* if available, otherwise find a free port and warn."""
     try:
@@ -80,7 +75,6 @@ def _default_template(profiler_dir: str, run_id: str) -> str:
     return os.path.join(profiler_dir, run_id, "trace")
 
 
-# ---------------------------------------------------------------------------
 def _stage_runtime_log_summary(pipeline_config: PipelineConfig) -> dict[str, Any]:
     """Build stage placement and runtime budget fields for startup logs."""
 
@@ -262,7 +256,7 @@ def _mount_profiler_routes(
 
     @router.post("/stop_profile")
     async def stop(req: StopReq):
-        # run_id=None is a wildcard (stop whatever's active).
+        # note (Yue Yin): run_id=None is a wildcard (stop whatever is currently active).
         run_id = req.run_id
         recorder = _get_event_recorder()
         active = recorder.active_run_id() if recorder.is_active() else None
@@ -301,7 +295,6 @@ async def _run_server(
 
     This is the async entry point.  For a blocking call use :func:`launch_server`.
     """
-    # 0. Check port availability before loading models
     port = _find_available_port(host, port)
 
     mp_runner = MultiProcessPipelineRunner(pipeline_config)
@@ -309,7 +302,7 @@ async def _run_server(
     await mp_runner.start(timeout=startup_timeout)
     coordinator = mp_runner.coordinator
 
-    # Plans are resolved once inside ``mp_runner.start()`` (which applies
+    # note (Yue Yin): plans are resolved once inside mp_runner.start() (which applies
     # stage fusion); read them back from the runner for logging rather than
     # recomputing on the un-fused config.
     placement_plan = mp_runner.prep.placement_plan

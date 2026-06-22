@@ -137,42 +137,33 @@ class StageConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    # --- Identity ---
     name: str
 
-    # --- Factory ---
     factory: str
     factory_args: dict[str, Any] = Field(default_factory=dict)
 
-    # --- Routing (set `next` for static routing or `terminal`) ---
     next: str | list[str] | None = None
     terminal: bool = False
     route_fn: str | None = None
 
-    # --- GPU / parallelism ---
     gpu: int | list[int] | None = None
     tp_size: int = 1
     parallelism: ParallelismConfig = Field(default_factory=ParallelismConfig)
     process: str | None = None
 
-    # --- Runtime intent ---
     runtime: StageRuntimeConfig = Field(default_factory=StageRuntimeConfig)
     runtime_arg_map: dict[str, str] = Field(default_factory=dict)
 
-    # --- Fan-in ---
     wait_for: list[str] | None = None
     wait_for_fn: str | None = None
     merge_fn: str | None = None
 
-    # --- Streaming ---
     stream_to: list[str] = Field(default_factory=list)
     stream_done_to_fn: str | None = None
     can_accept_stream_before_payload: bool = False
 
-    # --- Route-specific payload projection ---
     project_payload: dict[str, str] = Field(default_factory=dict)
 
-    # --- Relay (auto-inferred from gpu when None) ---
     relay: RelayConfig | None = None
 
     def model_post_init(self, __context: Any = None) -> None:

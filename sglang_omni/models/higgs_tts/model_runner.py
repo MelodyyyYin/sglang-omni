@@ -81,7 +81,7 @@ class HiggsTTSModelRunner(ModelRunner):
         staging = self._decode_pack_gpu(n_real)
         host_buf = self._next_host_staging(self.model._cg_collect_staging)
         host_buf[:n_real].copy_(staging[:n_real], non_blocking=True)
-        # Set next_token_ids (cb0) from GPU state now, with NO host sync, so the
+        # note (Yue Yin): set next_token_ids (cb0) from GPU state now, with NO host sync, so the
         # AR input chain (next step's input_ids = this step's output_ids) is
         # available at launch — the host collect (post_decode_resolve) lags by
         # one step under lookahead. For Higgs the decode input_ids is masked by
@@ -138,7 +138,7 @@ class HiggsTTSModelRunner(ModelRunner):
         )
 
         if self._async_enabled and is_lookahead and n_real > 0:
-            # Async-lookahead overrun guard (GPU-side, no host sync): a request
+            # note (Yue Yin): async-lookahead overrun guard (GPU-side, no host sync): a request
             # that finished via EOC at the prior step is still in this batch
             # with pool.generation_done=True. Running the normal decode forward
             # for such a done row trips a device-side gather assert, so route it
@@ -285,7 +285,7 @@ class HiggsTTSModelRunner(ModelRunner):
             if req.is_chunked > 0:
                 cb0_per_row.append(0)
                 continue
-            # Already finished in an earlier step? Skip its append. Under async
+            # note (Yue Yin): already finished in an earlier step? Skip its append. Under async
             # lookahead the finished req gets one extra (wasted) forward before
             # being dropped; this prevents leaking that overrun token. Catches
             # length finishes too (which `_cg_was_done`, an EOC-only flag, does
