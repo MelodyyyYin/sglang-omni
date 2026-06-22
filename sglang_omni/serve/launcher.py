@@ -256,7 +256,6 @@ def _mount_profiler_routes(
 
     @router.post("/stop_profile")
     async def stop(req: StopReq):
-        # note (Yue Yin): run_id=None is a wildcard (stop whatever is currently active).
         run_id = req.run_id
         recorder = _get_event_recorder()
         active = recorder.active_run_id() if recorder.is_active() else None
@@ -302,9 +301,6 @@ async def _run_server(
     await mp_runner.start(timeout=startup_timeout)
     coordinator = mp_runner.coordinator
 
-    # note (Yue Yin): plans are resolved once inside mp_runner.start() (which applies
-    # stage fusion); read them back from the runner for logging rather than
-    # recomputing on the un-fused config.
     placement_plan = mp_runner.prep.placement_plan
     process_plan = mp_runner.prep.process_plan
     gpu_ids = set(placement_plan.gpus)

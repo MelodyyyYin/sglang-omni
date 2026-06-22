@@ -137,13 +137,7 @@ class OmniScheduler:
         self.moe_ep_size = 1
         self.page_size = server_args.page_size
         self.enable_overlap = enable_overlap
-        # note (Yue Yin): one-step-lookahead async decode (single stream + CUDA event); only
-        # safe for model runners that implement post_decode_launch/resolve.
         self.enable_async_decode = enable_async_decode
-        # note (Yue Yin): below this batch size the lookahead is bypassed; at low concurrency
-        # the per-step collect is too small to overlap, so the lookahead's fixed
-        # overhead is a net loss (the bs=1 regression). Default 2 = only bs=1
-        # takes the fast path.
         self.async_decode_min_batch_size = int(async_decode_min_batch_size)
         if model_runner is not None:
             model_runner._async_enabled = enable_async_decode
@@ -161,7 +155,6 @@ class OmniScheduler:
         self.random_seed = tp_worker.random_seed
         self.device = tp_worker.device
 
-        # note (Yue Yin): global server_args field upstream sets in its __init__; must mirror here.
         from sglang.srt.server_args import get_global_server_args
 
         gsa = get_global_server_args()
@@ -184,8 +177,6 @@ class OmniScheduler:
         self.running_batch = ScheduleBatch(reqs=[], batch_is_full=False)
         self.cur_batch = None
         self.last_batch = None
-        # note (Yue Yin): tracked as instance state (not a loop local) so abort() can reach
-        # the in-flight step; see _event_loop_async_decode.
         self._async_pending = None
         self.forward_ct = 0
         self.return_health_check_ct = 0
@@ -241,7 +232,6 @@ class OmniScheduler:
         self.new_token_ratio = self.init_new_token_ratio
         self.prefill_delayer = None
 
-        # note (Yue Yin): feature flags all disabled — composition, not inheritance; stubs satisfy upstream reads.
         self.enable_lora = False
         self.enable_pdmux = False
         self.enable_metrics = server_args.enable_metrics
@@ -259,7 +249,6 @@ class OmniScheduler:
         )
         self.current_scheduler_metrics_enabled = False
 
-        # note (Yue Yin): speculative decoding disabled — OmniScheduler does not use it.
         try:
             from sglang.srt.managers.scheduler import DllmStagingReqs
         except ImportError:
@@ -286,7 +275,6 @@ class OmniScheduler:
         self.require_mlp_sync = False
         self.abort_on_priority_when_disabled = False
 
-        # note (Yue Yin): disaggregation / hybrid disabled — set to NULL so upstream checks pass.
         from sglang.srt.disaggregation.utils import DisaggregationMode
 
         self.disaggregation_mode = DisaggregationMode.NULL
@@ -332,14 +320,10 @@ class OmniScheduler:
             getattr(server_args, "enable_priority_scheduling", False)
             and not getattr(server_args, "disable_priority_preemption", False)
         )
-        # note (Yue Yin): high-water mark, not a cap; mirrors upstream Scheduler.__init__.
         self.max_prefill_bs = 0
         self.use_ngram_embedding = False
         self.return_health_check_ipcs = []
         self.enable_overlap_mlx = False
-        # note (Yue Yin): upstream scheduler_runtime_checker_mixin iterates session_controller.sessions
-        # during report_decode_stats; stub with empty dict suffices since we don't
-        # host SGLang interactive sessions.
         from types import SimpleNamespace
 
         self.session_controller = SimpleNamespace(sessions={})
@@ -616,8 +600,6 @@ class OmniScheduler:
         """
         self._emit_prefill_start_for_batch(batch)
         if self._model_runner is not None:
-            # note (Yue Yin): OmniScheduler overrides run_batch, so without this forward_ct
-            # stays 0 and SGLANG_TEST_RETRACT fires every step.
             self.forward_ct = getattr(self, "forward_ct", 0) + 1
             sched_output = self._build_sched_output(batch)
             mr_output = self._model_runner.execute(sched_output)
@@ -664,8 +646,6 @@ class OmniScheduler:
 
     @staticmethod
     def _make_batch_result(batch, mr_output):
-        # note (Yue Yin): process_batch_result reads .next_token_ids / .logits_output; model runner
-        # already set batch.output_ids during execute/resolve.
         from sglang.srt.managers.scheduler import GenerationBatchResult
 
         next_token_ids = batch.output_ids
@@ -683,7 +663,6 @@ class OmniScheduler:
         payload), without waiting. Returns ``(sched_output, pending_step)``; the
         caller holds the pending step (launch-first keeps two steps in flight)."""
         self._emit_prefill_start_for_batch(batch)
-        # note (Yue Yin): the resolve does no forward, so it must not count; only the launch does.
         self.forward_ct = getattr(self, "forward_ct", 0) + 1
         sched_output = self._build_sched_output(batch)
         pending_step = self._model_runner.execute_launch(sched_output)
@@ -1351,12 +1330,9 @@ class OmniScheduler:
         _mark_sampler_finished sets) must be KEPT so process_batch_result emits
         it — only reqs finished in a *prior* step are the overrun to drop.
         """
-        # note (Yue Yin): a request retracted at step S is still in step S+1's lagged batch;
-        # drop it like a prior-step finish so its KV is not re-freed.
         pre_finished = [
             r.finished() or bool(getattr(r, "is_retracted", False)) for r in batch.reqs
         ]
-        # note (Yue Yin): rids finished/retracted in a prior step (overrun) — suppress their emit.
         skip_rids = {batch.reqs[i].rid for i, was in enumerate(pre_finished) if was}
         result = self._run_batch_resolve(
             batch, sched_output, pending_step, skip_rids=skip_rids
@@ -1368,9 +1344,6 @@ class OmniScheduler:
             if result.next_token_ids is not None and keep:
                 idx = torch.tensor(keep, device=result.next_token_ids.device)
                 result.next_token_ids = result.next_token_ids[idx]
-            # note (Yue Yin): do NOT use filter_batch() — batch is a ScheduleBatch.copy() that omits
-            # seq_lens; process_batch_result_decode zips batch.reqs with
-            # next_token_ids by position, so trimming reqs in lockstep suffices.
             batch.reqs = [batch.reqs[i] for i in keep]
         if batch.reqs:
             self.process_batch_result(batch, result)
@@ -1430,8 +1403,6 @@ class OmniScheduler:
             batch = self.get_next_batch_to_run()
             self.cur_batch = batch
 
-            # note (Yue Yin): route through sync when the runner's collect has a sync-only
-            # fallback (default True for runners not overriding lookahead_eligible).
             runner = getattr(self, "_model_runner", None)
             use_lookahead = (
                 batch is not None
@@ -1455,13 +1426,8 @@ class OmniScheduler:
                         except Exception as exc:
                             self._handle_batch_failure(pb, exc)
             else:
-                # note (Yue Yin): fast path: flush any in-flight step first (bs>=2 → bs=1 drain
-                # transition), then run synchronously. Bypassing lookahead at bs=1
-                # avoids fixed overhead with no overlap payoff (the bs=1 regression).
                 if self._async_pending is not None:
                     self._resolve_pending_async()
-                    # note (Yue Yin): stale-batch overrun — batch was built before this drain;
-                    # drop finished/retracted reqs to avoid double-free of KV.
                     batch = self._drop_stale_overrun(batch)
                     self.cur_batch = batch
                 if batch:
@@ -1489,7 +1455,6 @@ class OmniScheduler:
             self.inbox.put(msg)
 
     def _find_request_data(self, request_id: str) -> Any | None:
-        # note (Yue Yin): scan all batches a live req can sit in during prefill→decode handoff.
         for batch in (self.running_batch, self.cur_batch, self.last_batch):
             if batch is None:
                 continue

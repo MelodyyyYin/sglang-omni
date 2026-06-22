@@ -687,7 +687,6 @@ async def _chat_stream(
         request_id=request_id,
         audio_format=audio_format,
     ):
-        # note (Yue Yin): some pipelines emit a final aggregate chunk that carries finish_reason AND payload; capture here but do not skip
         if chunk.finish_reason is not None:
             finish_reason = chunk.finish_reason
             if chunk.usage is not None:
@@ -1155,7 +1154,6 @@ def _select_speech_audio_delta(
     if audio.ndim > 1:
         audio = audio.squeeze()
     if audio.ndim > 1:
-        # note (Yue Yin): downmix multi-channel audio (e.g. 48 kHz stereo MOSS-TTS Local) instead of silently dropping channels
         channel_axis = 0 if audio.shape[0] < audio.shape[-1] else -1
         audio = audio.mean(axis=channel_axis).astype("float32")
 

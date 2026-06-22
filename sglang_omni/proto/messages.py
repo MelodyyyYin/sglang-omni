@@ -28,13 +28,11 @@ class DataReadyMessage:
 
     def to_dict(self) -> dict[str, Any]:
         if isinstance(self.shm_metadata, dict):
-            # note (Yue Yin): simple dict — current NixlRelay format; tag so from_dict can round-trip
             metadata_dict = self.shm_metadata.copy()
             metadata_dict["_type"] = "dict"
         elif hasattr(self.shm_metadata, "to_dict"):
             metadata_dict = self.shm_metadata.to_dict()
         elif hasattr(self.shm_metadata, "model_dump"):
-            # note (Yue Yin): RdmaMetadata is a Pydantic BaseModel; tag type for from_dict dispatch
             metadata_dict = self.shm_metadata.model_dump()
             metadata_dict["_type"] = "RdmaMetadata"
         else:
@@ -66,10 +64,8 @@ class DataReadyMessage:
         metadata_type = metadata_dict.get("_type", "")
 
         if metadata_type == "dict" or "transfer_info" in metadata_dict:
-            # note (Yue Yin): simple dict format — current NixlRelay design
             metadata = {k: v for k, v in metadata_dict.items() if k != "_type"}
         elif metadata_type == "RdmaMetadata":
-            # note (Yue Yin): conditional import — RdmaMetadata may not be installed; fall back to dict
             try:
                 from sglang_omni.relay.operations.nixl import RdmaMetadata
 
@@ -89,7 +85,6 @@ class DataReadyMessage:
             except (ImportError, Exception):
                 metadata = {k: v for k, v in metadata_dict.items() if k != "_type"}
         elif "descriptors" in metadata_dict:
-            # note (Yue Yin): no _type tag but has descriptors — infer RdmaMetadata, fall back to dict
             try:
                 from sglang_omni.relay.operations.nixl import RdmaMetadata
 
@@ -102,7 +97,6 @@ class DataReadyMessage:
             except (ImportError, Exception):
                 metadata = {k: v for k, v in metadata_dict.items() if k != "_type"}
         else:
-            # note (Yue Yin): default: plain dict (current NixlRelay design)
             metadata = {k: v for k, v in metadata_dict.items() if k != "_type"}
 
         return cls(

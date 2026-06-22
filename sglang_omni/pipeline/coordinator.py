@@ -459,7 +459,6 @@ class Coordinator:
 
         info = self._requests[request_id]
 
-        # note (Yue Yin): fail-fast — any terminal failure aborts the entire request
         if not msg.success:
             info.state = RequestState.FAILED
             info.error = msg.error
@@ -487,7 +486,6 @@ class Coordinator:
             )
             return
 
-        # note (Yue Yin): single active terminal or no terminal_stages — original single-terminal behavior
         if len(expected_terminal_stages) <= 1:
             info.state = RequestState.COMPLETED
             info.result = msg.result

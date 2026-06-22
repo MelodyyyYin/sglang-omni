@@ -220,18 +220,15 @@ def build_asr_eval_results(
         )
 
     wer_summary = calculate_wer_metrics(sample_outputs, lang)
-    # note (Yue Yin): gate + tune-ci-thresholds read summary.corpus_wer
     wer_summary["corpus_wer"] = wer_summary["wer_corpus"]
 
     asr_speed = calculate_asr_speed_metrics(sample_outputs, wall_time_s=wall_clock_s)
-    # note (Yue Yin): compute_speed_metrics supplies rtf_p95 (the asr metrics omit it)
     perf = compute_speed_metrics(outputs, wall_clock_s=wall_clock_s)
     speed = {
         **asr_speed,
         "asr_model": model_path,
         "asr_concurrency": concurrency,
         "asr_rtf_p95": perf.get("rtf_p95"),
-        # note (Yue Yin): plain calibration keys read by tune-ci-thresholds + gate
         "throughput_samples_per_s": asr_speed["asr_throughput_samples_per_s"],
         "latency_mean_s": asr_speed["asr_latency_mean_s"],
         "latency_median_s": asr_speed["asr_latency_median_s"],

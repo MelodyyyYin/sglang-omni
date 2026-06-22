@@ -44,7 +44,6 @@ _MOSS_TTS_LOCAL_INSTALL_HINT = (
     "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2."
 )
 
-# note (Yue Yin): preprocessing and vocoder stages each load their own processor (~4.3 GB bf16 codec instance); model.streaming() flips module-global codec state, so a decode on a shared instance would corrupt a concurrent reference encode (see streaming_vocoder.py).
 
 
 def _normalize_processor_config(processor: Any) -> None:
@@ -321,7 +320,6 @@ class CachedReferenceEncoder:
             self._inflight.pop(key, None)
         leader_fut.set_result(stored)
         self._maybe_log()
-        # note (Yue Yin): CPU long like the hit path.
         return stored.to(torch.long)
 
     def _maybe_log(self) -> None:
@@ -476,7 +474,6 @@ def create_sglang_tts_engine_executor(
         "enable_torch_compile": False,
         "max_prefill_tokens": 8192,
         "max_running_requests": 16,
-        # note (Yue Yin): headroom for the two ~4.3 GB bf16 codec instances; back off further when everything co-locates on a single GPU.
         "mem_fraction_static": 0.6 if torch.cuda.device_count() > 1 else 0.5,
         "sampling_backend": "pytorch",
         "torch_compile_max_bs": 16,

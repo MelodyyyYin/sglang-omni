@@ -156,7 +156,6 @@ class PubSocket:
         ctx = ControlPlaneContext.get()
         self._socket = ctx.socket(zmq.PUB)
         self._socket.bind(self.endpoint)
-        # note (Yue Yin): ZMQ PUB/SUB needs a brief delay for subscriptions to propagate before first publish
         await asyncio.sleep(0.1)
         logger.debug("PUB socket bound to %s", self.endpoint)
 

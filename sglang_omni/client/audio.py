@@ -240,7 +240,6 @@ def _encode_with_pyav(
 
     stream.layout = "mono"
 
-    # note (Yue Yin): FFmpeg expects float-planar (fltp) format for these codecs
     frame = av.AudioFrame.from_ndarray(
         audio.reshape(1, -1), format="fltp", layout="mono"
     )

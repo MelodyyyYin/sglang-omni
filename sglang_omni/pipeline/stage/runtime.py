@@ -155,8 +155,6 @@ class Stage:
         if self.scheduler is not None:
 
             def _run_scheduler():
-                # note (Yue Yin): active-stage binding so emit(stage=None) from
-                # scheduler-thread descendants resolves to this stage
                 _set_active_stage(self.name)
                 try:
                     if self.gpu_id is not None:
@@ -653,9 +651,6 @@ class Stage:
             and self._tp_fanout is not None
             and getattr(self.scheduler, "requires_tp_work_fanout", False)
         ):
-            # note (Yue Yin): fan out unresolved payload — followers materialize
-            # tensor refs on their own relay/device, avoiding a large resolved CUDA
-            # tensor crossing the cross-process work queue
             self._tp_fanout.fanout_work(payload)
         payload_for_scheduler = payload
         if tensor_refs_enabled():
@@ -1020,8 +1015,6 @@ class Stage:
                 "projected local-object dispatch requires projectors to return "
                 f"StagePayload, got {type(projected_payload).__name__}"
             )
-        # note (Yue Yin): local dispatch is safe only when projection gives the target
-        # its own mutable containers; tensor leaves may still be shared intentionally
         if projected_payload.data is original_payload.data:
             return False
         return not Stage._shares_mutable_container(
@@ -1355,7 +1348,6 @@ class Stage:
                 )
 
     def _on_profiler_stop(self, msg: ProfilerStopMessage) -> None:
-        # note (Yue Yin): run_id=None is a wildcard — stops the active profiler session
         if TorchProfiler.is_active() and (
             msg.run_id is None or TorchProfiler.get_active_run_id() == msg.run_id
         ):

@@ -43,11 +43,9 @@ THINKER_STAGE = "thinker"
 
 logger = logging.getLogger(__name__)
 
-# note (Yue Yin): image-encoder batching budget; the multiplier accounts for transient activations
 QWEN3_IMAGE_ENCODER_BATCH_BUDGET_BYTES = 10 * 1024**3
 QWEN3_IMAGE_ENCODER_ACTIVATION_MULTIPLIER = 5
 
-# note (Yue Yin): CPU LRU cap for repeated-media encoder outputs
 QWEN3_ENCODER_CACHE_MAX_BYTES = 4 * 1024**3
 QWEN3_ENCODER_CACHE_MAX_ENTRIES = 64
 
@@ -836,8 +834,6 @@ def create_image_encoder_executor(
                     metadata={"modality": "image", "batch_size": len(payloads)},
                 )
 
-    # note (Yue Yin): preserve calibrated image-encoder batching shape; batch_wait ensures
-    # video benchmarks at concurrency=16 batch together
     return SimpleScheduler(
         _encode,
         batch_compute_fn=_encode_batch,

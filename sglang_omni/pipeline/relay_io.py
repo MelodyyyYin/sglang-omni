@@ -90,9 +90,6 @@ def restore_tensors(obj: Any, tensor_dict: dict[str, torch.Tensor]) -> Any:
         return obj
 
 
-# note (Yue Yin): Lazy TensorRef: externalize large allowlisted tensors instead of inlining
-# them into the payload buffer. Intermediate stages forward the small ref
-# dict untouched; only the declared consumer stage resolves it.
 
 _BACKGROUND_REF_TASKS: set[asyncio.Task] = set()
 _LOGGED_REF_EDGES: set[tuple[str, str]] = set()
@@ -277,9 +274,6 @@ async def materialize_tensor_refs(
             return await read_tensor_ref(relay, ref)
         return obj
 
-    # note (Yue Yin): containers are rebuilt only when a descendant ref was actually resolved;
-    # otherwise the original object is returned unchanged so ref-free payloads
-    # (every non-consumer stage) skip per-request container churn.
     if isinstance(obj, dict):
         new_dict = {}
         changed = False
@@ -637,9 +631,6 @@ async def send_stream_chunk(
     same_gpu_targets: set[str] | None = None,
 ) -> None:
     """Send a streaming chunk to a downstream stage."""
-    # note (Yue Yin): keep CUDA IPC limited to CUDA-dominant chunks with no CPU tensors and only
-    # small inline Python metadata; otherwise the relay path keeps CPU-heavy
-    # pieces out of the IPC control-plane pickle.
     if (
         same_gpu_targets
         and target_stage in same_gpu_targets
@@ -690,9 +681,6 @@ async def send_stream_chunk(
                 }
             relay_metadata["chunk_metadata_tensors"] = metadata_refs
 
-    # note (Yue Yin): send control message FIRST — receiver starts reading immediately;
-    # if we wait_for_completion before notifying, the receiver never starts reading,
-    # never triggers RDMA notification, deadlock (NIXL credit deadlock avoidance).
     msg = DataReadyMessage(
         request_id=request_id,
         from_stage=from_stage,

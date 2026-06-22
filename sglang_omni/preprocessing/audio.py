@@ -33,7 +33,6 @@ def _decode_audio_bytes_av(data: bytes) -> tuple[np.ndarray, int]:
         for frame in container.decode(audio_stream):
             arr = frame.to_ndarray()
             if arr.ndim == 2:
-                # note (Yue Yin): planar formats (fltp, s16p, etc.) have shape (channels, samples); average to mono
                 arr = arr.mean(axis=0)
             frames.append(arr.flatten().astype(np.float32))
     finally:
@@ -94,14 +93,12 @@ def _parse_wav_bytes(data: bytes, source: str = "bytes") -> tuple[np.ndarray, in
     if not data_bytes:
         raise ValueError(f"Missing data chunk in WAV: {source}")
 
-    if fmt_tag == 3:  # note (Yue Yin): IEEE float
         if bits_per_sample == 32:
             audio = np.frombuffer(data_bytes, dtype="<f4")
         elif bits_per_sample == 64:
             audio = np.frombuffer(data_bytes, dtype="<f8").astype(np.float32)
         else:
             raise ValueError(f"Unsupported float WAV bit depth: {bits_per_sample}")
-    elif fmt_tag == 1:  # note (Yue Yin): PCM
         if bits_per_sample == 16:
             audio_i16 = np.frombuffer(data_bytes, dtype="<i2")
             audio = (audio_i16.astype(np.float32) / 32768.0).astype(np.float32)
@@ -238,7 +235,6 @@ async def ensure_audio_list_async(
         return []
     items = audios if isinstance(audios, list) else [audios]
 
-    # note (Yue Yin): import here to avoid circular dependency with resource_connector
     if resource_connector is None:
         from .resource_connector import get_global_resource_connector
 

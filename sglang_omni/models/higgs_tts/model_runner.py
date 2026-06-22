@@ -81,14 +81,6 @@ class HiggsTTSModelRunner(ModelRunner):
         staging = self._decode_pack_gpu(n_real)
         host_buf = self._next_host_staging(self.model._cg_collect_staging)
         host_buf[:n_real].copy_(staging[:n_real], non_blocking=True)
-        # note (Yue Yin): set next_token_ids (cb0) from GPU state now, with NO host sync, so the
-        # AR input chain (next step's input_ids = this step's output_ids) is
-        # available at launch — the host collect (post_decode_resolve) lags by
-        # one step under lookahead. For Higgs the decode input_ids is masked by
-        # _decode_step_embeds_cg (rows with codes use _cg_active_last_codes), so
-        # this only feeds the upstream bookkeeping. clamp>=0 keeps STOP_CODE(-1)
-        # rows in embed_tokens range; the host collect later overwrites with the
-        # skip-aware cb0 for output reporting.
         result.next_token_ids = (
             self.model._cg_codes_BN[:n_real, 0].clamp_min(0).to(torch.long).clone()
         )
@@ -138,18 +130,6 @@ class HiggsTTSModelRunner(ModelRunner):
         )
 
         if self._async_enabled and is_lookahead and n_real > 0:
-            # note (Yue Yin): async-lookahead overrun guard (GPU-side, no host sync): a request
-            # that finished via EOC at the prior step is still in this batch
-            # with pool.generation_done=True. Running the normal decode forward
-            # for such a done row trips a device-side gather assert, so route it
-            # to the reset padding row — its overrun output is discarded by the
-            # collect's finished()/was_done skip anyway. Length-finish rows have
-            # generation_done=False and are untouched.
-            #
-            # Only the lookahead launch path can carry such an overrun (the
-            # 1-wasted-step lag). On a fast-path (sync) decode step finished reqs
-            # are filtered out before the step, so no generation_done row is ever
-            # present and this gather+torch.where would be pure wasted GPU work.
             rows_t_real = model._cg_row_indices[:n_real]
             done = model._sampler_pool.generation_done[rows_t_real]
             model._cg_row_indices[:n_real] = torch.where(
@@ -285,12 +265,6 @@ class HiggsTTSModelRunner(ModelRunner):
             if req.is_chunked > 0:
                 cb0_per_row.append(0)
                 continue
-            # note (Yue Yin): already finished in an earlier step? Skip its append. Under async
-            # lookahead the finished req gets one extra (wasted) forward before
-            # being dropped; this prevents leaking that overrun token. Catches
-            # length finishes too (which `_cg_was_done`, an EOC-only flag, does
-            # not). No-op for the sync path: a req is never finished() at its
-            # own collect (finish is set later, in process_batch_result).
             if req.finished():
                 cb0_per_row.append(0)
                 continue

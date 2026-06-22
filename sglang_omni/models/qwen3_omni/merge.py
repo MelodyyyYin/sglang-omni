@@ -58,8 +58,6 @@ def merge_for_thinker(payloads: dict[str, StagePayload]) -> StagePayload:
     state.thinker_inputs = thinker_inputs
     state.encoder_inputs = {}
     _prune_preprocessing_for_thinker(state, encoder_outs)
-    # note (Yue Yin): encoder outputs have been consumed into thinker_inputs; keeping both
-    # doubles multimodal tensor payloads sent to the thinker
     state.encoder_outs = {}
     base.data = state.to_dict()
     return base
@@ -282,7 +280,6 @@ def decode_events(
     decoded = tokenizer.decode(token_ids, skip_special_tokens=True)
     stream_state["text"] = decoded
 
-    # note (Yue Yin): skip incomplete multi-byte characters (U+FFFD = truncated UTF-8)
     if "\ufffd" in decoded:
         return []
 

@@ -291,7 +291,6 @@ def apply_mem_fraction_cli_overrides(
     }
     for role, stage_name in role_to_stage.items():
         role_value = role_values.get(role)
-        # note (Yue Yin): per-role flag wins over the global flag; global is the fallback.
         final_value = role_value if role_value is not None else mem_fraction_static
         if final_value is not None:
             _apply_stage_mem_fraction_override(

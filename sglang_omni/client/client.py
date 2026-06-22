@@ -209,7 +209,6 @@ class Client:
             encode_audio, audio_data, **encode_kwargs
         )
 
-        # note (Yue Yin): derive actual format from MIME type; encode_audio may fall back to WAV if codec unavailable
         actual_format = response_format
         for ext, mt in FORMAT_MIME_TYPES.items():
             if mt == mime_type:
@@ -375,7 +374,6 @@ class Client:
             result.request_id = request_id
             return result
         if isinstance(result, dict):
-            # note (Yue Yin): multi-terminal merged result, e.g. decode + code2wav/talker/talker_stream
             audio_result = None
             if "decode" in result:
                 for audio_stage in ("code2wav", "talker", "talker_stream"):

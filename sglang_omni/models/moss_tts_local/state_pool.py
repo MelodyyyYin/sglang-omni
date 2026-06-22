@@ -32,7 +32,6 @@ class MossTTSLocalDecodeStatePool:
     def __init__(self, model: Any) -> None:
         self.model = model
         weight = model._decode_input_embedding.weight
-        # note (Yue Yin): P = max_running_requests + 1; the +1 is the reserved padding row.
         self.num_rows = int(weight.shape[0]) + 1
         self.padding_row = self.num_rows - 1
         self.hidden_size = int(weight.shape[1])
@@ -53,8 +52,6 @@ class MossTTSLocalDecodeStatePool:
         self.n_vq = int(n_vq or 12)
         self.audio_vocab_size = int(audio_vocab_size or 1024)
 
-        # note (Yue Yin): feedback embedding for the next decode step; bf16 matches the staging
-        # table dtype so before_decode's gather is a plain copy (#736).
         self.feedback_embeds = torch.zeros(
             self.num_rows,
             self.hidden_size,
@@ -100,8 +97,6 @@ class MossTTSLocalDecodeStatePool:
         self._rid_to_row: dict[str, int] = {}
         self._params_written_rids: set[str] = set()
         self._audio_repetition_penalty_rows: set[int] = set()
-        # note (Yue Yin): real rows 0..P-2 are assignable; the padding row stays out of
-        # the free list so it is never handed to a request.
         self._free_rows: list[int] = list(range(self.padding_row))
 
     def acquire_row(self, rid: str) -> int:

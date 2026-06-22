@@ -117,9 +117,7 @@ class MossTTSPreprocessingContext:
 
 _PREPROCESSING_CONTEXT: MossTTSPreprocessingContext | None = None
 _PREPARED_REQUESTS: dict[str, MossTTSPreparedRequest] = {}
-# note (Yue Yin): request ids currently inside preprocess_moss_tts_payload.
 _INFLIGHT_REQUESTS: set[str] = set()
-# note (Yue Yin): in-flight requests whose abort arrived before the handoff was published; compute drops the pending insert instead of leaking it into _PREPARED_REQUESTS.
 _ABORTED_REQUESTS: set[str] = set()
 _PREPARED_REQUESTS_LOCK = threading.Lock()
 
@@ -485,7 +483,6 @@ def preprocess_moss_tts_payload(payload: StagePayload) -> StagePayload:
         aborted = rid in _ABORTED_REQUESTS
         _ABORTED_REQUESTS.discard(rid)
         if not aborted:
-            # note (Yue Yin): aborted-while-preprocessing drops the handoff so it never lingers.
             _PREPARED_REQUESTS[rid] = prepared
 
     data = prepared.state.to_dict()
