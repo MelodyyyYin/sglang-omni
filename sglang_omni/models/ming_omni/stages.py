@@ -14,14 +14,11 @@ from sglang_omni.models.ming_omni.pipeline.next_stage import AUDIO_STAGE, IMAGE_
 from sglang_omni.models.ming_omni.tp_utils import validate_stage_tp_support
 from sglang_omni.proto import StagePayload
 
-
 def project_preprocessing_to_audio_encoder(payload: StagePayload) -> StagePayload:
     return _project_preprocessing_to_encoder(payload, stage_name=AUDIO_STAGE)
 
-
 def project_preprocessing_to_image_encoder(payload: StagePayload) -> StagePayload:
     return _project_preprocessing_to_encoder(payload, stage_name=IMAGE_STAGE)
-
 
 def project_preprocessing_to_mm_aggregate(payload: StagePayload) -> StagePayload:
     state = MingOmniPipelineState.from_dict(payload.data)
@@ -33,7 +30,6 @@ def project_preprocessing_to_mm_aggregate(payload: StagePayload) -> StagePayload
     )
     return _payload_with_state(payload, projected)
 
-
 def project_encoder_to_mm_aggregate(payload: StagePayload) -> StagePayload:
     state = MingOmniPipelineState.from_dict(payload.data)
     stage_name = _single_encoder_stage_name(state)
@@ -41,7 +37,6 @@ def project_encoder_to_mm_aggregate(payload: StagePayload) -> StagePayload:
         encoder_outs={stage_name: state.encoder_outs.get(stage_name, {})}
     )
     return _payload_with_state(payload, projected)
-
 
 def _project_preprocessing_to_encoder(
     payload: StagePayload,
@@ -57,7 +52,6 @@ def _project_preprocessing_to_encoder(
         payload, MingOmniPipelineState(encoder_inputs=projected_inputs)
     )
 
-
 def _payload_with_state(
     payload: StagePayload, state: MingOmniPipelineState
 ) -> StagePayload:
@@ -66,7 +60,6 @@ def _payload_with_state(
         request=payload.request,
         data=state.to_dict(),
     )
-
 
 def _project_encoder_input_metadata(
     encoder_inputs: dict[str, dict[str, Any]],
@@ -85,14 +78,12 @@ def _project_encoder_input_metadata(
             projected[stage_name] = metadata
     return projected
 
-
 def _single_encoder_stage_name(state: MingOmniPipelineState) -> str:
     if len(state.encoder_outs) != 1:
         raise ValueError(
             f"Expected exactly one encoder output in payload, got {sorted(state.encoder_outs)}"
         )
     return next(iter(state.encoder_outs))
-
 
 def create_preprocessing_executor(model_path: str):
     from sglang_omni.models.ming_omni.components.preprocessor import MingPreprocessor
@@ -105,7 +96,6 @@ def create_preprocessing_executor(model_path: str):
 
     return SimpleScheduler(_preprocess)
 
-
 def create_aggregate_executor():
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
@@ -113,7 +103,6 @@ def create_aggregate_executor():
         return payload
 
     return SimpleScheduler(_identity)
-
 
 def create_streaming_segmenter_executor(
     *,
@@ -140,7 +129,6 @@ def create_streaming_segmenter_executor(
         first_segment_max_wait_ms=first_segment_max_wait_ms,
     )
     return MingStreamingSegmenterScheduler(config=config)
-
 
 def create_audio_encoder_executor(
     model_path: str,
@@ -171,7 +159,6 @@ def create_audio_encoder_executor(
         return payload
 
     return SimpleScheduler(_encode)
-
 
 def create_image_encoder_executor(
     model_path: str,
@@ -212,7 +199,6 @@ def create_image_encoder_executor(
 
     return SimpleScheduler(_encode)
 
-
 def create_sglang_thinker_executor_from_config(
     model_path: str,
     *,
@@ -251,7 +237,6 @@ def create_sglang_thinker_executor_from_config(
         enable_streaming_tts=enable_streaming_tts,
     )
 
-
 def create_talker_executor(
     model_path: str,
     *,
@@ -286,7 +271,6 @@ def create_talker_executor(
 
     return SimpleScheduler(_talk)
 
-
 def create_streaming_talker_executor(
     model_path: str,
     *,
@@ -310,7 +294,6 @@ def create_streaming_talker_executor(
         device=device,
         voice=voice,
     )
-
 
 def create_decode_executor(model_path: str):
     from sglang_omni.models.ming_omni.components.streaming_detokenizer import (

@@ -23,10 +23,8 @@ from sglang_omni.models.ming_omni.tp_utils import validate_stage_tp_support
 
 _PKG = "sglang_omni.models.ming_omni"
 
-
 def _stage_by_name(stages: list[StageConfig], name: str) -> StageConfig | None:
     return next((stage for stage in stages if stage.name == name), None)
-
 
 def _stage_gpu_set(gpu: int | list[int] | None, tp_size: int) -> set[int]:
     """Return GPUs occupied by a stage.
@@ -40,11 +38,9 @@ def _stage_gpu_set(gpu: int | list[int] | None, tp_size: int) -> set[int]:
         return set()
     return set(range(int(gpu), int(gpu) + tp_size))
 
-
 def _validate_ming_stage_tp_support(stages: list[StageConfig]) -> None:
     for stage in stages:
         validate_stage_tp_support(stage_name=stage.name, tp_size=stage.tp_size)
-
 
 def _preprocessing_stage(*, process: str) -> StageConfig:
     return StageConfig(
@@ -59,7 +55,6 @@ def _preprocessing_stage(*, process: str) -> StageConfig:
         },
     )
 
-
 def _audio_encoder_stage(*, gpu: int, process: str) -> StageConfig:
     return StageConfig(
         name=AUDIO_STAGE,
@@ -72,7 +67,6 @@ def _audio_encoder_stage(*, gpu: int, process: str) -> StageConfig:
             AGGREGATE_STAGE: f"{_PKG}.stages.project_encoder_to_mm_aggregate"
         },
     )
-
 
 def _image_encoder_stage(
     *, gpu: int | list[int], tp_size: int = 1, process: str
@@ -90,7 +84,6 @@ def _image_encoder_stage(
         },
     )
 
-
 def _aggregate_stage(*, process: str) -> StageConfig:
     return StageConfig(
         name=AGGREGATE_STAGE,
@@ -100,7 +93,6 @@ def _aggregate_stage(*, process: str) -> StageConfig:
         merge_fn=f"{_PKG}.pipeline.merge.merge_for_thinker",
         next=THINKER_STAGE,
     )
-
 
 def _thinker_stage(*, gpu: int, speech_enabled: bool, process: str) -> StageConfig:
     return StageConfig(
@@ -112,7 +104,6 @@ def _thinker_stage(*, gpu: int, speech_enabled: bool, process: str) -> StageConf
         next=[DECODE_STAGE, TALKER_STAGE] if speech_enabled else DECODE_STAGE,
         stream_to=[DECODE_STAGE],
     )
-
 
 def _streaming_thinker_stage(*, gpu: int, process: str) -> StageConfig:
     """Thinker stage variant for streaming TTS.
@@ -131,7 +122,6 @@ def _streaming_thinker_stage(*, gpu: int, process: str) -> StageConfig:
         stream_to=[DECODE_STAGE, SEGMENTER_STAGE],
     )
 
-
 def _segmenter_stage(*, process: str) -> StageConfig:
     return StageConfig(
         name=SEGMENTER_STAGE,
@@ -141,7 +131,6 @@ def _segmenter_stage(*, process: str) -> StageConfig:
         stream_to=[TALKER_STREAM_STAGE],
         can_accept_stream_before_payload=True,
     )
-
 
 def _talker_stream_stage(*, gpu: int, process: str) -> StageConfig:
     return StageConfig(
@@ -154,7 +143,6 @@ def _talker_stream_stage(*, gpu: int, process: str) -> StageConfig:
         can_accept_stream_before_payload=True,
     )
 
-
 def _decode_stage(*, process: str) -> StageConfig:
     return StageConfig(
         name=DECODE_STAGE,
@@ -163,7 +151,6 @@ def _decode_stage(*, process: str) -> StageConfig:
         terminal=True,
         can_accept_stream_before_payload=True,
     )
-
 
 def _talker_stage(*, gpu: int, process: str) -> StageConfig:
     return StageConfig(
@@ -175,7 +162,6 @@ def _talker_stage(*, gpu: int, process: str) -> StageConfig:
         terminal=True,
     )
 
-
 def _ming_text_stages() -> list[StageConfig]:
     return [
         _preprocessing_stage(process="preprocessing"),
@@ -185,7 +171,6 @@ def _ming_text_stages() -> list[StageConfig]:
         _thinker_stage(gpu=0, speech_enabled=False, process="thinker"),
         _decode_stage(process="decode"),
     ]
-
 
 def _ming_speech_stages() -> list[StageConfig]:
     return [
@@ -197,7 +182,6 @@ def _ming_speech_stages() -> list[StageConfig]:
         _decode_stage(process="decode"),
         _talker_stage(gpu=1, process="talker"),
     ]
-
 
 def _ming_streaming_speech_stages() -> list[StageConfig]:
     return [
@@ -211,7 +195,6 @@ def _ming_streaming_speech_stages() -> list[StageConfig]:
         _talker_stream_stage(gpu=1, process="talker_stream"),
     ]
 
-
 class _MingOmniBasePipelineConfig(PipelineConfig):
     architecture: ClassVar[str] = "BailingMM2NativeForConditionalGeneration"
     architecture_aliases: ClassVar[tuple[str, ...]] = ("BailingMoeV2ForCausalLM",)
@@ -222,7 +205,6 @@ class _MingOmniBasePipelineConfig(PipelineConfig):
     @classmethod
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:
         return {"thinker": THINKER_STAGE}
-
 
 class MingOmniPipelineConfig(_MingOmniBasePipelineConfig):
     """6-stage text pipeline."""
@@ -239,7 +221,6 @@ class MingOmniPipelineConfig(_MingOmniBasePipelineConfig):
     def model_post_init(self, __context: Any = None) -> None:
         super().model_post_init(__context)
         _validate_ming_stage_tp_support(self.stages)
-
 
 class MingOmniSpeechPipelineConfig(_MingOmniBasePipelineConfig):
     """7-stage speech pipeline."""
@@ -280,7 +261,6 @@ class MingOmniSpeechPipelineConfig(_MingOmniBasePipelineConfig):
             f"thinker gpus={sorted(thinker_gpus)}, "
             f"collisions={sorted(collisions)}"
         )
-
 
 class MingOmniStreamingSpeechPipelineConfig(_MingOmniBasePipelineConfig):
     """8-stage streaming-TTS speech pipeline.
@@ -328,7 +308,6 @@ class MingOmniStreamingSpeechPipelineConfig(_MingOmniBasePipelineConfig):
             f"thinker gpus={sorted(thinker_gpus)}, "
             f"collisions={sorted(collisions)}"
         )
-
 
 EntryClass = MingOmniSpeechPipelineConfig
 
