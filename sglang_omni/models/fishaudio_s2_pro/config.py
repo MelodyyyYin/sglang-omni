@@ -9,7 +9,6 @@ from sglang_omni.config import PipelineConfig, StageConfig
 
 _PKG = "sglang_omni.models.fishaudio_s2_pro"
 
-
 class S2ProPipelineConfig(PipelineConfig):
     """3-stage TTS pipeline: preprocessing → tts_engine → vocoder."""
 
@@ -52,6 +51,5 @@ class S2ProPipelineConfig(PipelineConfig):
 
     def supports_uploaded_voice_references(self) -> bool:
         return True
-
 
 EntryClass = S2ProPipelineConfig

@@ -9,7 +9,6 @@ from sglang_omni.config import PipelineConfig, StageConfig
 
 _PKG = "sglang_omni.models.higgs_tts"
 
-
 class HiggsTtsPipelineConfig(PipelineConfig):
     """4-stage TTS pipeline: preprocessing → audio_encoder → tts_engine → vocoder.
 
@@ -72,6 +71,5 @@ class HiggsTtsPipelineConfig(PipelineConfig):
 
     def supports_uploaded_voice_references(self) -> bool:
         return True
-
 
 EntryClass = HiggsTtsPipelineConfig

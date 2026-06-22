@@ -49,8 +49,6 @@ from sglang_omni.models.higgs_tts.vocoder_scheduler import (
     HiggsStreamingVocoderScheduler,
 )
 
-# _REF_PATH_HASH_MEMO is the shared memo object, re-exported so tests can
-# reset it; the underscored alias keeps this module's historical API.
 from sglang_omni.preprocessing.cache_key import _REF_PATH_HASH_MEMO  # noqa: F401
 from sglang_omni.preprocessing.cache_key import hash_bytes, hash_media_item
 from sglang_omni.preprocessing.cache_key import (
@@ -78,15 +76,11 @@ from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleSched
 
 logger = logging.getLogger(__name__)
 
-
-# Codec runs at 75 Hz; chunked prefill of the multi-codebook prompt is unsafe
-# (sampler state machine has no rollback) so reject inputs past chunked_prefill_size.
 _MAX_REF_AUDIO_SEC = 100
 _REF_CODE_CACHE_MAX_ITEMS = 256
 _REF_CODE_CACHE_MAX_BYTES = 256 * 1024 * 1024
 _REF_WAVEFORM_CACHE_MAX_ITEMS = 256
 _REF_WAVEFORM_CACHE_MAX_BYTES = 512 * 1024 * 1024
-
 
 def _reference_audio_cache_key(reference_audio: Any) -> str | None:
     """Safe source key for preprocessing waveform-cache lookup."""
@@ -108,7 +102,6 @@ def _reference_audio_cache_key(reference_audio: Any) -> str | None:
     raw = base64.b64decode(encoded) if isinstance(encoded, str) else bytes(encoded)
     return hash_media_item(raw)
 
-
 def _reference_code_cache_key_from_waveform(
     waveform: torch.Tensor, sample_rate: int
 ) -> str:
@@ -120,7 +113,6 @@ def _reference_code_cache_key_from_waveform(
     wav = waveform.detach().cpu().contiguous().float()
     meta = f"sr:{int(sample_rate)}|shape:{tuple(wav.shape)}"
     return f"waveform:{meta}:{hash_bytes(wav.numpy().tobytes())}"
-
 
 def _uploaded_voice_cache_key(
     reference_audio: Any,
@@ -140,7 +132,6 @@ def _uploaded_voice_cache_key(
         artifact_kind=artifact_kind,
     )
 
-
 def _state_uploaded_voice_cache_key(
     state: HiggsTtsState,
     *,
@@ -154,7 +145,6 @@ def _state_uploaded_voice_cache_key(
         voice_version=int(state.uploaded_voice_created_at),
         artifact_kind=artifact_kind,
     )
-
 
 def create_preprocessing_executor(
     model_path: str,
@@ -176,7 +166,6 @@ def create_preprocessing_executor(
     raw = Tokenizer.from_file(os.path.join(checkpoint_dir, "tokenizer.json"))
     tokenizer = PreTrainedTokenizerFast(tokenizer_object=raw)
     adapter = HiggsTokenizerAdapter(tokenizer)
-    # Runs on a ThreadedSimpleScheduler pool for preprocessing;
     reference_waveform_cache = StageOutputCache(
         max_size=_REF_WAVEFORM_CACHE_MAX_ITEMS,
         max_bytes=_REF_WAVEFORM_CACHE_MAX_BYTES,
@@ -312,7 +301,6 @@ def create_preprocessing_executor(
 
     return ThreadedSimpleScheduler(_preprocess, max_concurrency=max_concurrency)
 
-
 def create_audio_encoder_executor(
     model_path: str,
     *,
@@ -338,8 +326,6 @@ def create_audio_encoder_executor(
     codec.encode_reference(
         torch.zeros(codec.SAMPLE_RATE), sample_rate=codec.SAMPLE_RATE
     )
-    # Single-threaded SimpleScheduler stage, so no lock needed. Cache a CPU
-    # tensor (not list[list[int]]) so StageOutputCache can byte-bound it.
     reference_code_cache = StageOutputCache(
         max_size=_REF_CODE_CACHE_MAX_ITEMS,
         max_bytes=_REF_CODE_CACHE_MAX_BYTES,
@@ -394,7 +380,6 @@ def create_audio_encoder_executor(
 
     return SimpleScheduler(_encode)
 
-
 def create_sglang_tts_engine_executor(
     model_path: str,
     *,
@@ -418,9 +403,6 @@ def create_sglang_tts_engine_executor(
         "max_running_requests": max_running_requests,
         "chunked_prefill_size": 8192,
         "dtype": "bfloat16",
-        # Radix cache is namespaced per ref-audio via Req.extra_key (set in
-        # build_sglang_higgs_request); shared -100 placeholder prefixes from
-        # different ref audios can't cross-contaminate the KV tree.
     }
     if server_args_overrides:
         overrides.update(server_args_overrides)
@@ -481,7 +463,6 @@ def create_sglang_tts_engine_executor(
     model_runner.set_stream_outbox(scheduler.outbox)
     return scheduler
 
-
 def create_vocoder_executor(
     model_path: str,
     *,
@@ -510,7 +491,6 @@ def create_vocoder_executor(
         stream_overlap_tokens=stream_overlap_tokens,
         stream_holdback_tokens=stream_holdback_tokens,
     )
-
 
 __all__ = [
     "create_audio_encoder_executor",
