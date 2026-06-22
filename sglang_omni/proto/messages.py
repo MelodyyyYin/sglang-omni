@@ -27,20 +27,17 @@ class DataReadyMessage:
     error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        # Handle different metadata types
         if isinstance(self.shm_metadata, dict):
-            # Simple dict (current NixlRelay format)
+            # note (Yue Yin): simple dict — current NixlRelay format; tag so from_dict can round-trip
             metadata_dict = self.shm_metadata.copy()
-            metadata_dict["_type"] = "dict"  # Mark as simple dict
+            metadata_dict["_type"] = "dict"
         elif hasattr(self.shm_metadata, "to_dict"):
-            # SHMMetadata
             metadata_dict = self.shm_metadata.to_dict()
         elif hasattr(self.shm_metadata, "model_dump"):
-            # RdmaMetadata (Pydantic BaseModel)
+            # note (Yue Yin): RdmaMetadata is a Pydantic BaseModel; tag type for from_dict dispatch
             metadata_dict = self.shm_metadata.model_dump()
-            metadata_dict["_type"] = "RdmaMetadata"  # Mark as RdmaMetadata
+            metadata_dict["_type"] = "RdmaMetadata"
         else:
-            # Fallback: try to convert to dict
             metadata_dict = (
                 dict(self.shm_metadata)
                 if hasattr(self.shm_metadata, "__dict__")
@@ -66,15 +63,13 @@ class DataReadyMessage:
     def from_dict(cls, d: dict[str, Any]) -> "DataReadyMessage":
         metadata_dict = d["shm_metadata"]
 
-        # Determine metadata type based on _type field first
         metadata_type = metadata_dict.get("_type", "")
 
         if metadata_type == "dict" or "transfer_info" in metadata_dict:
-            # Simple dict format (current NixlRelay design)
-            # Remove _type marker if present
+            # note (Yue Yin): simple dict format — current NixlRelay design
             metadata = {k: v for k, v in metadata_dict.items() if k != "_type"}
         elif metadata_type == "RdmaMetadata":
-            # Try to import RdmaMetadata if available
+            # note (Yue Yin): conditional import — RdmaMetadata may not be installed; fall back to dict
             try:
                 from sglang_omni.relay.operations.nixl import RdmaMetadata
 
@@ -85,19 +80,16 @@ class DataReadyMessage:
                 }
                 metadata = RdmaMetadata(**clean_dict)
             except (ImportError, Exception):
-                # Fallback to dict if RdmaMetadata not available
                 metadata = {k: v for k, v in metadata_dict.items() if k != "_type"}
         elif metadata_type == "SHMMetadata" or "shm_segments" in metadata_dict:
-            # Try to import SHMMetadata if available
             try:
                 from sglang_omni.relay.nixl import SHMMetadata
 
                 metadata = SHMMetadata.from_dict(metadata_dict)
             except (ImportError, Exception):
-                # Fallback to dict if SHMMetadata not available
                 metadata = {k: v for k, v in metadata_dict.items() if k != "_type"}
         elif "descriptors" in metadata_dict:
-            # Has descriptors but no _type - try RdmaMetadata first, fallback to dict
+            # note (Yue Yin): no _type tag but has descriptors — infer RdmaMetadata, fall back to dict
             try:
                 from sglang_omni.relay.operations.nixl import RdmaMetadata
 
@@ -108,10 +100,9 @@ class DataReadyMessage:
                 }
                 metadata = RdmaMetadata(**clean_dict)
             except (ImportError, Exception):
-                # Fallback to dict
                 metadata = {k: v for k, v in metadata_dict.items() if k != "_type"}
         else:
-            # Default: use as dict (for current NixlRelay)
+            # note (Yue Yin): default: plain dict (current NixlRelay design)
             metadata = {k: v for k, v in metadata_dict.items() if k != "_type"}
 
         return cls(

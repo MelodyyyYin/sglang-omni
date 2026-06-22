@@ -42,7 +42,6 @@ class StageLaunchConfig:
     paths resolved by the child via :func:`import_string`.
     """
 
-    # Identity
     stage_name: str
     role: Literal["single", "leader", "follower"] = "single"
     tp_rank: int = 0
@@ -50,45 +49,36 @@ class StageLaunchConfig:
     gpu_id: int | None = None
     nccl_port: int | None = None
 
-    # Factory
     factory: str = ""
     factory_args: dict[str, Any] = field(default_factory=dict)
     env_defaults: dict[str, str] = field(default_factory=dict)
 
-    # Routing: static next stage(s)
     next_stages: str | list[str] | None = None
     route_fn: str | None = None
     is_terminal: bool = False
 
-    # Fan-in
     wait_for: list[str] | None = None
     wait_for_fn: str | None = None
     merge_fn: str | None = None
     project_payload: dict[str, str] = field(default_factory=dict)
 
-    # Relay
     relay_config: dict[str, Any] = field(default_factory=dict)
 
-    # Endpoints
     recv_endpoint: str = ""
     coordinator_endpoint: str = ""
     abort_endpoint: str = ""
     stage_endpoints: dict[str, str] = field(default_factory=dict)
 
-    # Stream wiring
     stream_targets: list[str] = field(default_factory=list)
     stream_done_to_fn: str | None = None
     same_gpu_targets: set[str] = field(default_factory=set)
     is_stream_receiver: bool = False
     can_accept_stream_before_payload: bool = False
 
-    # Same-process full payload wiring
     same_process_targets: set[str] = field(default_factory=set)
 
-    # Fusion name map
     name_map: dict[str, str] = field(default_factory=dict)
 
-    # TP internal control (leader -> followers)
     follower_work_queues: list[Any] = field(default_factory=list)
     follower_abort_queues: list[Any] = field(default_factory=list)
     follower_admin_result_queues: list[Any] = field(default_factory=list)
@@ -446,7 +436,6 @@ def _construct_stage(
         torch.cuda.set_device(int(gpu_id))
         log.info("Set current CUDA device to %s for stage %s", gpu_id, spec.stage_name)
 
-    # --- Build scheduler via factory ---
     log.info(
         "Building scheduler for %s (tp_rank=%d/%d) ...",
         spec.stage_name,
@@ -510,7 +499,6 @@ def _construct_stage(
             )
         return mapped_targets[0] if isinstance(targets, str) else mapped_targets
 
-    # --- Build routing ---
     if spec.is_terminal:
         get_next = lambda request_id, output: None
     elif spec.route_fn:
@@ -550,7 +538,6 @@ def _construct_stage(
     else:
         get_stream_done_targets = None
 
-    # --- Build input handler ---
     if spec.wait_for and spec.merge_fn:
         merge_fn = import_string(spec.merge_fn)
         sources = {spec.name_map.get(n, n) for n in spec.wait_for}
@@ -599,7 +586,6 @@ def _construct_stage(
             follower_admin_result_queues=spec.follower_admin_result_queues,
         )
 
-    # --- Construct Stage ---
     stage = Stage(
         name=spec.stage_name,
         role=spec.role,
