@@ -50,10 +50,12 @@ _MOSS_TTS_LOCAL_INSTALL_HINT = (
     "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2."
 )
 
+
 @dataclass(frozen=True)
 class _ArMemoryBudget:
     effective_total_gpu_memory_fraction: float | None
     applied_codec_mem_reserve: float
+
 
 def _apply_colocated_ar_memory_budget(
     overrides: dict[str, Any],
@@ -108,6 +110,7 @@ def _apply_colocated_ar_memory_budget(
         applied_codec_mem_reserve=applied_codec_mem_reserve,
     )
 
+
 def _normalize_processor_config(processor: Any) -> None:
     model_config = getattr(processor, "model_config", None)
     if model_config is None:
@@ -116,6 +119,7 @@ def _normalize_processor_config(processor: Any) -> None:
     for attr, default in moss_tts_local_special_token_defaults(audio_vocab_size):
         if getattr(model_config, attr, None) is None:
             setattr(model_config, attr, default)
+
 
 def _resolve_codec_device(device: str | None, gpu_id: int | None) -> str:
     """Pick the codec GPU for the preprocessing/vocoder stages.
@@ -131,6 +135,7 @@ def _resolve_codec_device(device: str | None, gpu_id: int | None) -> str:
     if gpu_id is not None:
         return f"cuda:{int(gpu_id)}"
     return "cuda:0"
+
 
 def _load_moss_tts_local_processor(model_path: str, *, device: str) -> Any:
     checkpoint_dir = _resolve_checkpoint(model_path)
@@ -155,6 +160,7 @@ def _load_moss_tts_local_processor(model_path: str, *, device: str) -> Any:
         if hasattr(audio_tokenizer, "to"):
             audio_tokenizer.to(device)
     return processor
+
 
 class _BatchedReferenceEncoder:
     """Coalesces concurrent reference-audio encodes into batched codec calls.
@@ -253,6 +259,7 @@ class _BatchedReferenceEncoder:
                     )
                 else:
                     future.set_result(outcome)
+
 
 class CachedReferenceEncoder:
     """Content-addressed LRU cache + single-flight dedup in front of _BatchedReferenceEncoder.
@@ -434,6 +441,7 @@ class CachedReferenceEncoder:
                 "bytes": self._cache.current_bytes,
             }
 
+
 def create_preprocessing_executor(
     model_path: str,
     *,
@@ -476,6 +484,7 @@ def create_preprocessing_executor(
         abort_callback=cleanup_prepared_moss_tts_local_request,
         max_concurrency=max_concurrency,
     )
+
 
 def create_sglang_tts_engine_executor(
     model_path: str,
@@ -625,8 +634,10 @@ def create_sglang_tts_engine_executor(
     model_runner.set_stream_outbox(scheduler.outbox)
     return scheduler
 
+
 def create_tts_engine_executor(*args, **kwargs) -> Any:
     return create_sglang_tts_engine_executor(*args, **kwargs)
+
 
 def create_vocoder_executor(
     model_path: str,

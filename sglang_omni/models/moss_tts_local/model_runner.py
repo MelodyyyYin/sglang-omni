@@ -14,6 +14,7 @@ from sglang_omni.models.moss_tts_local.state_pool import MossTTSLocalDecodeJourn
 from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.types import RequestOutput
 
+
 class MossTTSLocalModelRunner(ModelRunner):
     """Drives the per-frame local-transformer decode and feedback embeddings.
 

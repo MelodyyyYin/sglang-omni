@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 _SOURCE_HINT = "MOSS-TTS Local"
 
+
 def _resolve_sample_rate(processor: Any) -> int:
     return int(
         getattr(getattr(processor, "model_config", None), "sampling_rate", 0)
@@ -41,6 +42,7 @@ def _resolve_sample_rate(processor: Any) -> int:
         )
         or 48000
     )
+
 
 def _build_usage(state: MossTTSLocalState) -> dict[str, Any] | None:
     if not (state.prompt_tokens or state.completion_tokens or state.engine_time_s):
@@ -53,6 +55,7 @@ def _build_usage(state: MossTTSLocalState) -> dict[str, Any] | None:
     if state.engine_time_s:
         usage["engine_time_s"] = round(float(state.engine_time_s), 6)
     return usage
+
 
 class _CodecStreamSession:
     """Persistent batched ``codec.streaming()`` session with slot bookkeeping (stream slots held by live requests; offline slots for non-streaming decodes). Scheduler-loop-thread only."""
@@ -265,6 +268,7 @@ class _CodecStreamSession:
                 wavs.append(torch.cat(item_chunks, dim=-1))
         return wavs
 
+
 @dataclass
 class _LocalStreamState:
     slot: int | None = None
@@ -273,6 +277,7 @@ class _LocalStreamState:
     initial_chunk_frames: int = 0
     threshold: int = 0
     emitted_any: bool = False
+
 
 class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
     """Decode MOSS-TTS Local codec rows incrementally on the v2 codec."""
@@ -777,5 +782,6 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
 
     def _vocode(self, payload: StagePayload) -> StagePayload:
         return self._vocode_batch([payload])[0]
+
 
 __all__ = ["MossTTSLocalStreamingVocoderScheduler"]

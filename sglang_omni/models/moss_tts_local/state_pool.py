@@ -20,6 +20,7 @@ from typing import Any
 
 import torch
 
+
 class MossTTSLocalDecodeStatePool:
     """Row-indexed pool of next-step-critical decode state.
 
@@ -281,6 +282,7 @@ class MossTTSLocalDecodeStatePool:
             pool_rows,
             has_audio_repetition_penalty,
         )
+
 
 class MossTTSLocalDecodeJournal:
     """Step-private record carrying the frame this step produced to collection.
