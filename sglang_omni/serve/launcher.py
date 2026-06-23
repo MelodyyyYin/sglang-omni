@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Launch an OpenAI-compatible server from a PipelineConfig (programmatically via ``launch_server`` or via the ``sglang-omni-server`` CLI)."""
+"""Launch an OpenAI-compatible server from a PipelineConfig (programmatically via launch_server or via the sglang-omni-server CLI)."""
 
 from __future__ import annotations
 

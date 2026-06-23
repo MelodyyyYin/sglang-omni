@@ -144,7 +144,7 @@ class Client:
         request_id: str,
         audio_format: str = "wav",
     ) -> AsyncIterator[CompletionStreamChunk]:
-        """Iterate ``generate()`` and yield high-level stream chunks with audio base64-encoded (callers never touch numpy/raw bytes)."""
+        """Iterate generate() and yield high-level stream chunks with audio base64-encoded (callers never touch numpy/raw bytes)."""
         async for chunk in self.generate(request, request_id=request_id):
             audio_b64: str | None = None
             if chunk.modality == "audio" and chunk.audio_data is not None:

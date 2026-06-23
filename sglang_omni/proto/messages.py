@@ -257,7 +257,7 @@ class ProfilerStartMessage:
 
 @dataclass
 class ProfilerStopMessage:
-    """Profiler stop. ``run_id=None`` is a wildcard (stop active session)."""
+    """Profiler stop. run_id=None is a wildcard (stop active session)."""
 
     run_id: str | None = None
 

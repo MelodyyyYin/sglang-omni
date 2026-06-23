@@ -73,7 +73,7 @@ class ModelRunner:
         self._async_query_miss: int = 0
 
     def _next_host_staging(self, device_staging: torch.Tensor) -> torch.Tensor:
-        """Return a pinned host staging buffer mirroring ``device_staging``'s shape, ping-ponging between two buffers so resolve(N) reads one while launch(N+1)'s async copy writes the other (unordered CPU-read vs GPU-write)."""
+        """Return a pinned host staging buffer mirroring device_staging's shape, ping-ponging between two buffers so resolve(N) reads one while launch(N+1)'s async copy writes the other (unordered CPU-read vs GPU-write)."""
         if not self._host_staging_buffers:
             self._host_staging_buffers = [
                 torch.empty(
@@ -114,7 +114,7 @@ class ModelRunner:
         )
 
     def execute_launch(self, scheduler_output: Any) -> "_PendingStep | None":
-        """Enqueue a decode step's forward + on-GPU sample, publish the resolve payload via ``post_decode_launch``, record a CUDA event, and return the caller-owned ``_PendingStep`` (decode-only, no GPU wait; None if no batch)."""
+        """Enqueue a decode step's forward + on-GPU sample, publish the resolve payload via post_decode_launch, record a CUDA event, and return the caller-owned _PendingStep (decode-only, no GPU wait; None if no batch)."""
         built = self._build_forward_batch(scheduler_output)
         if built is None:
             return None
@@ -148,7 +148,7 @@ class ModelRunner:
     def execute_resolve(
         self, pending: "_PendingStep | None"
     ) -> ModelRunnerOutput | None:
-        """Consume a launched decode step (wait on event, read ``launch_buf`` via ``post_decode_resolve``, finalize) and return its ``ModelRunnerOutput``, or None if ``pending`` is None."""
+        """Consume a launched decode step (wait on event, read launch_buf via post_decode_resolve, finalize) and return its ModelRunnerOutput, or None if pending is None."""
         if pending is None:
             return None
         if pending.event.query():
@@ -156,7 +156,7 @@ class ModelRunner:
         else:
             pending.event.synchronize()
             self._async_query_miss += 1
-        # Skip reqs finished/retracted in a prior step so _finalize neither re-emits nor re-frees their KV.
+        # note (Yue Yin): Skip reqs finished/retracted in a prior step so _finalize neither re-emits nor re-frees their KV.
         skip_rids = {
             req.request_id
             for req in pending.scheduler_output.requests
@@ -180,7 +180,7 @@ class ModelRunner:
         )
 
     def _build_forward_batch(self, scheduler_output: Any):
-        """Build the ForwardBatch + capture-hidden mode; returns ``(forward_batch, schedule_batch, model_worker_batch, is_prefill)`` or None when there is no batch."""
+        """Build the ForwardBatch + capture-hidden mode; returns (forward_batch, schedule_batch, model_worker_batch, is_prefill) or None when there is no batch."""
         from sglang.srt.model_executor.forward_batch_info import (
             CaptureHiddenMode,
             ForwardBatch,
@@ -224,7 +224,7 @@ class ModelRunner:
         *,
         is_lookahead: bool = False,
     ):
-        """Prepare hook → standard forward (if not custom) → sample-before-post block; returns ``batch_result``."""
+        """Prepare hook → standard forward (if not custom) → sample-before-post block; returns batch_result."""
         if is_prefill:
             self.before_prefill(forward_batch, schedule_batch, requests)
             batch_result = self.custom_prefill_forward(
@@ -261,19 +261,19 @@ class ModelRunner:
         return batch_result
 
     def finalize_skip_rids(self, scheduler_output) -> set[str]:
-        """Request ids whose ``generation_steps`` must NOT advance this step (default empty; e.g. non-final chunked-prefill rows whose spurious step would shift the final chunk's sampling position)."""
+        """Request ids whose generation_steps must NOT advance this step (default empty; e.g. non-final chunked-prefill rows whose spurious step would shift the final chunk's sampling position)."""
         return set()
 
     def on_generation_step_advanced(
         self, sched_req: Any, generation_steps: int
     ) -> None:
-        """Hook after ``generation_steps`` is committed on request data."""
+        """Hook after generation_steps is committed on request data."""
         return None
 
     def on_generation_steps_advanced(
         self, advanced_steps: list[tuple[Any, int]], forward_batch: Any
     ) -> None:
-        """Batch hook after ``generation_steps`` are committed on request data."""
+        """Batch hook after generation_steps are committed on request data."""
         del forward_batch
         for sched_req, generation_steps in advanced_steps:
             self.on_generation_step_advanced(sched_req, generation_steps)
@@ -288,7 +288,7 @@ class ModelRunner:
         set_output_ids: bool = True,
         skip_rids: set[str] | None = None,
     ) -> ModelRunnerOutput:
-        """Final sampling + output extraction + per-request bookkeeping (shared sync/async tail); ``set_output_ids`` publishes tokens onto ``schedule_batch.output_ids`` (sync only — the async resolve runs a step behind and must not re-stamp the live batch)."""
+        """Final sampling + output extraction + per-request bookkeeping (shared sync/async tail); set_output_ids publishes tokens onto schedule_batch.output_ids (sync only — the async resolve runs a step behind and must not re-stamp the live batch)."""
         if schedule_batch.is_prefill_only:
             if batch_result.next_token_ids is None:
                 batch_result.next_token_ids = torch.zeros(
@@ -386,7 +386,7 @@ class ModelRunner:
     def post_decode_launch(
         self, result: Any, forward_batch: Any, requests: list
     ) -> Any:
-        """Async-decode GPU half of ``post_decode``: run the collect, publish ``result.next_token_ids``, and return the resolve payload (``launch_buf``); default raises (a model must implement this with ``post_decode_resolve``)."""
+        """Async-decode GPU half of post_decode: run the collect, publish result.next_token_ids, and return the resolve payload (launch_buf); default raises (a model must implement this with post_decode_resolve)."""
         raise NotImplementedError(
             f"{type(self).__name__} does not support async decode: implement "
             "post_decode_launch / post_decode_resolve"
@@ -400,7 +400,7 @@ class ModelRunner:
         schedule_batch: Any,
         requests: list,
     ) -> None:
-        """Async-decode host half of ``post_decode``: read ``launch_buf`` and run the per-request collect loop, setting ``result.next_token_ids``; default raises (see ``post_decode_launch``)."""
+        """Async-decode host half of post_decode: read launch_buf and run the per-request collect loop, setting result.next_token_ids; default raises (see post_decode_launch)."""
         raise NotImplementedError(
             f"{type(self).__name__} does not support async decode: implement "
             "post_decode_launch / post_decode_resolve"
@@ -463,7 +463,7 @@ class ModelRunner:
         return next_token_ids
 
     def _install_sampling_seeds(self, forward_batch: Any, requests: list) -> None:
-        """Install per-row seeds onto ``sampling_info`` so SGLang routes to ``multinomial_with_seed``; unseeded rows in a mixed batch get a request-id-derived fallback seed to keep TP ranks in sync (no-op if no seed set or a subclass already installed its own)."""
+        """Install per-row seeds onto sampling_info so SGLang routes to multinomial_with_seed; unseeded rows in a mixed batch get a request-id-derived fallback seed to keep TP ranks in sync (no-op if no seed set or a subclass already installed its own)."""
         sampling_info = forward_batch.sampling_info
         if sampling_info.sampling_seed is not None:
             self._validate_seeded_sampling_supported(sampling_info)

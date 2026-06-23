@@ -54,13 +54,13 @@ class Stage:
     All stage compute is dispatched through the scheduler inbox/outbox
     contract, independent of scheduler implementation.
 
-    Note on ``role``: ``role="single"`` means this stage owns its own ZMQ
+    Note on role: role="single" means this stage owns its own ZMQ
     control plane and relay reader (i.e. it is NOT a TP follower). It does
     **not** imply this stage has its OS process to itself — since the
-    declarative topology PR, multiple ``role="single"`` stages can share
+    declarative topology PR, multiple role="single" stages can share
     one OS process (and one asyncio event loop). When they do, they share
-    a failure domain: see ``_run_process`` in ``stage_workers.py``.
-    ``role="leader"`` / ``role="follower"`` continue to denote TP rank 0
+    a failure domain: see _run_process in stage_workers.py.
+    role="leader" / role="follower" continue to denote TP rank 0
     vs rank > 0 within a multi-rank TP stage; TP stages must own their OS
     process exclusively.
     """
@@ -997,7 +997,7 @@ class Stage:
                 "projected local-object dispatch requires projectors to return "
                 f"StagePayload, got {type(projected_payload).__name__}"
             )
-        # Fan-out edge may use process-local dispatch only when projection gives the target its own mutable payload/data containers; tensor leaves inside may still be intentionally shared.
+        # note (Yue Yin): Fan-out edge may use process-local dispatch only when projection gives the target its own mutable payload/data containers; tensor leaves inside may still be intentionally shared.
         if projected_payload.data is original_payload.data:
             return False
         return not Stage._shares_mutable_container(
@@ -1187,8 +1187,8 @@ class Stage:
         if not self._is_terminal:
             raise RuntimeError(
                 f"Stage {self.name!r} emitted untargeted stream chunk but isn't "
-                "terminal. Set ``terminal=True``, or use ``target=...`` / "
-                "``stream_to=[...]``."
+                "terminal. Set terminal=True, or use target=... / "
+                "stream_to=[...]."
             )
         if not self._owns_external_io:
             return

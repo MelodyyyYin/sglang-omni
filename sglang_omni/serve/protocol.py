@@ -134,7 +134,7 @@ class ChatCompletionStreamResponse(BaseModel):
 
 
 class RolloutSamplingParams(BaseModel):
-    """Typed sampling params for ``POST /generate``."""
+    """Typed sampling params for POST /generate."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -151,14 +151,14 @@ class RolloutSamplingParams(BaseModel):
 
 
 class RolloutMessage(BaseModel):
-    """Chat message for ``POST /generate`` (role and content required)."""
+    """Chat message for POST /generate (role and content required)."""
 
     role: str = Field(min_length=1)
     content: str | list[Any]
 
 
 class RolloutGenerateRequest(BaseModel):
-    """Rollout request for ``POST /generate``; set exactly one of ``input_ids``, ``prompt``, ``messages``."""
+    """Rollout request for POST /generate; set exactly one of input_ids, prompt, messages."""
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -214,7 +214,7 @@ class GenerateMetaInfo(BaseModel):
 
 
 class GenerateResponse(BaseModel):
-    """Response body for ``POST /generate``."""
+    """Response body for POST /generate."""
 
     text: str = ""
     audio: GenerateAudio | None = None

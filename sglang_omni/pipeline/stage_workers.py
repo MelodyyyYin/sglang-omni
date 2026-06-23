@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 class StageLaunchConfig:
     """Resolved launch metadata for one logical stage instance.
 
-    ``StageWorkerProcessSpec`` is the OS-process payload. A worker process may
+    StageWorkerProcessSpec is the OS-process payload. A worker process may
     carry multiple launch configs for colocated non-TP stages, while TP ranks
     each get their own launch config and process.
 
@@ -111,7 +111,7 @@ class StageWorkerProcessSpec:
 def _get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
     """Return the spawn-time env overrides for *spec*.
 
-    Hard invariant: a TP stage (``tp_size > 1``) must own its OS process
+    Hard invariant: a TP stage (tp_size > 1) must own its OS process
     exclusively. Its CUDA env remap and NCCL settings depend on being the sole
     tenant, so mixing a TP stage with any other stage in the same process group
     is a placement bug.
@@ -377,15 +377,15 @@ def _run_process(
     """Construct and drive all stages owned by one OS process.
 
     Multi-stage semantics (since the topology PR):
-    - All stages in ``spec.stage_specs`` share this OS process and one asyncio
-      event loop. ``asyncio.gather`` runs them concurrently; **if any stage
-      raises, the whole process exits** and ``MultiProcessPipelineRunner``'s
-      ``_monitor_children`` will fail-all in-flight requests on the
+    - All stages in spec.stage_specs share this OS process and one asyncio
+      event loop. asyncio.gather runs them concurrently; **if any stage
+      raises, the whole process exits** and MultiProcessPipelineRunner's
+      _monitor_children will fail-all in-flight requests on the
       coordinator. There is no per-stage failure isolation inside one process
       group.
     - Scheduler construction is serialized by :func:`gpu_startup_lock` per GPU
       inside :func:`_construct_scheduler` — so when N stages on the same GPU
-      live in this process, cold-start time degrades from ``max`` to ``sum``
+      live in this process, cold-start time degrades from max to sum
       across them.
     """
     local_dispatcher = LocalStageDispatcher()

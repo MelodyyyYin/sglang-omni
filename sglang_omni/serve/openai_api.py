@@ -1455,7 +1455,7 @@ def _register_transcriptions(app: FastAPI) -> None:
         default_model: str = app.state.model_name
         request_id = f"transcription-{uuid.uuid4()}"
 
-        # TODO(Ratish): add the same pre-parser body limit used by voice uploads
+        # note (Yue Yin): TODO(Ratish): add the same pre-parser body limit used by voice uploads
         # once transcription upload limits are defined.
         audio_bytes = await file.read()
         if not audio_bytes:

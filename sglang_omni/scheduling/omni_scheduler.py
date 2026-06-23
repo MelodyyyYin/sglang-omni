@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""OmniScheduler — stage-facing AR scheduler using composition: SGLang scheduling methods are called unbound on the upstream ``Scheduler`` class (resolved via ``__getattr__``), giving the full MRO without inheritance."""
+"""OmniScheduler — stage-facing AR scheduler using composition: SGLang scheduling methods are called unbound on the upstream Scheduler class (resolved via __getattr__), giving the full MRO without inheritance."""
 
 from __future__ import annotations
 
@@ -68,7 +68,7 @@ class _NoOpGrammarManager:
 
 
 class OmniScheduler:
-    """Stage-facing scheduler for AR stages (public: inbox/outbox/start/stop/abort); SGLang methods are looked up on the upstream class via ``__getattr__``, while methods defined here take precedence."""
+    """Stage-facing scheduler for AR stages (public: inbox/outbox/start/stop/abort); SGLang methods are looked up on the upstream class via __getattr__, while methods defined here take precedence."""
 
     def __init__(
         self,
@@ -117,7 +117,7 @@ class OmniScheduler:
         self.moe_ep_size = 1
         self.page_size = server_args.page_size
         self.enable_overlap = enable_overlap
-        # One-step-lookahead async decode; only safe for runners implementing post_decode_launch/resolve.
+        # note (Yue Yin): One-step-lookahead async decode; only safe for runners implementing post_decode_launch/resolve.
         self.enable_async_decode = enable_async_decode
         self.async_decode_min_batch_size = int(async_decode_min_batch_size)
         if model_runner is not None:
@@ -570,7 +570,7 @@ class OmniScheduler:
             return _FAILED_BATCH_RESULT
 
     def _run_batch(self, batch, pp_proxy_tensors=None):
-        """Run a batch through the model runner, bridging its ``ModelRunnerOutput`` to the ``GenerationBatchResult`` upstream ``process_batch_result`` expects."""
+        """Run a batch through the model runner, bridging its ModelRunnerOutput to the GenerationBatchResult upstream process_batch_result expects."""
         self._emit_prefill_start_for_batch(batch)
         if self._model_runner is not None:
             self.forward_ct = getattr(self, "forward_ct", 0) + 1
@@ -591,7 +591,7 @@ class OmniScheduler:
         return SchedulerOutput(requests=sched_reqs, batch_data=batch)
 
     def _emit_stream_output(self, sched_output, mr_output, skip_rids=()) -> None:
-        """Emit per-request stream chunks from a ModelRunnerOutput (shared sync/async-resolve); ``skip_rids`` suppresses emission for lookahead-overrun reqs whose extra chunk would corrupt the downstream vocoder's delayed-code stream."""
+        """Emit per-request stream chunks from a ModelRunnerOutput (shared sync/async-resolve); skip_rids suppresses emission for lookahead-overrun reqs whose extra chunk would corrupt the downstream vocoder's delayed-code stream."""
         if self._stream_output_builder is None:
             return
         for sched_req in sched_output.requests:
@@ -626,7 +626,7 @@ class OmniScheduler:
         )
 
     def _run_batch_launch(self, batch):
-        """Async: build SchedulerOutput and launch the decode step on the GPU without waiting; returns ``(sched_output, pending_step)`` held by the caller (launch-first keeps two steps in flight)."""
+        """Async: build SchedulerOutput and launch the decode step on the GPU without waiting; returns (sched_output, pending_step) held by the caller (launch-first keeps two steps in flight)."""
         self._emit_prefill_start_for_batch(batch)
         self.forward_ct = getattr(self, "forward_ct", 0) + 1
         sched_output = self._build_sched_output(batch)
@@ -634,7 +634,7 @@ class OmniScheduler:
         return sched_output, pending_step
 
     def _run_batch_resolve(self, batch, sched_output, pending_step, skip_rids=()):
-        """Async: resolve the given launched step, emit its stream chunks (except ``skip_rids``), and return its GenerationBatchResult with next_token_ids from the resolved step's own batch_result (not the already-consumed ``batch.output_ids``)."""
+        """Async: resolve the given launched step, emit its stream chunks (except skip_rids), and return its GenerationBatchResult with next_token_ids from the resolved step's own batch_result (not the already-consumed batch.output_ids)."""
         from sglang.srt.managers.scheduler import GenerationBatchResult
 
         mr_output = self._model_runner.execute_resolve(pending_step)
@@ -1336,13 +1336,13 @@ class OmniScheduler:
         return (not bool(is_extend())) if callable(is_extend) else False
 
     def _async_pending_batch(self):
-        """The in-flight (launched, not yet resolved) decode batch, or None (``getattr`` default keeps abort paths safe for schedulers built without ``__init__``)."""
+        """The in-flight (launched, not yet resolved) decode batch, or None (getattr default keeps abort paths safe for schedulers built without __init__)."""
         pending = getattr(self, "_async_pending", None)
         return pending[0] if pending is not None else None
 
     def _resolve_and_process(self, batch, sched_output, pending_step) -> None:
         """Resolve a launched step and feed it to process_batch_result after dropping reqs already finished in a *prior* step (lookahead overrun would re-free their KV); finished-state is snapshotted BEFORE the resolve so reqs finishing *during* this collect are kept."""
-        # A req retracted at step S is still in step S+1's lagged batch; drop it like a prior-step finish so its KV is not re-freed.
+        # note (Yue Yin): A req retracted at step S is still in step S+1's lagged batch; drop it like a prior-step finish so its KV is not re-freed.
         pre_finished = [
             r.finished() or bool(getattr(r, "is_retracted", False)) for r in batch.reqs
         ]
@@ -1426,7 +1426,7 @@ class OmniScheduler:
             else:
                 if self._async_pending is not None:
                     self._resolve_pending_async()
-                    # Stale-batch overrun: `batch` was built before this drain, which may finish/retract its reqs; drop them before run_batch to avoid a second forward/finalize (double-free of freed KV).
+                    # note (Yue Yin): Stale-batch overrun: `batch` was built before this drain, which may finish/retract its reqs; drop them before run_batch to avoid a second forward/finalize (double-free of freed KV).
                     batch = self._drop_stale_overrun(batch)
                     self.cur_batch = batch
                 if batch:
