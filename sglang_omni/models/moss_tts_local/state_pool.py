@@ -34,7 +34,7 @@ class MossTTSLocalDecodeStatePool:
         self.n_vq = int(n_vq or 12)
         self.audio_vocab_size = int(audio_vocab_size or 1024)
 
-        # Next-decode-step feedback embedding; bf16 matches the staging table so before_decode's gather is a plain copy (#736).
+        # note (Yue Yin): Next-decode-step feedback embedding; bf16 matches the staging table so before_decode's gather is a plain copy (#736).
         self.feedback_embeds = torch.zeros(
             self.num_rows,
             self.hidden_size,
@@ -80,11 +80,11 @@ class MossTTSLocalDecodeStatePool:
         self._rid_to_row: dict[str, int] = {}
         self._params_written_rids: set[str] = set()
         self._audio_repetition_penalty_rows: set[int] = set()
-        # Real rows 0..P-2 are assignable; the padding row stays out of the free list so it is never handed to a request.
+        # note (Yue Yin): Real rows 0..P-2 are assignable; the padding row stays out of the free list so it is never handed to a request.
         self._free_rows: list[int] = list(range(self.padding_row))
 
     def acquire_row(self, rid: str) -> int:
-        """Assign (or return the existing) row for ``rid``; idempotent by rid, raises ``RuntimeError`` when the pool is exhausted."""
+        """Assign (or return the existing) row for rid; idempotent by rid, raises RuntimeError when the pool is exhausted."""
         existing = self._rid_to_row.get(rid)
         if existing is not None:
             return existing
@@ -98,7 +98,7 @@ class MossTTSLocalDecodeStatePool:
         return row_idx
 
     def release_row(self, rid: str) -> None:
-        """Free ``rid``'s row and reset it. No-op if ``rid`` holds no row."""
+        """Free rid's row and reset it. No-op if rid holds no row."""
         row_idx = self._rid_to_row.pop(rid, None)
         if row_idx is None:
             return
@@ -107,7 +107,7 @@ class MossTTSLocalDecodeStatePool:
         self._free_rows.append(row_idx)
 
     def reset_row(self, row_idx: int) -> None:
-        """Zero every field of ``row_idx`` (clears stranded feedback/params)."""
+        """Zero every field of row_idx (clears stranded feedback/params)."""
         self.feedback_embeds[row_idx].zero_()
         self.text_temp[row_idx] = 0.0
         self.text_top_p[row_idx] = 0.0
@@ -123,7 +123,7 @@ class MossTTSLocalDecodeStatePool:
         self._audio_repetition_penalty_rows.discard(int(row_idx))
 
     def write_params(self, row_idx: int, data: Any) -> None:
-        """Write the seven request-static sampling fields into ``row_idx``."""
+        """Write the seven request-static sampling fields into row_idx."""
         self.text_temp[row_idx] = float(data.text_temperature)
         self.text_top_p[row_idx] = float(data.text_top_p)
         self.audio_temp[row_idx] = float(data.audio_temperature)
@@ -148,7 +148,7 @@ class MossTTSLocalDecodeStatePool:
             self._params_written_rids.add(rid)
 
     def invalidate_params(self, rid: str) -> None:
-        """Force params to be rewritten on the next ``ensure_params`` call."""
+        """Force params to be rewritten on the next ensure_params call."""
         self._params_written_rids.discard(rid)
 
     def commit_generation_step(self, rid: str, generation_steps: int) -> None:
@@ -175,7 +175,7 @@ class MossTTSLocalDecodeStatePool:
         self.sampling_steps[row_t] = torch.maximum(self.sampling_steps[row_t], steps)
 
     def reset_for_refill(self, rid: str, generation_steps: int = 0) -> bool:
-        """Invalidate params and zero ``rid``'s row for a retraction re-prefill; ``False`` (no-op) when ``rid`` holds no row."""
+        """Invalidate params and zero rid's row for a retraction re-prefill; False (no-op) when rid holds no row."""
         row_idx = self.row_for(rid)
         if row_idx is None:
             return False
@@ -214,7 +214,7 @@ class MossTTSLocalDecodeStatePool:
         )
 
     def rebuild_audio_history(self, rid: str, output_rows: list[torch.Tensor]) -> bool:
-        """Rebuild ``rid``'s pool-resident history after retraction re-prefill."""
+        """Rebuild rid's pool-resident history after retraction re-prefill."""
         row_idx = self.row_for(rid)
         if row_idx is None:
             return False
@@ -232,7 +232,7 @@ class MossTTSLocalDecodeStatePool:
         return True
 
     def row_for(self, rid: str) -> int | None:
-        """Return ``rid``'s row, or ``None`` if it holds no row."""
+        """Return rid's row, or None if it holds no row."""
         return self._rid_to_row.get(rid)
 
     def prepare_active_rows(

@@ -53,7 +53,7 @@ def _build_usage(state: MossTTSLocalState) -> dict[str, Any] | None:
 
 
 class _CodecStreamSession:
-    """Persistent batched ``codec.streaming()`` session with slot bookkeeping (stream slots held by live requests; offline slots for non-streaming decodes). Scheduler-loop-thread only."""
+    """Persistent batched codec.streaming() session with slot bookkeeping (stream slots held by live requests; offline slots for non-streaming decodes). Scheduler-loop-thread only."""
 
     def __init__(
         self, codec: Any, *, stream_slots: int, offline_slots: int, n_vq: int
@@ -71,7 +71,7 @@ class _CodecStreamSession:
         self._cg_graph_t: Counter = Counter()
         self._cg_eager_t: Counter = Counter()
         self._cg_total_steps = 0
-        # Retain the streaming ExitStack so per-slot causal state lives across steps (closed in close()); the in-place cache patch keeps graph replay bit-identical to this stateful decode.
+        # note (Yue Yin): Retain the streaming ExitStack so per-slot causal state lives across steps (closed in close()); the in-place cache patch keeps graph replay bit-identical to this stateful decode.
         self._exit_stack = contextlib.ExitStack()
         with torch.no_grad():
             self._exit_stack.enter_context(codec.streaming(self._batch_size))
@@ -79,7 +79,7 @@ class _CodecStreamSession:
     def warmup_cuda_graph(
         self, frames: list[int], *, min_free_gb: float = 3.0
     ) -> list[int]:
-        """Capture per-T graphs then reset all slots, returning the captured T list; attempted at most once per session, never during ``step``."""
+        """Capture per-T graphs then reset all slots, returning the captured T list; attempted at most once per session, never during step."""
         self.warmup_attempted = True
         if self._closed:
             return []
@@ -88,7 +88,7 @@ class _CodecStreamSession:
             patch_codec_attention_cache_for_cuda_graph,
         )
 
-        # Patch the codec attention cache to an in-place write so the graph can capture it (bit-identical to eager).
+        # note (Yue Yin): Patch the codec attention cache to an in-place write so the graph can capture it (bit-identical to eager).
         patch_codec_attention_cache_for_cuda_graph(self._codec)
         if self._cg_runner is None:
             self._cg_runner = MossVocoderCudaGraphRunner(
@@ -165,7 +165,7 @@ class _CodecStreamSession:
             self._codec.apply(_reset)
 
     def step(self, slot_codes: dict[int, torch.Tensor]) -> dict[int, torch.Tensor]:
-        """Advance participating slots by one uniform-length step. ``slot_codes`` maps slot -> ``[n_vq, T]`` (same T); returns slot -> ``[channels, samples]`` float32 CPU audio."""
+        """Advance participating slots by one uniform-length step. slot_codes maps slot -> [n_vq, T] (same T); returns slot -> [channels, samples] float32 CPU audio."""
         if not slot_codes:
             return {}
         step_lengths = {int(codes.shape[1]) for codes in slot_codes.values()}
@@ -203,7 +203,7 @@ class _CodecStreamSession:
                     self._codec._set_streaming_exec_mask(exec_mask)
                     result = self._codec._decode_frame(codes_step, codes_lengths)
                     audio, audio_lengths = result.audio, result.audio_lengths
-            # One batched D2H per step; a graph replay error can surface async HERE (not in decode_step), so materialization stays inside the replay guard.
+            # note (Yue Yin): One batched D2H per step; a graph replay error can surface async HERE (not in decode_step), so materialization stays inside the replay guard.
             audio_cpu = audio[slots].detach().to("cpu", torch.float32)
             lengths_cpu = audio_lengths[slots].detach().to("cpu")
         except Exception:
@@ -231,7 +231,7 @@ class _CodecStreamSession:
     def decode_offline(
         self, codes_list: list[torch.Tensor], *, max_step_frames: int
     ) -> list[torch.Tensor]:
-        """Decode complete utterances ``[n_vq, T]`` via the offline lane, replaying the codec's chunked ``batch_decode`` so output matches ``processor.decode_audio_codes``."""
+        """Decode complete utterances [n_vq, T] via the offline lane, replaying the codec's chunked batch_decode so output matches processor.decode_audio_codes."""
         wavs: list[torch.Tensor] = []
         for wave_start in range(0, len(codes_list), self._offline_slots):
             wave = codes_list[wave_start : wave_start + self._offline_slots]
@@ -489,7 +489,7 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
             self._session = None
 
     def _cuda_graph_capture_frames(self) -> list[int]:
-        """Step lengths T to capture (config ``cuda_graph_frames`` overrides); uncaptured T fall back to eager."""
+        """Step lengths T to capture (config cuda_graph_frames overrides); uncaptured T fall back to eager."""
         if self._cuda_graph_frames:
             return sorted(set(self._cuda_graph_frames))
         join_floor = max(
@@ -735,11 +735,11 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
         return payload
 
     def _decode_codes_rows(self, codes_list: list[torch.Tensor]) -> list[torch.Tensor]:
-        """Decode ``[T, >=n_vq]`` row tensors to fp32 CPU waveforms."""
+        """Decode [T, >=n_vq] row tensors to fp32 CPU waveforms."""
         with self._state_lock:
             self._close_idle_startup_session_locked()
         if self._session is None:
-            # Processor path opens its own streaming context; illegal once a session is live.
+            # note (Yue Yin): Processor path opens its own streaming context; illegal once a session is live.
             return [
                 torch.as_tensor(wav).detach().to("cpu")
                 for wav in self._processor.decode_audio_codes(codes_list)
@@ -747,7 +747,7 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
         channels_first = [
             codes[:, : self._n_vq].transpose(0, 1).contiguous() for codes in codes_list
         ]
-        # abort() resets slots under _state_lock from other threads; serialize every session access on the same lock.
+        # note (Yue Yin): abort() resets slots under _state_lock from other threads; serialize every session access on the same lock.
         with self._state_lock:
             wavs = self._session.decode_offline(
                 channels_first, max_step_frames=self._max_step_frames

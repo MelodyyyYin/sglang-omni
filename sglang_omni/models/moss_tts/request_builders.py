@@ -34,7 +34,7 @@ def _new_moss_tts_sampling_seed() -> int:
 
 
 def derive_moss_tts_sampling_seed(public_seed: int) -> int:
-    """Derive a stable per-request sampling seed from a public ``seed``."""
+    """Derive a stable per-request sampling seed from a public seed."""
     return derive_sampling_seed("moss-tts", int(public_seed))
 
 
@@ -108,7 +108,7 @@ class MossTTSPreprocessingContext:
 _PREPROCESSING_CONTEXT: MossTTSPreprocessingContext | None = None
 _PREPARED_REQUESTS: dict[str, MossTTSPreparedRequest] = {}
 _INFLIGHT_REQUESTS: set[str] = set()
-# Abort arrived mid-preprocess: compute drops the pending insert, never leaking it into _PREPARED_REQUESTS.
+# note (Yue Yin): Abort arrived mid-preprocess: compute drops the pending insert, never leaking it into _PREPARED_REQUESTS.
 _ABORTED_REQUESTS: set[str] = set()
 _PREPARED_REQUESTS_LOCK = threading.Lock()
 
@@ -204,7 +204,7 @@ def _resolve_token_count(
     params: dict[str, Any],
     tts_params: dict[str, Any],
 ) -> tuple[str, int | None]:
-    """Resolve the duration token count and return ``(clean_text, count)``."""
+    """Resolve the duration token count and return (clean_text, count)."""
     for source in (tts_params, params):
         for key in ("token_count", "duration_tokens", "tokens"):
             if source.get(key) is not None:

@@ -78,7 +78,7 @@ class MossTTSLocalModelRunner(ModelRunner):
         self._collect_frame(result, forward_batch, schedule_batch, requests)
 
     def lookahead_eligible(self, batch: Any) -> bool:
-        """Route to sync when the batch cannot take the graphed frame-decode path (``audio_repetition_penalty != 1`` or ``bs > frame_graph_max_bs``)."""
+        """Route to sync when the batch cannot take the graphed frame-decode path (audio_repetition_penalty != 1 or bs > frame_graph_max_bs)."""
         try:
             reqs = batch.reqs
         except AttributeError:
@@ -121,10 +121,10 @@ class MossTTSLocalModelRunner(ModelRunner):
             prefix_len = len(req.prefix_indices)
             pool = self.model._state_pool
             if data.output_rows:
-                # Retraction re-prefill spans already-generated frames living in output_rows, not prompt_rows; the resumed prefill resamples the next frame, superseding any feedback embedding stranded by the retraction.
+                # note (Yue Yin): Retraction re-prefill spans already-generated frames living in output_rows, not prompt_rows; the resumed prefill resamples the next frame, superseding any feedback embedding stranded by the retraction.
                 generated = torch.stack(data.output_rows, dim=0)
                 rows = torch.cat([rows.to(generated.device), generated], dim=0)
-            # Realign the launch-side counter and clear any stranded pool row on every retraction re-prefill (incl. one retracted before emitting a frame); both are no-ops for a fresh prefill.
+            # note (Yue Yin): Realign the launch-side counter and clear any stranded pool row on every retraction re-prefill (incl. one retracted before emitting a frame); both are no-ops for a fresh prefill.
             generation_steps = int(data.generation_steps)
             data.sampling_steps = generation_steps
             pool.reset_for_refill(sched_req.request_id, generation_steps)
@@ -204,7 +204,7 @@ class MossTTSLocalModelRunner(ModelRunner):
         schedule_batch.output_ids = next_token_ids
 
     def _run_frame_decode(self, result: Any, forward_batch: Any, requests: list):
-        """GPU half shared by sync ``_collect_frame`` and async ``post_decode_launch``; returns ``(rows, end_id)`` and does NOT publish ``next_token_ids`` (the caller does)."""
+        """GPU half shared by sync _collect_frame and async post_decode_launch; returns (rows, end_id) and does NOT publish next_token_ids (the caller does)."""
         try:
             hidden_states = result.logits_output.hidden_states
         except AttributeError as exc:
@@ -256,7 +256,7 @@ class MossTTSLocalModelRunner(ModelRunner):
         audio_top_p = params["audio_top_p"]
         audio_top_k = params["audio_top_k"]
         sampling_seeds = params["seeds"]
-        # Advance the launch-side counter only for emitted rows; non-final chunked rows take a read-only position so a mid-prefill chunk's frame cannot shift the final chunk's sampling position off the no-chunk path.
+        # note (Yue Yin): Advance the launch-side counter only for emitted rows; non-final chunked rows take a read-only position so a mid-prefill chunk's frame cannot shift the final chunk's sampling position off the no-chunk path.
         emit_set = {
             i
             for i, sched_req in enumerate(requests)
@@ -320,7 +320,7 @@ class MossTTSLocalModelRunner(ModelRunner):
                 seeds=sampling_seeds,
                 base_positions=gen_steps * num_channels,
             )
-            # Graph outputs are static buffers the next replay overwrites; snapshot what we keep.
+            # note (Yue Yin): Graph outputs are static buffers the next replay overwrites; snapshot what we keep.
             codes = codes.clone()
             embeds = feedback.clone()
         else:
@@ -389,7 +389,7 @@ class MossTTSLocalModelRunner(ModelRunner):
         return rows, end_id
 
     def post_decode_launch(self, result: Any, forward_batch: Any, requests: list):
-        """Async-decode GPU half of ``post_decode``; returns a cloned device snapshot of the published radix ids so the next step's in-place overwrite cannot clobber the stop id (else a dropped bs=1 eos = 4096-frame runaway)."""
+        """Async-decode GPU half of post_decode; returns a cloned device snapshot of the published radix ids so the next step's in-place overwrite cannot clobber the stop id (else a dropped bs=1 eos = 4096-frame runaway)."""
         if not requests:
             return None
         rows, end_id = self._run_frame_decode(result, forward_batch, requests)
@@ -405,7 +405,7 @@ class MossTTSLocalModelRunner(ModelRunner):
         schedule_batch: Any,
         requests: list,
     ) -> None:
-        """Async-decode host half: restore the launch-time ``next_token_ids`` snapshot so ``_finalize`` reads the real stop id (clobbered by the next step's in-place write before this lagged resolve)."""
+        """Async-decode host half: restore the launch-time next_token_ids snapshot so _finalize reads the real stop id (clobbered by the next step's in-place write before this lagged resolve)."""
         del forward_batch, schedule_batch, requests
         if launch_buf is not None and result is not None:
             result.next_token_ids = launch_buf
@@ -421,7 +421,7 @@ class MossTTSLocalModelRunner(ModelRunner):
 
     @staticmethod
     def _advance_sampling_position(data: Any) -> int:
-        """RNG position for this collect, advancing the launch-side counter in floor mode ``max(sampling_steps or 0, generation_steps)`` so it stays bit-identical on the sync path and lifts off the stale step under lookahead."""
+        """RNG position for this collect, advancing the launch-side counter in floor mode max(sampling_steps or 0, generation_steps) so it stays bit-identical on the sync path and lifts off the stale step under lookahead."""
         try:
             sampling_steps = data.sampling_steps
         except AttributeError:
@@ -460,7 +460,7 @@ class MossTTSLocalModelRunner(ModelRunner):
         return int(is_chunked) > 0
 
     def finalize_skip_rids(self, scheduler_output) -> set[str]:
-        """Non-final chunked-prefill rows must not advance ``generation_steps``, else the positional sampling shifts the final chunk off the single-shot prefill path."""
+        """Non-final chunked-prefill rows must not advance generation_steps, else the positional sampling shifts the final chunk off the single-shot prefill path."""
         return {
             sched_req.request_id
             for sched_req in scheduler_output.requests
@@ -544,7 +544,7 @@ class MossTTSLocalModelRunner(ModelRunner):
             )
         rows_cpu: torch.Tensor | None = None
         for i, sched_req in enumerate(expected_reqs):
-            # Overrun: a request finished/retracted in a PRIOR step is still in this lagged resolve batch; its wasted frame must not reach output_rows / the vocoder. No-op on the sync path.
+            # note (Yue Yin): Overrun: a request finished/retracted in a PRIOR step is still in this lagged resolve batch; its wasted frame must not reach output_rows / the vocoder. No-op on the sync path.
             req = sched_req.data.req
             if req is not None:
                 try:

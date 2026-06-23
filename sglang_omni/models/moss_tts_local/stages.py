@@ -152,7 +152,7 @@ def _load_moss_tts_local_processor(model_path: str, *, device: str) -> Any:
         if hasattr(audio_tokenizer, "eval"):
             audio_tokenizer.eval()
         if hasattr(audio_tokenizer, "to"):
-            # Device move only: the v2 codec manages its own dtypes (fp32 quantizer); a blanket dtype cast would corrupt the quantizer codebooks.
+            # note (Yue Yin): Device move only: the v2 codec manages its own dtypes (fp32 quantizer); a blanket dtype cast would corrupt the quantizer codebooks.
             audio_tokenizer.to(device)
     return processor
 
@@ -237,7 +237,7 @@ class _BatchedReferenceEncoder:
             for path, future in batch:
                 outcome = results.get(path)
                 if isinstance(outcome, Exception):
-                    # Fresh exception per future: a shared instance would be mutated concurrently by every waiter's traceback raise.
+                    # note (Yue Yin): Fresh exception per future: a shared instance would be mutated concurrently by every waiter's traceback raise.
                     future.set_exception(
                         RuntimeError(f"reference encode failed for {path}: {outcome}")
                     )
@@ -283,7 +283,7 @@ class CachedReferenceEncoder:
         # Note(Jiaxin): duration gate runs first — a >100 s ref must never reach
         # the cache or the inflight dict.
         _BatchedReferenceEncoder._check_reference_duration(path)
-        # trust_stat left False: keep the sentinel byte-read so a same-size+mtime+ctime overwrite cannot stale-hit.
+        # note (Yue Yin): trust_stat left False: keep the sentinel byte-read so a same-size+mtime+ctime overwrite cannot stale-hit.
         key = _reference_path_cache_key(path)
         if key is None:
             return self._encoder.encode(path)
@@ -640,6 +640,6 @@ def create_vocoder_executor(
         cuda_graph_frames=cuda_graph_frames,
         cuda_graph_min_free_gb=cuda_graph_min_free_gb,
     )
-    # Capture graphs in the factory: it runs before the process is marked ready, so serving never races a half-captured graph (each stage warms its own).
+    # note (Yue Yin): Capture graphs in the factory: it runs before the process is marked ready, so serving never races a half-captured graph (each stage warms its own).
     scheduler.warmup_now()
     return scheduler
