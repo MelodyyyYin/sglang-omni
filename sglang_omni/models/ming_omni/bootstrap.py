@@ -132,7 +132,7 @@ def make_thinker_scheduler_adapters(
         if not hasattr(input_ids, "to"):
             raise TypeError("prompt.input_ids must be a torch.Tensor")
 
-        # Per-content pad_value substitution to defeat radix prefix-cache aliasing across multimodal requests sharing the same generic patch token id.
+        # note (Yue Yin): Per-content pad_value substitution to defeat radix prefix-cache aliasing across multimodal requests sharing the same generic patch token id.
         thinker_inputs_early = state.thinker_inputs or {}
         media_cache_keys = thinker_inputs_early.get("media_cache_keys") or {}
         pad_values: dict[str, int] = {}
@@ -334,7 +334,7 @@ def make_thinker_stream_output_builder(
 
     def _build_stream_output(request_id, req_data, req_output):
         req = getattr(req_data, "req", None)
-        # Suppress during chunked prefill — else prompt-side states masquerade as the first assistant token and leak prompt content into TTS.
+        # note (Yue Yin): Suppress during chunked prefill — else prompt-side states masquerade as the first assistant token and leak prompt content into TTS.
         if req is not None and int(getattr(req, "is_chunked", 0) or 0) > 0:
             return []
         if req_output.data is None or req is None:

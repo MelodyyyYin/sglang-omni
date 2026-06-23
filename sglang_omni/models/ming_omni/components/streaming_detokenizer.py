@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 _DONE_SEEN_MAX = 10000
 _DONE_SEEN_EVICT_TO = 5000
 
-# Safety net against orphan _state entries if an abort is ever lost; only entries idle for _STATE_ORPHAN_IDLE_S are evicted so live/done requests are never dropped or hung.
+# note (Yue Yin): Safety net against orphan _state entries if an abort is ever lost; only entries idle for _STATE_ORPHAN_IDLE_S are evicted so live/done requests are never dropped or hung.
 _STATE_MAX = 10000
 _STATE_ORPHAN_IDLE_S = 300.0
 
@@ -40,7 +40,7 @@ class MingStreamingDetokenizeScheduler:
     """Stream-aware decode stage for Ming-Omni text-only pipelines.
 
     Public contract (used by Stage):
-        ``inbox``, ``outbox``, ``start()``, ``stop()``, ``abort(request_id)``
+        inbox, outbox, start(), stop(), abort(request_id)
     """
 
     def __init__(
@@ -58,7 +58,7 @@ class MingStreamingDetokenizeScheduler:
         self._running = False
         self._state: dict[str, _RequestState] = {}
         self._done_seen: OrderedDict[str, None] = OrderedDict()
-        # abort() runs on the event-loop thread while start() runs on the scheduler thread; guards iteration/multi-op sections.
+        # note (Yue Yin): abort() runs on the event-loop thread while start() runs on the scheduler thread; guards iteration/multi-op sections.
         self._state_lock = threading.Lock()
 
     def start(self) -> None:
@@ -249,7 +249,7 @@ class MingStreamingDetokenizeScheduler:
             result.update(final_event.payload)
             result.setdefault("modality", final_event.modality)
 
-        # Strip text from the terminal result when streaming to avoid double-sending; must mirror the emission gate in make_text_stream_output_builder (no deltas emitted when text not requested, so keep text then).
+        # note (Yue Yin): Strip text from the terminal result when streaming to avoid double-sending; must mirror the emission gate in make_text_stream_output_builder (no deltas emitted when text not requested, so keep text then).
         if is_streaming and text_output_requested(payload.request):
             result.pop("text", None)
         elif "text" not in result:
