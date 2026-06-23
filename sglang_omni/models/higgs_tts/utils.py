@@ -22,7 +22,7 @@ _CODEC_CACHE: dict[tuple[str, str, str], HiggsAudioCodec] = {}
 
 
 def apply_delay_pattern(codes_TN: torch.Tensor) -> torch.Tensor:
-    """``[T, N]`` raw codes → ``[T + N - 1, N]`` delayed, BOC/EOC padded."""
+    """[T, N] raw codes → [T + N - 1, N] delayed, BOC/EOC padded."""
     if codes_TN.ndim != 2:
         raise ValueError(
             f"codes_TN must be 2-D [T, N], got shape {tuple(codes_TN.shape)}"
@@ -39,7 +39,7 @@ def apply_delay_pattern(codes_TN: torch.Tensor) -> torch.Tensor:
 
 
 def reverse_delay_pattern(delayed_LN: torch.Tensor) -> torch.Tensor:
-    """``[L, N]`` delayed (L >= N) → ``[L - (N - 1), N]`` raw codes."""
+    """[L, N] delayed (L >= N) → [L - (N - 1), N] raw codes."""
     if delayed_LN.ndim != 2:
         raise ValueError(
             f"delayed_LN must be 2-D [L, N], got shape {tuple(delayed_LN.shape)}"
@@ -58,7 +58,7 @@ def reverse_delay_pattern(delayed_LN: torch.Tensor) -> torch.Tensor:
 
 
 def truncate_rope_to_bf16(model: torch.nn.Module) -> None:
-    """bf16-truncate sglang's fp32 ``cos_sin_cache`` in-place to match Higgs's bf16 training-time RoPE."""
+    """bf16-truncate sglang's fp32 cos_sin_cache in-place to match Higgs's bf16 training-time RoPE."""
     for module in model.modules():
         if hasattr(module, "cos_sin_cache"):
             cache = module.cos_sin_cache
@@ -87,7 +87,7 @@ def get_or_load_codec(path: str, device: str, dtype: str) -> HiggsAudioCodec:
 
 
 def to_codes_TN(raw: Any, num_codebooks: int) -> torch.Tensor | None:
-    """Coerce client-supplied ``reference_codes`` to a ``[T, N]`` int64 tensor."""
+    """Coerce client-supplied reference_codes to a [T, N] int64 tensor."""
     if raw is None:
         return None
     t = raw if isinstance(raw, torch.Tensor) else torch.tensor(raw)
@@ -101,7 +101,7 @@ def to_codes_TN(raw: Any, num_codebooks: int) -> torch.Tensor | None:
 
 
 def load_audio_to_24k(reference_audio: Any) -> tuple[np.ndarray, int]:
-    """Load ``inputs["reference_audio"]`` as 24 kHz mono float32 from a local path, HTTP/HTTPS URL, or ``{audio_path|path|bytes|base64|data}`` dict."""
+    """Load inputs["reference_audio"] as 24 kHz mono float32 from a local path, HTTP/HTTPS URL, or {audio_path|path|bytes|base64|data} dict."""
     io = AudioMediaIO(target_sr=HiggsAudioCodec.SAMPLE_RATE)
 
     def _load_path_or_url(src: str | Path) -> tuple[np.ndarray, int]:

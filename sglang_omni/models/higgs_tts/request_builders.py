@@ -45,7 +45,7 @@ def _perf_counter() -> float:
 
 
 def _ref_audio_fingerprint(codes: list[list[int]] | None) -> str | None:
-    """Stable hex hash of the full N-codebook ref-audio sequence for ``Req.extra_key`` (``None`` for zero-shot; 2-byte packing makes it sensitive to every codebook)."""
+    """Stable hex hash of the full N-codebook ref-audio sequence for Req.extra_key (None for zero-shot; 2-byte packing makes it sensitive to every codebook)."""
     if not codes:
         return None
     buf = bytearray(2 * sum(len(row) for row in codes))
@@ -77,7 +77,7 @@ def build_sglang_higgs_request(
     sampling_params = SamplingParams(**sp_kwargs)
     sampling_params.normalize(tokenizer=None)
 
-    # extra_key namespaces the radix cache per ref-audio fingerprint so shared -100 placeholder prefixes can't cross-contaminate KV (vocab_size = backbone text vocab so cb0 rides sglang's sampler path).
+    # note (Yue Yin): extra_key namespaces the radix cache per ref-audio fingerprint so shared -100 placeholder prefixes can't cross-contaminate KV (vocab_size = backbone text vocab so cb0 rides sglang's sampler path).
     req = Req(
         rid=request_id,
         origin_input_text="",

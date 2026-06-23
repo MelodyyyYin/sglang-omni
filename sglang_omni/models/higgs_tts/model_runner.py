@@ -74,7 +74,7 @@ class HiggsTTSModelRunner(ModelRunner):
         staging = self._decode_pack_gpu(n_real)
         host_buf = self._next_host_staging(self.model._cg_collect_staging)
         host_buf[:n_real].copy_(staging[:n_real], non_blocking=True)
-        # Publish cb0 from GPU now (no host sync) so the AR input chain is ready at launch; clamp>=0 keeps STOP_CODE(-1) in embed range, host collect later overwrites with skip-aware cb0.
+        # note (Yue Yin): Publish cb0 from GPU now (no host sync) so the AR input chain is ready at launch; clamp>=0 keeps STOP_CODE(-1) in embed range, host collect later overwrites with skip-aware cb0.
         result.next_token_ids = (
             self.model._cg_codes_BN[:n_real, 0].clamp_min(0).to(torch.long).clone()
         )
@@ -116,7 +116,7 @@ class HiggsTTSModelRunner(ModelRunner):
         )
 
         if self._async_enabled and is_lookahead and n_real > 0:
-            # Async-lookahead overrun guard: route EOC-done (generation_done) rows to the reset padding row, else the normal decode forward trips a device-side gather assert.
+            # note (Yue Yin): Async-lookahead overrun guard: route EOC-done (generation_done) rows to the reset padding row, else the normal decode forward trips a device-side gather assert.
             rows_t_real = model._cg_row_indices[:n_real]
             done = model._sampler_pool.generation_done[rows_t_real]
             model._cg_row_indices[:n_real] = torch.where(
@@ -152,7 +152,7 @@ class HiggsTTSModelRunner(ModelRunner):
 
     @staticmethod
     def _extract_decode_sampling_params(forward_batch, n_real: int):
-        """Pull per-row temperature/top_p/top_k off sglang's ``sampling_info``; top_k outside ``(0, K_MAX)`` normalizes to ``None`` (downstream maps to K_MAX = no-op filter)."""
+        """Pull per-row temperature/top_p/top_k off sglang's sampling_info; top_k outside (0, K_MAX) normalizes to None (downstream maps to K_MAX = no-op filter)."""
         sampling_info = getattr(forward_batch, "sampling_info", None)
         if sampling_info is None or n_real == 0:
             return ([1.0] * n_real, [1.0] * n_real, [None] * n_real)
@@ -220,7 +220,7 @@ class HiggsTTSModelRunner(ModelRunner):
         *,
         next_token_device: torch.device | None,
     ) -> None:
-        """Host-side collect over a D2H'd snapshot: append codes, mark finishes, build ``result.next_token_ids``; skips chunked/already-done rows (making the one-step-lookahead overrun harmless)."""
+        """Host-side collect over a D2H'd snapshot: append codes, mark finishes, build result.next_token_ids; skips chunked/already-done rows (making the one-step-lookahead overrun harmless)."""
         model = self.model
         num_codebooks = model._cg_codes_BN.shape[1]
         codes_BN_cpu = combined_cpu[:, :num_codebooks]
@@ -233,7 +233,7 @@ class HiggsTTSModelRunner(ModelRunner):
             if req.is_chunked > 0:
                 cb0_per_row.append(0)
                 continue
-            # Skip already-finished reqs: prevents leaking the one-step async-lookahead overrun token (also catches length finishes, which _cg_was_done does not).
+            # note (Yue Yin): Skip already-finished reqs: prevents leaking the one-step async-lookahead overrun token (also catches length finishes, which _cg_was_done does not).
             if req.finished():
                 cb0_per_row.append(0)
                 continue
@@ -297,7 +297,7 @@ class HiggsTTSModelRunner(ModelRunner):
         return text_embeds
 
     def _collect_step_outputs(self, result: Any, requests: list) -> None:
-        """Pull newly emitted codes into ``data.output_codes`` and overwrite ``result.next_token_ids`` with codebook-0 so the base runner skips its text-vocab sampler."""
+        """Pull newly emitted codes into data.output_codes and overwrite result.next_token_ids with codebook-0 so the base runner skips its text-vocab sampler."""
         batch_size = len(requests)
         if batch_size == 0:
             return
