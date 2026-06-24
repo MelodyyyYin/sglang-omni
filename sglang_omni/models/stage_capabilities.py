@@ -33,7 +33,6 @@ class StageCapabilities:
     supports_torch_compile: bool = False
     supports_streaming_vocoder: bool = False
     supports_reference_audio: bool = False
-    supports_thinker_tp: bool = False
 
 
 def collect_capabilities(
