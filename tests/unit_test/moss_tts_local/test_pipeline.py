@@ -735,16 +735,16 @@ def test_create_preprocessing_executor_env_toggle(monkeypatch):
     monkeypatch.setenv("MOSS_REF_AUDIO_CACHE", "0")
     stages.create_preprocessing_executor("model", device="cpu")
     assert not isinstance(
-        rb._PREPROCESSING_CONTEXT.reference_encoder, stages.CachedReferenceEncoder
+        rb._QUEUE.context.reference_encoder, stages.CachedReferenceEncoder
     )
 
     # Unset -> kwarg default (True) -> wrapped.
     monkeypatch.delenv("MOSS_REF_AUDIO_CACHE")
     stages.create_preprocessing_executor("model", device="cpu")
     assert isinstance(
-        rb._PREPROCESSING_CONTEXT.reference_encoder, stages.CachedReferenceEncoder
+        rb._QUEUE.context.reference_encoder, stages.CachedReferenceEncoder
     )
-    assert rb._PREPROCESSING_CONTEXT.reference_encoder._cache.max_size == 8192
+    assert rb._QUEUE.context.reference_encoder._cache.max_size == 8192
 
 
 def test_create_preprocessing_executor_uses_model_config_codec_path(monkeypatch):
@@ -1703,6 +1703,7 @@ def test_post_process_outputs_skips_chunked_rows():
     )
     runner = MossTTSLocalModelRunner.__new__(MossTTSLocalModelRunner)
     runner.model = model_stub
+    runner._outbox = None
 
     # Two rows: row 0 is chunked (mid-prefill), row 1 is normal.
     rows = torch.arange(batch_size * (N_VQ + 1), dtype=torch.long).reshape(
@@ -1892,6 +1893,7 @@ def test_async_launch_resolve_matches_sync_collect():
         )
         runner = MossTTSLocalModelRunner.__new__(MossTTSLocalModelRunner)
         runner.model = model
+        runner._outbox = None
         return runner
 
     def _sched_req():
@@ -2059,6 +2061,7 @@ def test_chunked_rows_do_not_advance_sampling_steps():
         )
         runner = MossTTSLocalModelRunner.__new__(MossTTSLocalModelRunner)
         runner.model = model
+        runner._outbox = None
         return runner
 
     def _result():
