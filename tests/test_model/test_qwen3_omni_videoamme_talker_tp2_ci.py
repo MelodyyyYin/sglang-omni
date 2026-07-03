@@ -64,10 +64,10 @@ _VIDEOAMME_TALKER_TP2_AUDIO_P95 = {
 }
 VIDEOAMME_TALKER_TP2_THRESHOLDS = apply_slack(_VIDEOAMME_TALKER_TP2_AUDIO_P95)
 
-# note (Yue Yin, Chenyang): 0.55-calibrated latency baseline (146.7 gate) is
-# unreachable on the #765 0.40 OOM-fix config (~148s); pin the gate to 155
-
-VIDEOAMME_TALKER_TP2_THRESHOLDS[16]["latency_mean_s_max"] = 155
+# note (Yue Yin): #932 enables the image_encoder->mm_aggregate TensorRef fast path
+# (~22-38s) for this pipeline, so the 155 gate (calibrated for the ~170s slow path,
+# and below its own 170.36 P95 base) no longer fits. Recalibrate to the fast path. #917
+VIDEOAMME_TALKER_TP2_THRESHOLDS[16]["latency_mean_s_max"] = 80
 
 
 @dataclass
