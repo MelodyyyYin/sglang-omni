@@ -64,11 +64,6 @@ _VIDEOAMME_TALKER_TP2_AUDIO_P95 = {
 }
 VIDEOAMME_TALKER_TP2_THRESHOLDS = apply_slack(_VIDEOAMME_TALKER_TP2_AUDIO_P95)
 
-# note (Yue Yin): #932 enables the image_encoder->mm_aggregate TensorRef fast path
-# (~22-38s) for this pipeline, so the 155 gate (calibrated for the ~170s slow path,
-# and below its own 170.36 P95 base) no longer fits. Recalibrate to the fast path. #917
-VIDEOAMME_TALKER_TP2_THRESHOLDS[16]["latency_mean_s_max"] = 80
-
 
 @dataclass
 class _TalkerEvalArtifacts:
