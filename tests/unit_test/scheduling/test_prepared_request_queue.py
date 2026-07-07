@@ -74,3 +74,17 @@ def test_begin_without_context_returns_none_and_no_inflight():
     q: PreparedRequestQueue = PreparedRequestQueue()
     assert q.begin("a") is None
     assert "a" not in q.inflight
+
+
+def test_publish_without_begin_drops():
+    q = _active_queue()
+    assert q.publish("a", "PREP-a") is False
+    assert "a" not in q.prepared
+
+
+def test_publish_after_reset_drops():
+    q = _active_queue()
+    q.begin("a")
+    q.set_context(object())
+    assert q.publish("a", "PREP-a") is False
+    assert "a" not in q.prepared

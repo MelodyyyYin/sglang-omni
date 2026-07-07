@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Shared preprocessing -> AR-engine handoff queue (RFC #661, Template 7).
 
-A process-wide tri-state registry: ``prepared`` (published, awaiting the
-scheduler), ``inflight`` (currently preprocessing), ``aborted`` (in-flight ids
+A process-wide tri-state registry: prepared (published, awaiting the
+scheduler), inflight (currently preprocessing), aborted (in-flight ids
 aborted before publish, so the pending insert is dropped). Transitions are
-identical across TTS models; only the opaque ``context`` and payload type differ.
+identical across TTS models; only the opaque context and payload type differ.
 """
 
 from __future__ import annotations
@@ -19,9 +19,9 @@ PrepT = TypeVar("PrepT")
 class PreparedRequestQueue(Generic[CtxT, PrepT]):
     """Thread-safe tri-state handoff registry for preprocessing -> AR scheduler.
 
-    The public attributes (``context`` / ``prepared`` / ``inflight`` / ``aborted``
-    / ``lock``) are exposed for introspection; mutate them only through the methods
-    below, each of which holds ``lock`` for the whole transition.
+    The public attributes (context / prepared / inflight / aborted
+    / lock) are exposed for introspection; mutate them only through the methods
+    below, each of which holds lock for the whole transition.
     """
 
     def __init__(self) -> None:
@@ -48,10 +48,10 @@ class PreparedRequestQueue(Generic[CtxT, PrepT]):
             self.aborted.clear()
 
     def begin(self, request_id: str) -> CtxT | None:
-        """Read the context and, if present, mark ``request_id`` in flight.
+        """Read the context and, if present, mark request_id in flight.
 
         The read and the in-flight insert happen under one lock so a concurrent
-        ``clear_context`` cannot leave a stale in-flight id behind.
+        clear_context cannot leave a stale in-flight id behind.
         """
         with self.lock:
             context = self.context
@@ -66,18 +66,19 @@ class PreparedRequestQueue(Generic[CtxT, PrepT]):
             self.aborted.discard(request_id)
 
     def publish(self, request_id: str, prepared: PrepT) -> bool:
-        """Publish a handoff unless the request was aborted mid-flight.
-
-        Returns ``True`` if stored, ``False`` if dropped because an abort arrived
-        while preprocessing was running.
+        """Publish a handoff, failing closed: store only while the id is still in
+        flight, so a publish after a context reset or without begin() cannot leave
+        a stale handoff. Returns False when dropped.
         """
         with self.lock:
+            inflight = request_id in self.inflight
             self.inflight.discard(request_id)
             aborted = request_id in self.aborted
             self.aborted.discard(request_id)
-            if not aborted:
+            if inflight and not aborted:
                 self.prepared[request_id] = prepared
-            return not aborted
+                return True
+            return False
 
     def abort(self, request_id: str) -> None:
         """Abort callback: drop a published handoff, or tombstone an in-flight one.
@@ -92,6 +93,6 @@ class PreparedRequestQueue(Generic[CtxT, PrepT]):
                 self.aborted.add(request_id)
 
     def pop(self, request_id: str) -> PrepT | None:
-        """Remove and return a published handoff, or ``None`` if absent."""
+        """Remove and return a published handoff, or None if absent."""
         with self.lock:
             return self.prepared.pop(request_id, None)
