@@ -107,7 +107,8 @@ def _aggregate_stage(*, process: str, speech_enabled: bool = False) -> StageConf
 
 
 def _thinker_stage(*, gpu: int, speech_enabled: bool, process: str) -> StageConfig:
-    factory_args = {"thinker_max_seq_len": 8192}
+    # note (jiaxin deng): async decode defaults on; --decode-mode sync overrides it.
+    factory_args = {"thinker_max_seq_len": 8192, "enable_async_decode": True}
     if speech_enabled:
         factory_args["speech_enabled"] = True
     return StageConfig(
@@ -259,6 +260,10 @@ class _Qwen3OmniBasePipelineConfig(PipelineConfig):
     env_defaults: dict[str, str] = Field(
         default_factory=lambda: dict(_DEEPGEMM_PRECOMPILE_ENV_DEFAULTS)
     )
+
+    @classmethod
+    def topology_gated_custom_all_reduce_stages(cls) -> set[str]:
+        return {THINKER_STAGE}
 
 
 class Qwen3OmniPipelineConfig(_Qwen3OmniBasePipelineConfig):

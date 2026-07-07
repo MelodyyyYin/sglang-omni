@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import collections
 from types import SimpleNamespace
 
@@ -30,8 +31,6 @@ def test_voxtral_tts_config_uses_current_stage_schema() -> None:
     assert config.gpu_placement == {"tts_generation": 0, "vocoder": 0}
     assert "device" not in config.stages[1].factory_args
     assert "device" not in config.stages[2].factory_args
-    assert config.stages[1].factory_args["gpu_id"] == 0
-    assert config.stages[2].factory_args["gpu_id"] == 0
     assert {stage.process for stage in config.stages} == {"pipeline"}
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("VoxtralTTSForConditionalGeneration")
@@ -162,6 +161,57 @@ def test_voxtral_audio_codes_payload_is_compact() -> None:
     assert "audio_codes_bytes" in data
     assert "audio_codes" not in data
     assert restored.audio_codes.tolist() == [[1, 2], [3, 4]]
+
+
+def test_voxtral_vocoder_preserves_warmup_trim_and_fade(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_codes: list[torch.Tensor] = []
+
+    class FakeAudioTokenizer:
+        sampling_rate = 1000
+        downsample_factor = 3
+
+        def decode_helper_batch_async(self, codes_list):
+            seen_codes.extend(codes.clone() for codes in codes_list)
+            return [torch.arange(20, dtype=torch.float32)]
+
+    monkeypatch.setattr(stages, "_resolve_checkpoint", lambda model_path: model_path)
+    monkeypatch.setattr(
+        stages,
+        "_load_audio_tokenizer",
+        lambda *args, **kwargs: FakeAudioTokenizer(),
+    )
+
+    scheduler = stages.create_vocoder_executor("model", device="cpu")
+    payload = StagePayload(
+        request_id="voxtral-vocoder",
+        request=OmniRequest(inputs="hello", params={}),
+        data=VoxtralTTSState(
+            audio_codes=torch.tensor([[9, 10], [11, 12]], dtype=torch.long),
+            prompt_tokens=2,
+            completion_tokens=4,
+        ).to_dict(),
+    )
+
+    result = asyncio.run(scheduler._fn(payload))
+
+    assert scheduler._max_batch_size == 1
+    assert scheduler._max_batch_wait_s == 0
+    assert [codes.tolist() for codes in seen_codes] == [
+        [[9, 10], [9, 10], [9, 10], [11, 12]]
+    ]
+    audio = np.frombuffer(result.data["audio_waveform"], dtype=np.float32)
+    expected = torch.arange(6, 20, dtype=torch.float32)
+    expected[:10] *= torch.linspace(0, 1, 10)
+    assert audio.tolist() == pytest.approx(expected.tolist())
+    assert result.data["sample_rate"] == 1000
+    assert result.data["modality"] == "audio"
+    assert result.data["usage"] == {
+        "prompt_tokens": 2,
+        "completion_tokens": 4,
+        "total_tokens": 6,
+    }
 
 
 def test_voxtral_collect_audio_step_reuses_output_tokens_for_eos_filter() -> None:

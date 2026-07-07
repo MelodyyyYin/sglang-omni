@@ -224,6 +224,8 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) ->
             ),
         ],
         batch_is_full=True,
+        is_prefill_only=True,
+        is_extend_in_batch=False,
     )
     scheduler.running_batch = batch
     scheduler.cur_batch = batch
@@ -267,6 +269,8 @@ def test_omni_scheduler_custom_runner_updates_next_input_ids() -> None:
             SimpleNamespace(rid="req-2", _omni_data=SimpleNamespace()),
         ],
         output_ids=None,
+        is_prefill_only=False,
+        is_extend_in_batch=False,
     )
 
     result = scheduler._run_batch(batch)
@@ -301,6 +305,8 @@ def test_omni_scheduler_custom_runner_advances_forward_ct() -> None:
         return SimpleNamespace(
             reqs=[SimpleNamespace(rid="r", _omni_data=SimpleNamespace())],
             output_ids=None,
+            is_prefill_only=False,
+            is_extend_in_batch=False,
         )
 
     scheduler._run_batch(_batch())
@@ -349,16 +355,23 @@ def test_omni_scheduler_fast_path_drops_retracted_req() -> None:
     forwarded/finalized again and re-frees its already-freed KV.
     """
     captured: dict = {}
+    freed: list[int] = []
 
     class FakeBatch:
         def __init__(self, reqs):
             self.reqs = reqs
+            self.out_cache_loc = torch.arange(100, 100 + len(reqs))
 
         def filter_batch(self, keep_indices=None):
             captured["keep_indices"] = keep_indices
             self.reqs = [self.reqs[i] for i in keep_indices]
 
     scheduler = object.__new__(OmniScheduler)
+    scheduler.page_size = 1
+    scheduler.server_args = SimpleNamespace(disable_radix_cache=False)
+    scheduler.token_to_kv_pool_allocator = SimpleNamespace(
+        free=lambda t: freed.extend(t.tolist())
+    )
     keep = SimpleNamespace(rid="keep", finished=lambda: False, is_retracted=False)
     retr = SimpleNamespace(rid="retr", finished=lambda: False, is_retracted=True)
 
@@ -366,16 +379,21 @@ def test_omni_scheduler_fast_path_drops_retracted_req() -> None:
     out = scheduler._drop_stale_overrun(FakeBatch([keep, retr]))
     assert captured["keep_indices"] == [0]
     assert [r.rid for r in out.reqs] == ["keep"]
+    assert freed == [101]
 
     # all dropped -> None so run_batch is skipped
+    freed.clear()
     fin = SimpleNamespace(rid="fin", finished=lambda: True, is_retracted=False)
     assert scheduler._drop_stale_overrun(FakeBatch([retr, fin])) is None
+    assert freed == [100, 101]
 
     # nothing stale -> batch returned unchanged, filter_batch never called
     captured.clear()
+    freed.clear()
     clean = FakeBatch([keep])
     assert scheduler._drop_stale_overrun(clean) is clean
     assert "keep_indices" not in captured
+    assert freed == []
 
 
 def test_omni_scheduler_abort_propagates_immediate_kv_cleanup_failure(
@@ -530,7 +548,7 @@ def test_omni_scheduler_distinguishes_queue_enter_from_prefill_start(
     assert "scheduler_prefill_start" not in names
     assert scheduler.waiting_queue == [req]
 
-    batch = SimpleNamespace(reqs=[req], is_prefill_only=True)
+    batch = SimpleNamespace(reqs=[req], is_prefill_only=True, is_extend_in_batch=False)
     scheduler._emit_prefill_start_for_batch(batch)
     scheduler._emit_prefill_start_for_batch(batch)
 
@@ -573,7 +591,9 @@ def test_omni_scheduler_initializes_upstream_queue_limit(monkeypatch) -> None:
         enable_mixed_chunk=False,
         schedule_policy="fcfs",
         enable_hierarchical_cache=False,
+        enable_hisparse=False,
         enable_priority_scheduling=False,
+        disable_priority_preemption=False,
         schedule_low_priority_values_first=False,
         priority_scheduling_preemption_threshold=0,
         schedule_conservativeness=1.0,
