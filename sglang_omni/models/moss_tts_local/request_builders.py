@@ -81,9 +81,9 @@ class _PreprocessingContext:
     reference_encoder: Any = None
 
 
-_QUEUE: PreparedRequestQueue[
-    _PreprocessingContext, MossTTSLocalPreparedRequest
-] = PreparedRequestQueue()
+_QUEUE: PreparedRequestQueue[_PreprocessingContext, MossTTSLocalPreparedRequest] = (
+    PreparedRequestQueue()
+)
 
 
 def set_moss_tts_local_preprocessing_context(

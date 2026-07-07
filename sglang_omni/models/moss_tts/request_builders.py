@@ -111,9 +111,9 @@ class MossTTSPreprocessingContext:
     processor: Any
 
 
-_QUEUE: PreparedRequestQueue[
-    MossTTSPreprocessingContext, MossTTSPreparedRequest
-] = PreparedRequestQueue()
+_QUEUE: PreparedRequestQueue[MossTTSPreprocessingContext, MossTTSPreparedRequest] = (
+    PreparedRequestQueue()
+)
 
 
 def set_moss_tts_preprocessing_context(*, processor: Any) -> None:
