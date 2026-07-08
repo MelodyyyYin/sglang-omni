@@ -804,21 +804,26 @@ def test_create_preprocessing_executor_cache_toggles(monkeypatch):
         ref_audio_cache=False,
     )
     assert not isinstance(
-        rb._QUEUE.context.reference_encoder, stages._MossLocalReferenceEncoder
+        rb._QUEUE.snapshot().context.reference_encoder,
+        stages._MossLocalReferenceEncoder,
     )
 
     monkeypatch.setenv("MOSS_REF_AUDIO_CACHE", "0")
     stages.create_preprocessing_executor("model", device="cpu")
     assert not isinstance(
-        rb._QUEUE.context.reference_encoder, stages._MossLocalReferenceEncoder
+        rb._QUEUE.snapshot().context.reference_encoder,
+        stages._MossLocalReferenceEncoder,
     )
 
     monkeypatch.delenv("MOSS_REF_AUDIO_CACHE")
     stages.create_preprocessing_executor("model", device="cpu")
     assert isinstance(
-        rb._QUEUE.context.reference_encoder, stages._MossLocalReferenceEncoder
+        rb._QUEUE.snapshot().context.reference_encoder,
+        stages._MossLocalReferenceEncoder,
     )
-    assert rb._QUEUE.context.reference_encoder._service._cache.max_size == 8192
+    assert (
+        rb._QUEUE.snapshot().context.reference_encoder._service._cache.max_size == 8192
+    )
 
 
 def test_create_preprocessing_executor_uses_model_config_codec_path(monkeypatch):

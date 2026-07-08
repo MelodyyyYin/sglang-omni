@@ -293,10 +293,14 @@ def preprocess_moss_tts_local_payload(payload: StagePayload) -> StagePayload:
     except BaseException:
         _QUEUE.fail_inflight(rid)
         raise
-    _QUEUE.publish(rid, prepared)
+    # note (Yue Yin): publish fails closed; when it drops the handoff (aborted
+    # mid-flight or context reset) skip the marker, so the AR stage never pops a
+    # marker whose prepared state no longer exists.
+    published = _QUEUE.publish(rid, prepared)
 
     data = prepared.state.to_dict()
-    data[_MOSS_TTS_LOCAL_PREPARED_MARKER] = payload.request_id
+    if published:
+        data[_MOSS_TTS_LOCAL_PREPARED_MARKER] = payload.request_id
     return StagePayload(
         request_id=payload.request_id, request=payload.request, data=data
     )
