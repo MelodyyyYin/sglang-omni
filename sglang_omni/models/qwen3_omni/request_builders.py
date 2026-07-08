@@ -260,9 +260,8 @@ def project_encoder_to_mm_aggregate(payload: StagePayload) -> StagePayload:
     return _payload_with_state(payload, projected)
 
 
-# note (Yue Yin): the talker prefill scatters only image/video/audio embeds; it never
-# reads the deepstack visual embeds. Drop them from the talker projection (dead weight,
-# or an unresolved #932 TensorRef the talker must never touch). #934
+# note (Yue Yin): the talker prefill uses only image/video/audio embeds, never deepstack --
+# on the #932 fast path deepstack would arrive as a ref the talker must never touch. #934
 _TALKER_UNUSED_MODEL_INPUT_KEYS = (
     "image_deepstack_visual_embeds",
     "video_deepstack_visual_embeds",
