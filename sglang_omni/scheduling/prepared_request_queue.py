@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Shared preprocessing -> AR-engine handoff queue (RFC #661, Template 7).
+"""Shared preprocessing -> AR-engine handoff queue.
 
 A process-wide tri-state registry: prepared (published, awaiting the scheduler),
 inflight (currently preprocessing), aborted (in-flight ids aborted before publish,

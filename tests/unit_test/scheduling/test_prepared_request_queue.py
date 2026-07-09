@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Contract tests for the T7 PreparedRequestQueue (RFC #661). CPU-only."""
+"""Contract tests for PreparedRequestQueue. CPU-only."""
 
 from sglang_omni.scheduling.prepared_request_queue import PreparedRequestQueue
 
