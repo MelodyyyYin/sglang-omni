@@ -24,11 +24,17 @@ from sglang.srt.models.qwen3 import Qwen3ForCausalLM
 from sglang.srt.models.whisper import WhisperEncoder
 from sglang.srt.utils import add_prefix
 
+from sglang_omni.models.moss_transcribe_diarize.encoder_cuda_graph import (
+    WhisperEncoderCudaGraphRunner,
+)
 from sglang_omni.models.moss_transcribe_diarize.hf_config import (
     MossTranscribeDiarizeConfig,
 )
+from sglang_omni.scheduling.stage_cache import StageOutputCache
 
 logger = logging.getLogger(__name__)
+
+_ENCODER_CACHE_MAX_ENTRIES = 64
 
 
 class VQAdaptor(nn.Module):
@@ -83,12 +89,44 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
             prefix=add_prefix("model.language_model", prefix),
         )
         self.pattern = MultiModalityDataPaddingPatternMultimodalTokens()
+        self._encoder_cache: Optional[StageOutputCache] = None
+        self._encoder_graph_runner = None
+
+    def init_encoder_cache(self, max_bytes: int) -> None:
+        self._encoder_cache = (
+            StageOutputCache(
+                max_size=_ENCODER_CACHE_MAX_ENTRIES,
+                max_bytes=max_bytes,
+                cache_device="cpu",
+            )
+            if max_bytes and max_bytes > 0
+            else None
+        )
 
     def get_input_embeddings(self):
         return self.language_model.get_input_embeddings()
 
     def pad_input_ids(self, input_ids: List[int], mm_inputs: MultimodalInputs):
         return self.pattern.pad_input_tokens(input_ids, mm_inputs)
+
+    def init_encoder_graphs(self, chunk_buckets, input_feature_len: int) -> None:
+        """Capture per-chunk-count CUDA graphs for the Whisper encoder.
+
+        Called from the stage factory after the model is on-device and CUDA
+        graphs are enabled. input_feature_len is the fixed length of the
+        encoder's input_features time axis for one 30s window
+        (WhisperFeatureExtractor.nb_max_frames).
+        """
+        buckets = [int(b) for b in (chunk_buckets or []) if int(b) >= 1]
+        if not buckets:
+            return
+        runner = WhisperEncoderCudaGraphRunner(
+            self.whisper_encoder,
+            num_mel_bins=int(self.config.audio_config.num_mel_bins),
+            input_feature_len=int(input_feature_len),
+        )
+        runner.capture(buckets)
+        self._encoder_graph_runner = runner
 
     def time_merge(self, features: torch.Tensor) -> torch.Tensor:
         batch_size, seq_len, hidden_size = features.shape
@@ -99,6 +137,23 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
         )
 
     def get_audio_feature(
+        self,
+        items: List[MultimodalDataItem],
+        forward_batch: ForwardBatch,
+    ) -> torch.Tensor:
+        cache = self._encoder_cache
+        key = getattr(items[0], "hash", None) if len(items) == 1 else None
+        if cache is not None and key is not None:
+            cached = cache.get(str(key))
+            if cached is not None:
+                device = next(self.vq_adaptor.parameters()).device
+                return cached.to(device, non_blocking=True)
+            output = self._get_audio_feature_uncached(items, forward_batch)
+            cache.put(str(key), output)
+            return output
+        return self._get_audio_feature_uncached(items, forward_batch)
+
+    def _get_audio_feature_uncached(
         self,
         items: List[MultimodalDataItem],
         forward_batch: ForwardBatch,
@@ -159,26 +214,37 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
                 (0, hidden_size), device=adaptor_param.device, dtype=adaptor_param.dtype
             )
 
-        batched_features = torch.stack(chunks).to(device=device, dtype=encoder_dtype)
-        encoder_len = (batched_features.shape[-1] - 1) // 2 + 1
-        encoder_position_ids = torch.arange(
-            encoder_len, device=device, dtype=torch.long
-        )
-        features = self.whisper_encoder(
-            batched_features, encoder_position_ids, forward_batch
-        )
+        with torch.no_grad():
+            batched_features = torch.stack(chunks).to(
+                device=device, dtype=encoder_dtype
+            )
+            encoder_len = (batched_features.shape[-1] - 1) // 2 + 1
+            encoder_position_ids = torch.arange(
+                encoder_len, device=device, dtype=torch.long
+            )
+            if self._encoder_graph_runner is not None:
+                features = self._encoder_graph_runner.run(
+                    batched_features, encoder_position_ids, forward_batch
+                )
+            else:
+                features = self.whisper_encoder(
+                    batched_features, encoder_position_ids, forward_batch
+                )
 
-        adaptor_dtype = next(self.vq_adaptor.parameters()).dtype
-        merged = [
-            self.time_merge(
-                torch.cat(
-                    [features[i : i + 1, : token_lens[i] * merge_size] for i in ids],
-                    dim=1,
-                ).to(dtype=adaptor_dtype)
-            ).squeeze(0)
-            for ids in audio_spans
-        ]
-        return self.vq_adaptor(torch.cat(merged, dim=0))
+            adaptor_dtype = next(self.vq_adaptor.parameters()).dtype
+            merged = [
+                self.time_merge(
+                    torch.cat(
+                        [
+                            features[i : i + 1, : token_lens[i] * merge_size]
+                            for i in ids
+                        ],
+                        dim=1,
+                    ).to(dtype=adaptor_dtype)
+                ).squeeze(0)
+                for ids in audio_spans
+            ]
+            return self.vq_adaptor(torch.cat(merged, dim=0))
 
     def forward(
         self,
