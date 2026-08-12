@@ -5,8 +5,13 @@ from __future__ import annotations
 import pytest
 import torch
 
-from sglang_omni.comm import KVPool
-from sglang_omni.scheduling.pd_kv_adapter import build_kv_pool, resolve_page_indices
+from sglang_omni.comm import KVPageDestination, KVPool
+from sglang_omni.proto import KVTransferPrepareMessage
+from sglang_omni.scheduling.pd_kv_adapter import (
+    AllocatorKVReceiver,
+    build_kv_pool,
+    resolve_page_indices,
+)
 
 
 class _FakeKVPool:
@@ -88,3 +93,105 @@ def test_resolve_page_indices_rejects_bad_args() -> None:
         resolve_page_indices(pool, req_pool_idx=0, seq_len=0, page_size=1)
     with pytest.raises(ValueError):
         resolve_page_indices(pool, req_pool_idx=0, seq_len=2, page_size=0)
+
+
+class _FakeAllocator:
+    """Contiguous bump allocator mimicking SGLang's alloc/free contract."""
+
+    def __init__(self, capacity: int):
+        self._free = list(range(capacity))
+
+    def available_size(self) -> int:
+        return len(self._free)
+
+    def alloc(self, need_size: int):
+        if len(self._free) < need_size:
+            return None
+        taken = self._free[:need_size]
+        self._free = self._free[need_size:]
+        return torch.tensor(taken, dtype=torch.int64)
+
+    def free(self, free_index: torch.Tensor) -> None:
+        self._free.extend(int(i) for i in free_index.tolist())
+
+
+def _prepare(request_id: str, pages: int, *, pool_id: str = "decode_kv"):
+    return KVTransferPrepareMessage(
+        request_id=request_id,
+        transfer_id=f"{request_id}:t",
+        from_stage="thinker_prefill",
+        to_stage="thinker_decode",
+        source_pool_id="prefill_kv",
+        target_pool_id=pool_id,
+        source_page_indices=tuple(range(pages)),
+        source_layout=None,
+    )
+
+
+def test_receiver_reserve_commit_hands_off_allocation() -> None:
+    alloc = _FakeAllocator(16)
+    committed: list[tuple[str, tuple[int, ...], int]] = []
+    receiver = AllocatorKVReceiver(
+        pool_id="decode_kv",
+        token_to_kv_pool_allocator=alloc,
+        page_size=1,
+        on_commit=lambda rid, slots, pages, seq_len: committed.append(
+            (rid, pages, seq_len)
+        ),
+    )
+
+    prep = _prepare("req-1", 5)
+    dest = receiver.reserve(prep)
+    assert isinstance(dest, KVPageDestination)
+    assert len(dest.page_indices) == 5
+    assert alloc.available_size() == 11  # 16 - 5
+
+    receiver.commit(prep, dest)
+    assert committed == [("req-1", dest.page_indices, 5)]
+    # Commit hands ownership to the request lifecycle: slots NOT returned here.
+    assert alloc.available_size() == 11
+
+
+def test_receiver_abort_frees_allocation() -> None:
+    alloc = _FakeAllocator(8)
+    receiver = AllocatorKVReceiver(
+        pool_id="decode_kv", token_to_kv_pool_allocator=alloc, page_size=1
+    )
+    prep = _prepare("req-2", 3)
+    dest = receiver.reserve(prep)
+    assert alloc.available_size() == 5
+
+    receiver.abort(prep, dest, RuntimeError("boom"))
+    assert alloc.available_size() == 8  # freed back
+
+
+def test_receiver_rejects_exhausted_pool() -> None:
+    alloc = _FakeAllocator(2)
+    receiver = AllocatorKVReceiver(
+        pool_id="decode_kv", token_to_kv_pool_allocator=alloc, page_size=1
+    )
+    with pytest.raises(RuntimeError, match="exhausted"):
+        receiver.reserve(_prepare("req-3", 5))
+
+
+def test_receiver_rejects_wrong_pool_and_duplicate() -> None:
+    alloc = _FakeAllocator(16)
+    receiver = AllocatorKVReceiver(
+        pool_id="decode_kv", token_to_kv_pool_allocator=alloc, page_size=1
+    )
+    with pytest.raises(ValueError):
+        receiver.reserve(_prepare("req-4", 2, pool_id="other_pool"))
+
+    prep = _prepare("req-5", 2)
+    receiver.reserve(prep)
+    with pytest.raises(RuntimeError, match="duplicate"):
+        receiver.reserve(prep)
+
+
+def test_receiver_page_size_gt_one_not_supported() -> None:
+    with pytest.raises(NotImplementedError):
+        AllocatorKVReceiver(
+            pool_id="decode_kv",
+            token_to_kv_pool_allocator=_FakeAllocator(4),
+            page_size=4,
+        )

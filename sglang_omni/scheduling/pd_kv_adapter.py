@@ -20,9 +20,13 @@ infrastructure) and PR #1382 (rank-to-rank TP KV transfers):
 from __future__ import annotations
 
 import logging
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Callable
 
-from sglang_omni.comm import KVBufferRegion, KVPool
+import torch
+
+from sglang_omni.comm import KVBufferRegion, KVPageDestination, KVPool
+from sglang_omni.proto import KVTransferPrepareMessage
 
 logger = logging.getLogger(__name__)
 
@@ -138,3 +142,145 @@ def resolve_page_indices(
             seen.add(page)
             pages.append(page)
     return tuple(pages)
+
+
+@dataclass
+class _ReservedAllocation:
+    """Bookkeeping for one in-flight reservation on the decode stage."""
+
+    slots: torch.Tensor
+    page_indices: tuple[int, ...]
+    seq_len: int
+
+
+class AllocatorKVReceiver:
+    """Decode-stage :class:`~sglang_omni.comm.KVReceiver` backed by SGLang.
+
+    Implements the receiver lifecycle from PR #1315 in terms of an SGLang
+    ``token_to_kv_pool_allocator``:
+
+    * ``reserve`` allocates KV slots for the incoming request and returns the
+      destination page indices the transfer must fill;
+    * ``commit`` hands the filled slots to the decode scheduler through the
+      injected ``on_commit`` callback (the scheduler then admits the request as
+      decode-ready) and stops the receiver from freeing them;
+    * ``abort`` releases the reservation back to the allocator.
+
+    The receiver never runs prefill; it owns only the destination allocation
+    until commit transfers page ownership to the request's normal decode
+    lifecycle. ``on_commit`` is the seam the qwen3_omni/ming_omni decode
+    scheduler wiring plugs into.
+    """
+
+    def __init__(
+        self,
+        *,
+        pool_id: str,
+        token_to_kv_pool_allocator: Any,
+        page_size: int,
+        on_commit: Callable[[str, torch.Tensor, tuple[int, ...], int], None]
+        | None = None,
+    ) -> None:
+        if page_size != 1:
+            # Paged (page_size > 1) allocation needs contiguous page-aligned
+            # reservation to keep destination page count == source page count;
+            # deferred until the TP=1 page_size=1 path is validated end to end.
+            raise NotImplementedError(
+                "AllocatorKVReceiver currently supports page_size == 1; "
+                f"got {page_size}"
+            )
+        self.pool_id = pool_id
+        self._allocator = token_to_kv_pool_allocator
+        self._page_size = page_size
+        self._on_commit = on_commit
+        self._reservations: dict[str, _ReservedAllocation] = {}
+
+    def reserve(self, request: KVTransferPrepareMessage) -> KVPageDestination:
+        if request.target_pool_id != self.pool_id:
+            raise ValueError(
+                f"receiver for pool {self.pool_id!r} got transfer targeting "
+                f"{request.target_pool_id!r}"
+            )
+        if request.request_id in self._reservations:
+            raise RuntimeError(
+                f"duplicate KV reservation for request {request.request_id!r}"
+            )
+
+        num_pages = len(request.source_page_indices)
+        if num_pages <= 0:
+            raise ValueError("KV transfer requested zero pages")
+
+        available = self._allocator.available_size()
+        if available < num_pages:
+            raise RuntimeError(
+                f"decode KV pool exhausted: need {num_pages} slots, "
+                f"{available} available"
+            )
+
+        slots = self._allocator.alloc(num_pages)
+        if slots is None:
+            raise RuntimeError(
+                f"decode KV allocator returned no slots for {num_pages} pages"
+            )
+        page_indices = tuple(int(slot) for slot in slots.tolist())
+        self._reservations[request.request_id] = _ReservedAllocation(
+            slots=slots,
+            page_indices=page_indices,
+            seq_len=num_pages,
+        )
+        logger.info(
+            "pd_kv reserve request=%s pool=%s pages=%d",
+            request.request_id,
+            self.pool_id,
+            num_pages,
+        )
+        return KVPageDestination(self.pool_id, page_indices)
+
+    def commit(
+        self,
+        request: KVTransferPrepareMessage,
+        destination: KVPageDestination,
+    ) -> None:
+        reservation = self._reservations.pop(request.request_id, None)
+        if reservation is None:
+            raise RuntimeError(
+                f"commit for unknown KV reservation {request.request_id!r}"
+            )
+        if tuple(destination.page_indices) != reservation.page_indices:
+            raise RuntimeError(
+                "commit page indices do not match the reservation for "
+                f"{request.request_id!r}"
+            )
+        # Ownership of these slots now belongs to the decode request lifecycle;
+        # the scheduler frees them when the request finishes.
+        if self._on_commit is not None:
+            self._on_commit(
+                request.request_id,
+                reservation.slots,
+                reservation.page_indices,
+                reservation.seq_len,
+            )
+        logger.info(
+            "pd_kv commit request=%s pool=%s pages=%d",
+            request.request_id,
+            self.pool_id,
+            reservation.seq_len,
+        )
+
+    def abort(
+        self,
+        request: KVTransferPrepareMessage,
+        destination: KVPageDestination | None,
+        error: BaseException,
+    ) -> None:
+        del destination
+        reservation = self._reservations.pop(request.request_id, None)
+        if reservation is not None:
+            self._allocator.free(reservation.slots)
+        logger.warning(
+            "pd_kv abort request=%s pool=%s freed=%s error=%s",
+            request.request_id,
+            self.pool_id,
+            reservation is not None,
+            error,
+        )
