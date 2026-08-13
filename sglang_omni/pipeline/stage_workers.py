@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Sequence
 
 from sglang_omni.config.runtime import resolve_factory_signature_args
+from sglang_omni.config.schema import PDExecution
 from sglang_omni.pipeline.control_plane import StageControlPlane
 from sglang_omni.pipeline.local_dispatch import LocalStageDispatcher
 from sglang_omni.pipeline.stage.input import AggregatedInput, DirectInput
@@ -98,6 +99,12 @@ class StageLaunchConfig:
 
     # Fusion name map
     name_map: dict[str, str] = field(default_factory=dict)
+
+    # Note: (Yue Yin) Typed PD execution metadata (role/partner) for a
+    # PD-disaggregated half. None for every ordinary stage. Delivered to the
+    # Stage at construction (the intended runtime path); never merged into
+    # factory_args.
+    pd_execution: PDExecution | None = None
 
     # TP internal control (leader -> followers)
     follower_work_queues: list[Any] = field(default_factory=list)
@@ -761,6 +768,7 @@ def _construct_stage(
         disable_direct_cuda_ipc_payload=spec.disable_direct_cuda_ipc_payload,
         tp_fanout=tp_fanout,
         is_terminal=spec.is_terminal,
+        pd_execution=spec.pd_execution,
     )
 
     if spec.is_stream_receiver:

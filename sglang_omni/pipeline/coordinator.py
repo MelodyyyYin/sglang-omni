@@ -58,6 +58,7 @@ class Coordinator:
         terminal_stages_resolver: (
             Callable[[OmniRequest], list[str] | None] | None
         ) = None,
+        terminal_name_map: dict[str, str] | None = None,
     ):
         """Initialize coordinator.
 
@@ -67,12 +68,22 @@ class Coordinator:
             entry_stage: Name of the entry stage for new requests
             terminal_stages: Terminal stage names. When multiple are given,
                 the coordinator waits for all to complete before resolving.
+                These are physical stage identities (after PD expansion).
+            terminal_name_map: Logical->physical terminal name map. A
+                model-provided ``terminal_stages_resolver`` returns logical
+                public stage names; the coordinator maps them to the physical
+                stage that actually reports completion (e.g. ``S`` ->
+                ``S_decode`` for a PD-expanded stage).
         """
         self.entry_stage = entry_stage
         self._terminal_stages: set[str] = (
             set(terminal_stages) if terminal_stages else set()
         )
         self._terminal_stages_resolver = terminal_stages_resolver
+        # Note: (Yue Yin) Default identity map; only PD-expanded terminal
+        # stages add entries. Applied to resolver output so completion
+        # accounting uses physical identity.
+        self._terminal_name_map: dict[str, str] = dict(terminal_name_map or {})
         self._partial_results: dict[str, dict[str, Any]] = {}
 
         # Control plane
@@ -760,7 +771,11 @@ class Coordinator:
             raise ValueError(
                 "terminal_stages_resolver must return terminal stage names"
             )
-        resolved_stages = set(resolved)
+        # Note: (Yue Yin) Map logical public names to physical terminal
+        # identity before validating against the physical terminal set.
+        resolved_stages = {
+            self._terminal_name_map.get(stage, stage) for stage in resolved
+        }
         if not resolved_stages:
             raise ValueError("terminal_stages_resolver returned no terminal stages")
         unknown = resolved_stages - self._terminal_stages

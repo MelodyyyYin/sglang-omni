@@ -8,6 +8,12 @@ from sglang_omni.config.placement import (
     resolve_gpu_stage_names,
     resolve_stage_gpu_ids,
 )
+from sglang_omni.config.pd_capability import (
+    factory_supports_pd,
+    pd_disaggregation_capable,
+    validate_pd_capabilities,
+)
+from sglang_omni.config.pd_rewrite import PDExpansion, expand_pd_stages
 from sglang_omni.config.process_overrides import (
     apply_stage_process_overrides,
     parse_stage_process_assignment,
@@ -18,6 +24,9 @@ from sglang_omni.config.schema import (
     CommConfig,
     EndpointsConfig,
     ParallelismConfig,
+    PDConfig,
+    PDExecution,
+    PDStagePlacement,
     PipelineConfig,
     PlacementConfig,
     SGLangServerArgsConfig,
@@ -45,6 +54,14 @@ __all__ = [
     "resolve_stage_gpu_ids",
     "apply_stage_process_overrides",
     "parse_stage_process_assignment",
+    "expand_pd_stages",
+    "PDExpansion",
+    "PDConfig",
+    "PDExecution",
+    "PDStagePlacement",
+    "pd_disaggregation_capable",
+    "factory_supports_pd",
+    "validate_pd_capabilities",
     "resolve_stage_factory_args",
     "ProcessGroupPlacement",
     "ProcessTopologyPlan",

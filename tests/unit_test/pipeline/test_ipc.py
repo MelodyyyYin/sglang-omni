@@ -320,8 +320,15 @@ async def test_mp_runner_stop_cleans_runtime_dir(
             entry_stage: str,
             terminal_stages: list[str] | None = None,
             terminal_stages_resolver=None,
+            terminal_name_map: dict[str, str] | None = None,
         ) -> None:
-            del abort_endpoint, entry_stage, terminal_stages, terminal_stages_resolver
+            del (
+                abort_endpoint,
+                entry_stage,
+                terminal_stages,
+                terminal_stages_resolver,
+                terminal_name_map,
+            )
             self.control_plane = SimpleNamespace(
                 completion_endpoint=completion_endpoint
             )

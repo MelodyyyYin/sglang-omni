@@ -137,6 +137,10 @@ def _build_stage_groups(
             can_accept_stream_before_payload=stage_cfg.can_accept_stream_before_payload,
             disable_direct_cuda_ipc_payload=stage_cfg.disable_direct_cuda_ipc_payload,
             name_map=name_map,
+            # Note: (Yue Yin) Typed PD execution metadata travels as a launch
+            # field, never through factory_args, so strict factory signatures
+            # are unaffected. None for every non-PD stage.
+            pd_execution=stage_cfg.pd_execution,
         )
         if tp_size == 1:
             single_stage_specs[stage_cfg.name] = _build_single_stage_spec(
@@ -456,8 +460,12 @@ class MultiProcessPipelineRunner:
                 completion_endpoint=prep.endpoints["completion"],
                 abort_endpoint=prep.endpoints["abort"],
                 entry_stage=prep.entry_stage,
-                terminal_stages=self._config.terminal_stages or None,
+                # Note: (Yue Yin) Physical terminal identity from the expanded
+                # graph, not config.terminal_stages (logical). When a terminal
+                # stage is PD-expanded, only its decode half is terminal.
+                terminal_stages=prep.terminal_stages or None,
                 terminal_stages_resolver=terminal_stages_resolver,
+                terminal_name_map=prep.terminal_name_map,
             )
             await self._coordinator.start()
             self._completion_task = asyncio.create_task(

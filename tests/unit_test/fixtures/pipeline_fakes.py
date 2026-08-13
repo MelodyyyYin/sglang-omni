@@ -14,6 +14,7 @@ from typing import Any, Callable
 
 import torch
 
+from sglang_omni.config.pd_capability import pd_disaggregation_capable
 from sglang_omni.config.schema import PipelineConfig
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
@@ -223,6 +224,27 @@ def make_scheduler(**_: Any) -> FakeScheduler:
 
 def dummy_factory(**kwargs: Any) -> dict[str, Any]:
     return dict(kwargs)
+
+
+# Note: (Yue Yin) PD-capable stage factory used by PD compiler tests. The
+# marker (not the function/model name) is what makes it PD-capable.
+@pd_disaggregation_capable
+def pd_capable_factory(**kwargs: Any) -> dict[str, Any]:
+    return dict(kwargs)
+
+
+@pd_disaggregation_capable
+def strict_pd_capable_factory(
+    *,
+    model_path: str,
+    gpu_id: int,
+) -> dict[str, Any]:
+    """PD-capable factory with a strict signature (no ``**kwargs``).
+
+    Note: (Yue Yin) Used to prove the compiler never forwards pd_role/pd_partner
+    as constructor kwargs; passing either would raise ``TypeError`` here.
+    """
+    return {"model_path": model_path, "gpu_id": gpu_id}
 
 
 def runtime_factory(

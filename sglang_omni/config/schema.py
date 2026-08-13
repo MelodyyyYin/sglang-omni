@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -125,6 +125,55 @@ class PlacementConfig(BaseModel):
             )
 
 
+class PDStagePlacement(BaseModel):
+    """Placement for one half of a PD-disaggregated stage.
+
+    Note: (Yue Yin) Real PD requires the prefill and decode halves on
+    distinct GPUs (same-node CUDA IPC KV transfer). ``gpu`` accepts an int
+    or, for TP stages, a per-rank list whose length must equal the logical
+    stage ``tp_size``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    gpu: int | list[int] | None = None
+    process: str | None = None
+
+
+class PDConfig(BaseModel):
+    """Prefill/decode disaggregation request for a logical stage.
+
+    Note: (Yue Yin) A logical stage carrying this config is expanded by the
+    compiler into ``<stage>_prefill`` and ``<stage>_decode`` physical stages
+    (see ``sglang_omni.config.pd_rewrite``). This object only supplies the
+    per-half placement the compiler cannot infer; it never names the two
+    generated stages.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    prefill: PDStagePlacement = Field(default_factory=PDStagePlacement)
+    decode: PDStagePlacement = Field(default_factory=PDStagePlacement)
+
+
+class PDExecution(BaseModel):
+    """Compiler-generated PD execution metadata for one physical half.
+
+    Note: (Yue Yin) This is set only by the PD graph rewrite
+    (``sglang_omni.config.pd_rewrite``) on the generated ``<stage>_prefill``
+    and ``<stage>_decode`` stages; users never author it. It is a typed
+    launch/runtime field carried alongside the stage rather than through
+    ``factory_args`` so it is never forwarded as an arbitrary factory
+    constructor kwarg and cannot break strict factory signatures. ``role`` and
+    ``partner`` are symmetric: each half names the other as its partner.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    role: Literal["prefill", "decode"]
+    partner: str
+
+
 class StageConfig(BaseModel):
     """Single pipeline stage configuration.
 
@@ -188,6 +237,16 @@ class StageConfig(BaseModel):
 
     # --- Communication pool tuning ---
     comm: CommConfig | None = None
+
+    # --- Prefill/decode disaggregation ---
+    # Note: (Yue Yin) When set, the compiler expands this logical stage into
+    # <name>_prefill and <name>_decode before placement/topology/endpoints.
+    pd_disaggregation: PDConfig | None = None
+    # Note: (Yue Yin) Compiler-only typed field set by the PD rewrite on the
+    # generated physical halves. It stays absent (None) on every user-authored
+    # and non-PD stage, and is intentionally NOT part of factory_args so it is
+    # never forwarded as a factory constructor kwarg.
+    pd_execution: PDExecution | None = None
 
     def model_post_init(self, __context: Any = None) -> None:
         fields_set = self.__pydantic_fields_set__
@@ -311,6 +370,7 @@ class PipelineConfig(BaseModel):
     def model_post_init(self, __context: Any = None) -> None:
         self._validate_general()
         self._validate_fusion()
+        self._validate_pd()
         self.config_cls = self.__class__.__name__
         if self.name is None:
             self.name = self.model_path
@@ -569,6 +629,49 @@ class PipelineConfig(BaseModel):
                         f"{stage.name!r} must route only to {expected_next!r}"
                     )
 
+    def _validate_pd(self) -> None:
+        # Note: (Yue Yin) Validate the disaggregation request on the logical
+        # stage; the structural expansion happens later in the compiler.
+        fused = {name for group in (self.fused_stages or []) for name in group}
+        existing_names = {s.name for s in self.stages}
+        for s in self.stages:
+            pd = s.pd_disaggregation
+            if pd is None:
+                continue
+            # Note: (Yue Yin) The rewrite generates <name>_prefill/<name>_decode;
+            # reject up front if either would collide with an existing stage so
+            # expansion can never silently overwrite a user-authored stage.
+            for suffix in ("_prefill", "_decode"):
+                generated = f"{s.name}{suffix}"
+                if generated in existing_names:
+                    raise ValueError(
+                        f"Stage {s.name!r} pd_disaggregation would generate "
+                        f"{generated!r}, which collides with an existing stage"
+                    )
+            if s.name in fused:
+                raise ValueError(
+                    f"Stage {s.name!r} cannot set pd_disaggregation and appear "
+                    "in fused_stages"
+                )
+            p_gpu = pd.prefill.gpu
+            d_gpu = pd.decode.gpu
+            if p_gpu is None or d_gpu is None:
+                raise ValueError(
+                    f"Stage {s.name!r} pd_disaggregation requires explicit "
+                    "prefill.gpu and decode.gpu for real PD"
+                )
+            if _pd_gpu_set(p_gpu) & _pd_gpu_set(d_gpu):
+                raise ValueError(
+                    f"Stage {s.name!r} pd_disaggregation prefill and decode "
+                    "cannot share the same GPU"
+                )
+            for role, gpu in (("prefill", p_gpu), ("decode", d_gpu)):
+                if isinstance(gpu, list) and len(gpu) != s.tp_size:
+                    raise ValueError(
+                        f"Stage {s.name!r} pd_disaggregation {role}.gpu has "
+                        f"{len(gpu)} entries but tp_size={s.tp_size}"
+                    )
+
     def apply_fusion(self) -> tuple[list[StageConfig], dict[str, str], str]:
         name_map = {s.name: s.name for s in self.stages}
         return list(self.stages), name_map, self.resolved_entry_stage
@@ -584,6 +687,12 @@ def _target_list(targets: str | list[str] | None) -> list[str]:
     if isinstance(targets, str):
         return [targets]
     return list(targets)
+
+
+def _pd_gpu_set(gpu: int | list[int]) -> set[int]:
+    if isinstance(gpu, int):
+        return {gpu}
+    return {int(gpu_id) for gpu_id in gpu}
 
 
 def _stage_gpu_ids_for_fusion(stage: StageConfig) -> tuple[int, ...]:
