@@ -460,9 +460,7 @@ class MultiProcessPipelineRunner:
                 completion_endpoint=prep.endpoints["completion"],
                 abort_endpoint=prep.endpoints["abort"],
                 entry_stage=prep.entry_stage,
-                # Note: (Yue Yin) Physical terminal identity from the expanded
-                # graph, not config.terminal_stages (logical). When a terminal
-                # stage is PD-expanded, only its decode half is terminal.
+                # Use physical terminal identity after PD expansion, not logical config.
                 terminal_stages=prep.terminal_stages or None,
                 terminal_stages_resolver=terminal_stages_resolver,
                 terminal_name_map=prep.terminal_name_map,

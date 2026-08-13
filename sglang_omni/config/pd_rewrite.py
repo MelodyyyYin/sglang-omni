@@ -1,23 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """Generic PD (prefill/decode) disaggregation graph rewrite.
 
-Note: (Yue Yin) This expands each logical stage marked ``pd_disaggregation``
-into two physical stages, ``<stage>_prefill`` and ``<stage>_decode``. It is
-purely structural — no model conditionals, no scheduler/KV/request wiring:
-
-* inbound edges (other stages' ``next``/``stream_to``/``wait_for``/
-  ``project_payload`` referencing the logical stage) are rewritten to
-  terminate at the prefill half;
-* the original downstream edges (``next``/``route_fn``/``terminal``/
-  ``stream_to``) originate from the decode half;
-* fan-in (``wait_for``/``merge_fn``) stays on the prefill half, since inputs
-  arrive there; the decode half admits a prebuilt request from the PD handoff
-  and therefore carries no fan-in;
-* the prefill -> decode handoff is an explicit PD control/KV relationship
-  recorded in a typed ``pd_execution`` field (``role``/``partner``), never an
-  ordinary ``next`` payload edge. Treating decode as a normal ``next`` target
-  would make the coordinator admit it as a fresh downstream request and
-  double-transport the payload alongside the KV plane.
+Expands each logical stage marked ``pd_disaggregation`` into two physical
+stages, ``<stage>_prefill`` and ``<stage>_decode``. Inbound edges terminate at
+the prefill half; downstream edges, terminal/``stream_to``/``route_fn`` logic,
+and completion accounting move to the decode half. The prefill -> decode
+handoff is recorded in typed ``pd_execution`` (not an ordinary ``next`` edge),
+otherwise the coordinator would admit decode as a fresh downstream request and
+double-transport payload alongside the KV plane.
 """
 
 from __future__ import annotations
@@ -34,13 +24,10 @@ DECODE_SUFFIX = "_decode"
 class PDExpansion:
     """Result of the PD graph rewrite.
 
-    Note: (Yue Yin) ``routing_map`` and ``terminal_map`` separate the two
-    logical->physical identities a PD stage now has. New requests and dynamic
-    routes that name logical stage ``S`` must reach the prefill half
-    (``routing_map``), while request completion for a terminal ``S`` is owned by
-    the decode half (``terminal_map``). Callers compose these maps with the
-    fusion name map so downstream routing and completion accounting use the
-    correct physical identity.
+    ``routing_map`` sends logical stage names to the prefill half (used for
+    inbound routes and dynamic ``route_fn`` targets); ``terminal_map`` sends
+    logical terminal names to the decode half (used for completion accounting).
+    Splitting the two keeps routing identity separate from terminal identity.
     """
 
     stages: list[StageConfig]
@@ -70,11 +57,9 @@ def expand_pd_stages(
             terminal_map={},
         )
 
-    # Note: (Yue Yin) External references to a PD stage terminate at its
-    # prefill half; downstream continuation is owned by the decode half.
+    # External references resolve to the prefill half; completion/terminal
+    # identity is owned by the decode half.
     inbound_rename = {name: f"{name}{PREFILL_SUFFIX}" for name in pd_names}
-    # Note: (Yue Yin) Completion for a logical terminal PD stage is owned by
-    # the decode half, so terminal identity maps to <name>_decode.
     terminal_rename = {name: f"{name}{DECODE_SUFFIX}" for name in pd_names}
 
     out: list[StageConfig] = []
@@ -143,9 +128,7 @@ def _split_pd_stage(
     prefill_name = f"{s.name}{PREFILL_SUFFIX}"
     decode_name = f"{s.name}{DECODE_SUFFIX}"
 
-    # Note: (Yue Yin) Prefill half keeps fan-in inputs; owns no ordinary
-    # downstream edge. Its only successor is the PD control/KV relationship
-    # (recorded below in the typed pd_execution field).
+    # Prefill keeps fan-in; it has no ordinary downstream edge.
     prefill = s.model_copy(
         deep=True,
         update={
@@ -158,15 +141,12 @@ def _split_pd_stage(
             "stream_to": [],
             "stream_done_to_fn": None,
             "pd_disaggregation": None,
-            # Note: (Yue Yin) Typed PD metadata, not factory_args, so it is
-            # never forwarded as a factory constructor kwarg.
+            # Typed PD metadata travels outside factory_args.
             "pd_execution": PDExecution(role="prefill", partner=decode_name),
         },
     )
 
-    # Note: (Yue Yin) Decode half owns the logical stage's real downstream
-    # edges, streaming, and terminal flag. It admits a prebuilt request from
-    # the PD handoff, so it carries no fan-in.
+    # Decode owns downstream edges, streaming, and terminal flag; no fan-in.
     decode = s.model_copy(
         deep=True,
         update={
@@ -182,7 +162,6 @@ def _split_pd_stage(
             "wait_for_fn": None,
             "merge_fn": None,
             "pd_disaggregation": None,
-            # Note: (Yue Yin) Symmetric partner identity with the prefill half.
             "pd_execution": PDExecution(role="decode", partner=prefill_name),
         },
     )

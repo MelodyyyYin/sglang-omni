@@ -109,10 +109,7 @@ class Stage:
     ):
         self.name = name
         self.role = role
-        # Note: (Yue Yin) Typed PD execution metadata (role/partner) for a
-        # PD-disaggregated half, delivered through the launch path rather than
-        # factory_args. PR 1 only plumbs it onto the stage; scheduler
-        # prefill-only/decode-only behavior is out of scope here.
+        # PR1 only plumbs typed PD metadata onto the stage; scheduler behavior is out of scope.
         self.pd_execution = pd_execution
         self.get_next = get_next
         self.gpu_id = gpu_id

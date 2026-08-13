@@ -66,23 +66,18 @@ class Coordinator:
             completion_endpoint: ZMQ endpoint to receive completions
             abort_endpoint: ZMQ endpoint for abort broadcasts
             entry_stage: Name of the entry stage for new requests
-            terminal_stages: Terminal stage names. When multiple are given,
-                the coordinator waits for all to complete before resolving.
-                These are physical stage identities (after PD expansion).
-            terminal_name_map: Logical->physical terminal name map. A
-                model-provided ``terminal_stages_resolver`` returns logical
-                public stage names; the coordinator maps them to the physical
-                stage that actually reports completion (e.g. ``S`` ->
-                ``S_decode`` for a PD-expanded stage).
+            terminal_stages: Physical terminal stage names. The coordinator
+                waits for all to complete before resolving.
+            terminal_name_map: Logical -> physical terminal map. A model
+                resolver may return logical stage names; they are mapped to the
+                physical stage that reports completion (e.g. ``S`` -> ``S_decode``).
         """
         self.entry_stage = entry_stage
         self._terminal_stages: set[str] = (
             set(terminal_stages) if terminal_stages else set()
         )
         self._terminal_stages_resolver = terminal_stages_resolver
-        # Note: (Yue Yin) Default identity map; only PD-expanded terminal
-        # stages add entries. Applied to resolver output so completion
-        # accounting uses physical identity.
+        # Map logical resolver output to the physical stage that reports completion.
         self._terminal_name_map: dict[str, str] = dict(terminal_name_map or {})
         self._partial_results: dict[str, dict[str, Any]] = {}
 

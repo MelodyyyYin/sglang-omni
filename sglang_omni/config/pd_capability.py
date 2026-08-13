@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Generic PD (prefill/decode) capability declaration and validation.
 
-Note: (Yue Yin) A stage may only be PD-disaggregated if its factory declares
-that it can run as a prefill/decode half. This capability is expressed by a
-marker attribute the factory author sets via :func:`pd_disaggregation_capable`,
-never by a model-name or factory-name conditional. The compiler validates the
-marker before process launch so a mis-configured pipeline fails fast in the
-parent process instead of crashing a spawned worker.
+A factory must explicitly opt in via :func:`pd_disaggregation_capable`; the
+compiler validates the marker in the parent process before spawning workers so a
+mis-configured pipeline fails fast.
 """
 
 from __future__ import annotations
@@ -23,12 +20,7 @@ _PD_CAPABLE_ATTR = "__sglang_pd_disaggregation_capable__"
 
 
 def pd_disaggregation_capable(factory: Callable[..., Any]) -> Callable[..., Any]:
-    """Mark *factory* as able to run as a PD prefill/decode half.
-
-    Note: (Yue Yin) Model authors decorate their stage factory with this to opt
-    into PD disaggregation. It is the single generic capability signal; no code
-    branches on model or factory names.
-    """
+    """Mark *factory* as able to run as a PD prefill/decode half."""
     setattr(factory, _PD_CAPABLE_ATTR, True)
     return factory
 
@@ -41,9 +33,9 @@ def factory_supports_pd(factory: Callable[..., Any]) -> bool:
 def validate_pd_capabilities(stages: Iterable[StageConfig]) -> None:
     """Reject PD-enabled stages whose factory is not PD-capable.
 
-    Note: (Yue Yin) Runs in the parent process before workers are spawned.
-    Only factories of stages that actually carry PD execution metadata are
-    imported, so ordinary non-PD pipelines never import a factory here.
+    Runs in the parent process before workers are spawned. Only PD-expanded
+    stages are checked, so ordinary non-PD pipelines do not import factories
+    here.
     """
     for stage in stages:
         if stage.pd_execution is None:

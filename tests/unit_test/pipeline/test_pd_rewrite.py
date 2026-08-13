@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Note: (Yue Yin) Structural tests for the PD graph rewrite.
+"""Structural tests for the PD graph rewrite.
 
-These cover only the compiler graph rewrite plus its effect on placement and
-process topology. No scheduler/KV/request wiring is exercised.
+Coverage is limited to compiler graph rewrite, placement, and process
+topology. No scheduler/KV/request wiring is exercised.
 """
 from __future__ import annotations
 
@@ -37,30 +37,32 @@ def _by_name(stages: list[StageConfig]) -> dict[str, StageConfig]:
     return {s.name: s for s in stages}
 
 
-def _linear_pd_pipeline() -> PipelineConfig:
-    return PipelineConfig(
-        model_path="dummy",
-        stages=[
-            StageConfig(
-                name="pre", factory=_FACTORY, gpu=0, process="pre", next="thinker"
-            ),
-            StageConfig(
-                name="thinker",
-                factory=_FACTORY,
-                gpu=1,
-                process="thinker",
-                next="post",
-                pd_disaggregation=_pd(1, 2),
-            ),
+def _pd_pipeline(*, terminal: bool = False) -> PipelineConfig:
+    stages = [
+        StageConfig(
+            name="pre", factory=_FACTORY, gpu=0, process="pre", next="thinker"
+        ),
+        StageConfig(
+            name="thinker",
+            factory=_FACTORY,
+            gpu=1,
+            process="thinker",
+            terminal=terminal,
+            next=None if terminal else "post",
+            pd_disaggregation=_pd(1, 2),
+        ),
+    ]
+    if not terminal:
+        stages.append(
             StageConfig(
                 name="post", factory=_FACTORY, gpu=3, process="post", terminal=True
-            ),
-        ],
-    )
+            )
+        )
+    return PipelineConfig(model_path="dummy", stages=stages)
 
 
 def test_expand_splits_stage_and_preserves_order() -> None:
-    stages = _expand(_linear_pd_pipeline())
+    stages = _expand(_pd_pipeline())
 
     assert [s.name for s in stages] == [
         "pre",
@@ -71,29 +73,27 @@ def test_expand_splits_stage_and_preserves_order() -> None:
 
 
 def test_inbound_edge_terminates_at_prefill() -> None:
-    stages = _by_name(_expand(_linear_pd_pipeline()))
+    stages = _by_name(_expand(_pd_pipeline()))
 
     assert stages["pre"].next == "thinker_prefill"
 
 
 def test_downstream_edge_originates_from_decode() -> None:
-    stages = _by_name(_expand(_linear_pd_pipeline()))
+    stages = _by_name(_expand(_pd_pipeline()))
 
     prefill = stages["thinker_prefill"]
     decode = stages["thinker_decode"]
 
-    # Note: (Yue Yin) Prefill owns no ordinary downstream payload edge.
     assert prefill.next is None
     assert prefill.terminal is False
     assert prefill.route_fn is None
     assert prefill.stream_to == []
 
-    # Note: (Yue Yin) Decode owns the logical stage's real downstream edge.
     assert decode.next == "post"
 
 
 def test_pd_placement_and_roles_recorded() -> None:
-    stages = _by_name(_expand(_linear_pd_pipeline()))
+    stages = _by_name(_expand(_pd_pipeline()))
 
     prefill = stages["thinker_prefill"]
     decode = stages["thinker_decode"]
@@ -110,24 +110,21 @@ def test_pd_placement_and_roles_recorded() -> None:
     assert decode.pd_execution.role == "decode"
     assert decode.pd_execution.partner == "thinker_prefill"
 
-    # Note: (Yue Yin) PD metadata is typed, never smuggled through factory_args
-    # (which would leak into the factory constructor).
+    # Note: (Yue Yin) PD metadata stays typed; never forwarded as factory kwargs.
     assert "pd_role" not in prefill.factory_args
     assert "pd_partner" not in prefill.factory_args
     assert "pd_role" not in decode.factory_args
     assert "pd_partner" not in decode.factory_args
 
-    # Note: (Yue Yin) Partner identity is symmetric.
     assert prefill.pd_execution.partner == decode.name
     assert decode.pd_execution.partner == prefill.name
 
-    # Note: (Yue Yin) The handoff is a PD control/KV relationship, not a next
-    # payload edge, so no stage routes to the decode half.
+    # Note: (Yue Yin) Prefill->decode handoff is a PD relationship, not a payload edge.
     assert all(s.next != "thinker_decode" for s in stages.values())
 
 
 def test_placement_puts_halves_on_distinct_gpus() -> None:
-    config = _linear_pd_pipeline()
+    config = _pd_pipeline()
     stages = _expand(config)
 
     plan = build_stage_placement_plan(config, stages_cfg=stages)
@@ -137,7 +134,7 @@ def test_placement_puts_halves_on_distinct_gpus() -> None:
 
 
 def test_topology_puts_halves_in_distinct_processes() -> None:
-    config = _linear_pd_pipeline()
+    config = _pd_pipeline()
     stages = _expand(config)
     plan = build_stage_placement_plan(config, stages_cfg=stages)
 
@@ -179,8 +176,6 @@ def test_entry_stage_rewritten_to_prefill_when_pd_is_entry() -> None:
         "thinker_prefill",
         "thinker_decode",
     ]
-    # Note: (Yue Yin) Routing map sends the logical entry name to the prefill
-    # half; terminal map is empty because the PD stage is not terminal.
     assert expansion.routing_map["thinker"] == "thinker_prefill"
     assert expansion.terminal_map["thinker"] == "thinker_decode"
 
@@ -209,12 +204,10 @@ def test_fan_in_stays_on_prefill_and_decode_is_cleared() -> None:
 
     stages = _by_name(_expand(config))
 
-    # Note: (Yue Yin) Inbound producers now target the prefill half.
     assert stages["a"].next == "thinker_prefill"
     assert stages["b"].next == "thinker_prefill"
 
-    # Note: (Yue Yin) Fan-in stays where inputs arrive (prefill); decode
-    # admits a prebuilt request and carries no fan-in.
+    # Note: (Yue Yin) Fan-in stays on prefill; decode has no ordinary fan-in.
     prefill = stages["thinker_prefill"]
     decode = stages["thinker_decode"]
     assert prefill.wait_for == ["a", "b"]
@@ -329,36 +322,15 @@ def test_validation_rejects_pd_in_fused_group() -> None:
         )
 
 
-def _terminal_pd_pipeline() -> PipelineConfig:
-    # Note: (Yue Yin) The PD stage is itself the terminal stage.
-    return PipelineConfig(
-        model_path="dummy",
-        stages=[
-            StageConfig(
-                name="pre", factory=_FACTORY, gpu=0, process="pre", next="thinker"
-            ),
-            StageConfig(
-                name="thinker",
-                factory=_FACTORY,
-                gpu=1,
-                process="thinker",
-                terminal=True,
-                pd_disaggregation=_pd(1, 2),
-            ),
-        ],
-    )
-
-
 def test_terminal_flag_moves_to_decode_only() -> None:
-    stages = _by_name(_expand(_terminal_pd_pipeline()))
+    stages = _by_name(_expand(_pd_pipeline(terminal=True)))
 
-    # Note: (Yue Yin) Only the decode half is terminal; prefill is not.
     assert stages["thinker_decode"].terminal is True
-    assert stages["thinker_prefill"].terminal is False
+    assert not stages["thinker_prefill"].terminal
 
 
 def test_terminal_map_points_terminal_stage_to_decode() -> None:
-    config = _terminal_pd_pipeline()
+    config = _pd_pipeline(terminal=True)
     expansion = expand_pd_stages(
         list(config.stages), entry_stage=config.resolved_entry_stage
     )
@@ -369,7 +341,7 @@ def test_terminal_map_points_terminal_stage_to_decode() -> None:
 
 
 def test_expand_twice_is_idempotent() -> None:
-    config = _linear_pd_pipeline()
+    config = _pd_pipeline()
     once = expand_pd_stages(
         list(config.stages), entry_stage=config.resolved_entry_stage
     )
@@ -379,15 +351,14 @@ def test_expand_twice_is_idempotent() -> None:
     # expansion is a safe no-op with no further renaming.
     assert [s.name for s in twice.stages] == [s.name for s in once.stages]
     assert twice.entry_stage == once.entry_stage
-    assert twice.routing_map == {}
-    assert twice.terminal_map == {}
+    assert twice.routing_map == twice.terminal_map == {}
 
 
 def test_prefill_has_no_next_edge_to_decode() -> None:
-    stages = _by_name(_expand(_linear_pd_pipeline()))
+    stages = _by_name(_expand(_pd_pipeline()))
     prefill = stages["thinker_prefill"]
 
-    # Note: (Yue Yin) The prefill->decode handoff is never an ordinary next edge.
+    # Note: (Yue Yin) Prefill->decode handoff is not a payload next edge.
     assert prefill.next is None
     assert all(s.next != "thinker_decode" for s in stages.values())
 

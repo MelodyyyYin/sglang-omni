@@ -100,10 +100,7 @@ class StageLaunchConfig:
     # Fusion name map
     name_map: dict[str, str] = field(default_factory=dict)
 
-    # Note: (Yue Yin) Typed PD execution metadata (role/partner) for a
-    # PD-disaggregated half. None for every ordinary stage. Delivered to the
-    # Stage at construction (the intended runtime path); never merged into
-    # factory_args.
+    # Typed PD execution metadata delivered to the Stage at runtime; never merged into factory_args.
     pd_execution: PDExecution | None = None
 
     # TP internal control (leader -> followers)

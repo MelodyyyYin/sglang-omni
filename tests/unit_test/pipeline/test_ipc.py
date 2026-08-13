@@ -313,22 +313,7 @@ async def test_mp_runner_stop_cleans_runtime_dir(
     """Preserves IPC runtime directory cleanup when the runner stops."""
 
     class FakeCoordinator:
-        def __init__(
-            self,
-            completion_endpoint: str,
-            abort_endpoint: str,
-            entry_stage: str,
-            terminal_stages: list[str] | None = None,
-            terminal_stages_resolver=None,
-            terminal_name_map: dict[str, str] | None = None,
-        ) -> None:
-            del (
-                abort_endpoint,
-                entry_stage,
-                terminal_stages,
-                terminal_stages_resolver,
-                terminal_name_map,
-            )
+        def __init__(self, completion_endpoint: str, **_) -> None:
             self.control_plane = SimpleNamespace(
                 completion_endpoint=completion_endpoint
             )

@@ -126,13 +126,7 @@ class PlacementConfig(BaseModel):
 
 
 class PDStagePlacement(BaseModel):
-    """Placement for one half of a PD-disaggregated stage.
-
-    Note: (Yue Yin) Real PD requires the prefill and decode halves on
-    distinct GPUs (same-node CUDA IPC KV transfer). ``gpu`` accepts an int
-    or, for TP stages, a per-rank list whose length must equal the logical
-    stage ``tp_size``.
-    """
+    """Placement for one half of a PD-disaggregated stage."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -143,11 +137,8 @@ class PDStagePlacement(BaseModel):
 class PDConfig(BaseModel):
     """Prefill/decode disaggregation request for a logical stage.
 
-    Note: (Yue Yin) A logical stage carrying this config is expanded by the
-    compiler into ``<stage>_prefill`` and ``<stage>_decode`` physical stages
-    (see ``sglang_omni.config.pd_rewrite``). This object only supplies the
-    per-half placement the compiler cannot infer; it never names the two
-    generated stages.
+    The compiler expands the logical stage into ``<stage>_prefill`` and
+    ``<stage>_decode``; this only supplies the per-half placement it cannot infer.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -159,13 +150,9 @@ class PDConfig(BaseModel):
 class PDExecution(BaseModel):
     """Compiler-generated PD execution metadata for one physical half.
 
-    Note: (Yue Yin) This is set only by the PD graph rewrite
-    (``sglang_omni.config.pd_rewrite``) on the generated ``<stage>_prefill``
-    and ``<stage>_decode`` stages; users never author it. It is a typed
-    launch/runtime field carried alongside the stage rather than through
-    ``factory_args`` so it is never forwarded as an arbitrary factory
-    constructor kwarg and cannot break strict factory signatures. ``role`` and
-    ``partner`` are symmetric: each half names the other as its partner.
+    Set by the PD graph rewrite on generated prefill/decode halves. Kept as a
+    typed launch/runtime field (not in ``factory_args``) so it cannot leak into
+    factory constructors or break strict signatures.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -239,13 +226,9 @@ class StageConfig(BaseModel):
     comm: CommConfig | None = None
 
     # --- Prefill/decode disaggregation ---
-    # Note: (Yue Yin) When set, the compiler expands this logical stage into
-    # <name>_prefill and <name>_decode before placement/topology/endpoints.
+    # Compiler expands this stage into <name>_prefill and <name>_decode.
     pd_disaggregation: PDConfig | None = None
-    # Note: (Yue Yin) Compiler-only typed field set by the PD rewrite on the
-    # generated physical halves. It stays absent (None) on every user-authored
-    # and non-PD stage, and is intentionally NOT part of factory_args so it is
-    # never forwarded as a factory constructor kwarg.
+    # Compiler-only typed field; intentionally not part of factory_args.
     pd_execution: PDExecution | None = None
 
     def model_post_init(self, __context: Any = None) -> None:
@@ -630,17 +613,17 @@ class PipelineConfig(BaseModel):
                     )
 
     def _validate_pd(self) -> None:
-        # Note: (Yue Yin) Validate the disaggregation request on the logical
-        # stage; the structural expansion happens later in the compiler.
+        # Validate PD placement on the logical stage; structural expansion is
+        # done later by the compiler.
         fused = {name for group in (self.fused_stages or []) for name in group}
         existing_names = {s.name for s in self.stages}
+
         for s in self.stages:
             pd = s.pd_disaggregation
             if pd is None:
                 continue
-            # Note: (Yue Yin) The rewrite generates <name>_prefill/<name>_decode;
-            # reject up front if either would collide with an existing stage so
-            # expansion can never silently overwrite a user-authored stage.
+            # The rewrite will generate <name>_prefill/<name>_decode; reject name
+            # collisions up front so expansion never overwrites a user stage.
             for suffix in ("_prefill", "_decode"):
                 generated = f"{s.name}{suffix}"
                 if generated in existing_names:

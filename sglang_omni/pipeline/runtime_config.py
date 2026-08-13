@@ -65,14 +65,10 @@ class PipelineRuntimePrep:
     process_plan: ProcessTopologyPlan
     runtime_dir: IpcRuntimeDir
     runtime_dir_created_here: bool
-    # Note: (Yue Yin) Physical terminal identity derived from the expanded
-    # stage graph. When logical terminal S is PD-expanded, only S_decode is
-    # terminal here; S_prefill is not.
+    # Physical terminal identities after PD expansion (decode, not prefill).
     terminal_stages: list[str]
-    # Note: (Yue Yin) Logical->physical map for terminal identity (S ->
-    # S_decode). A model-provided terminal_stages_fn returns logical public
-    # names; the coordinator applies this map so completion accounting matches
-    # the physical stage that actually reports completion.
+    # Logical -> physical terminal map so resolver outputs point to the stage
+    # that actually reports completion.
     terminal_name_map: dict[str, str]
 
 
@@ -107,19 +103,14 @@ def prepare_pipeline_runtime(
 ) -> PipelineRuntimePrep:
     """Prepare fused stages, endpoint allocation, and process topology."""
     stages_cfg, name_map, entry_stage = config.apply_fusion()
-    # Note: (Yue Yin) Expand PD-disaggregation stages before placement,
-    # topology, and endpoint allocation so each physical half gets its own
-    # GPU, process, and rank endpoints.
+    # Expand PD stages before placement/topology/endpoints so each half gets its
+    # own GPU, process, and rank endpoints.
     expansion = expand_pd_stages(stages_cfg, entry_stage=entry_stage)
     stages_cfg = expansion.stages
     entry_stage = expansion.entry_stage
-    # Note: (Yue Yin) Compose the fusion name map with PD routing so a name a
-    # user may reference (raw -> fused canonical) resolves to the prefill half
-    # when that canonical stage is PD-expanded. Generated physical names map to
-    # themselves so route_fn may also return them directly.
+    # Compose fusion map (raw -> canonical) with PD routing (canonical -> prefill).
     name_map = _compose_name_map(name_map, expansion.routing_map, stages_cfg)
-    # Note: (Yue Yin) Reject PD-enabled stages whose factory is not PD-capable
-    # before any worker process is spawned.
+    # Fail fast in the parent process if a PD stage uses a non-capable factory.
     validate_pd_capabilities(stages_cfg)
     terminal_stages = [s.name for s in stages_cfg if s.terminal]
     runtime_dir = ipc_runtime_dir
@@ -166,10 +157,9 @@ def _compose_name_map(
 ) -> dict[str, str]:
     """Compose the fusion name map with the PD routing map.
 
-    Note: (Yue Yin) Fusion maps raw -> canonical; PD routing maps a logical
-    stage -> its prefill half. Applying routing to each canonical value yields
-    a single deterministic lookup used by route_fn/next resolution. Generated
-    physical names resolve to themselves so users never have to return them.
+    Fusion maps raw -> canonical; PD routing maps canonical -> prefill.
+    One lookup therefore takes any alias to the correct physical prefill half.
+    Generated physical names map to themselves so route_fn may use them too.
     """
     composed = {
         raw: routing_map.get(canonical, canonical)

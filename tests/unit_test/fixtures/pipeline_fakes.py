@@ -226,24 +226,14 @@ def dummy_factory(**kwargs: Any) -> dict[str, Any]:
     return dict(kwargs)
 
 
-# Note: (Yue Yin) PD-capable stage factory used by PD compiler tests. The
-# marker (not the function/model name) is what makes it PD-capable.
 @pd_disaggregation_capable
 def pd_capable_factory(**kwargs: Any) -> dict[str, Any]:
     return dict(kwargs)
 
 
 @pd_disaggregation_capable
-def strict_pd_capable_factory(
-    *,
-    model_path: str,
-    gpu_id: int,
-) -> dict[str, Any]:
-    """PD-capable factory with a strict signature (no ``**kwargs``).
-
-    Note: (Yue Yin) Used to prove the compiler never forwards pd_role/pd_partner
-    as constructor kwargs; passing either would raise ``TypeError`` here.
-    """
+def strict_pd_capable_factory(*, model_path: str, gpu_id: int) -> dict[str, Any]:
+    """PD-capable factory with a strict signature (no ``**kwargs``)."""
     return {"model_path": model_path, "gpu_id": gpu_id}
 
 
