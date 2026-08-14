@@ -14,8 +14,7 @@ from typing import Any
 from sglang_omni.config.schema import StageConfig
 from sglang_omni.utils.imports import import_string
 
-# Note: (Yue Yin) Marker attribute stamped on a factory callable. Kept as a
-# private dunder so it cannot collide with ordinary factory kwargs/attributes.
+# Note (Yue Yin): A private dunder avoids collisions with factory-owned metadata.
 _PD_CAPABLE_ATTR = "__sglang_pd_disaggregation_capable__"
 
 

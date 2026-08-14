@@ -65,10 +65,7 @@ class PipelineRuntimePrep:
     process_plan: ProcessTopologyPlan
     runtime_dir: IpcRuntimeDir
     runtime_dir_created_here: bool
-    # Physical terminal identities after PD expansion (decode, not prefill).
     terminal_stages: list[str]
-    # Logical -> physical terminal map so resolver outputs point to the stage
-    # that actually reports completion.
     terminal_name_map: dict[str, str]
 
 
@@ -103,14 +100,12 @@ def prepare_pipeline_runtime(
 ) -> PipelineRuntimePrep:
     """Prepare fused stages, endpoint allocation, and process topology."""
     stages_cfg, name_map, entry_stage = config.apply_fusion()
-    # Expand PD stages before placement/topology/endpoints so each half gets its
-    # own GPU, process, and rank endpoints.
+    # Note (Yue Yin): Expand before placement so each half receives independent
+    # process, device, and rank endpoints.
     expansion = expand_pd_stages(stages_cfg, entry_stage=entry_stage)
     stages_cfg = expansion.stages
     entry_stage = expansion.entry_stage
-    # Compose fusion map (raw -> canonical) with PD routing (canonical -> prefill).
     name_map = _compose_name_map(name_map, expansion.routing_map, stages_cfg)
-    # Fail fast in the parent process if a PD stage uses a non-capable factory.
     validate_pd_capabilities(stages_cfg)
     terminal_stages = [s.name for s in stages_cfg if s.terminal]
     runtime_dir = ipc_runtime_dir

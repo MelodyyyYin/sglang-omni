@@ -5,6 +5,7 @@ The runner owns the single serving path. It can start one OS process containing
 multiple non-TP stages, multiple OS processes on the same GPU, and the existing
 one-process-per-rank TP topology.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -137,9 +138,7 @@ def _build_stage_groups(
             can_accept_stream_before_payload=stage_cfg.can_accept_stream_before_payload,
             disable_direct_cuda_ipc_payload=stage_cfg.disable_direct_cuda_ipc_payload,
             name_map=name_map,
-            # Note: (Yue Yin) Typed PD execution metadata travels as a launch
-            # field, never through factory_args, so strict factory signatures
-            # are unaffected. None for every non-PD stage.
+            # Note (Yue Yin): Keep compiler metadata out of user factory kwargs.
             pd_execution=stage_cfg.pd_execution,
         )
         if tp_size == 1:
@@ -460,7 +459,7 @@ class MultiProcessPipelineRunner:
                 completion_endpoint=prep.endpoints["completion"],
                 abort_endpoint=prep.endpoints["abort"],
                 entry_stage=prep.entry_stage,
-                # Use physical terminal identity after PD expansion, not logical config.
+                # Note (Yue Yin): Decode, rather than the logical stage, reports completion.
                 terminal_stages=prep.terminal_stages or None,
                 terminal_stages_resolver=terminal_stages_resolver,
                 terminal_name_map=prep.terminal_name_map,

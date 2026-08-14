@@ -77,7 +77,7 @@ class Coordinator:
             set(terminal_stages) if terminal_stages else set()
         )
         self._terminal_stages_resolver = terminal_stages_resolver
-        # Map logical resolver output to the physical stage that reports completion.
+        # Note (Yue Yin): Resolver output can stay logical while Decode owns completion.
         self._terminal_name_map: dict[str, str] = dict(terminal_name_map or {})
         self._partial_results: dict[str, dict[str, Any]] = {}
 
@@ -454,10 +454,8 @@ class Coordinator:
         request_id: str,
         exc: BaseException,
     ) -> None:
-        # Note: (Akazaakane) Non-streaming callers await the completion future,
-        # so errors must be propagated with set_exception(). Streaming callers
-        # receive errors through the stream queue and never await that future;
-        # cancel it instead to avoid "Future exception was never retrieved".
+        # Note (Yue Yin): Streaming callers observe queue errors, so cancelling
+        # avoids an unobserved exception on their unused completion future.
         future = self._completion_futures.get(request_id)
         if future is None or future.done():
             return
@@ -766,8 +764,8 @@ class Coordinator:
             raise ValueError(
                 "terminal_stages_resolver must return terminal stage names"
             )
-        # Note: (Yue Yin) Map logical public names to physical terminal
-        # identity before validating against the physical terminal set.
+        # Note (Yue Yin): Normalize logical names because only physical stages
+        # can participate in completion accounting.
         resolved_stages = {
             self._terminal_name_map.get(stage, stage) for stage in resolved
         }

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Stage worker process specifications, entrypoints, and lifecycle groups."""
+
 from __future__ import annotations
 
 import asyncio
@@ -100,7 +101,7 @@ class StageLaunchConfig:
     # Fusion name map
     name_map: dict[str, str] = field(default_factory=dict)
 
-    # Typed PD execution metadata delivered to the Stage at runtime; never merged into factory_args.
+    # Note (Yue Yin): Keep compiler metadata out of user factory kwargs.
     pd_execution: PDExecution | None = None
 
     # TP internal control (leader -> followers)
@@ -289,23 +290,14 @@ class StageGroup:
 
             while not event.is_set():
                 remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    details = ""
-                    try:
-                        traceback_text = startup_error_channel.get_nowait()
-                    except queue.Empty:
-                        pass
-                    else:
-                        details = f"\nStartup failure detail:\n{traceback_text}"
-                    raise TimeoutError(
-                        f"Process {process_label} did not become ready "
-                        f"within {timeout:.0f}s{details}"
-                    )
+
+                # Note (Yue Yin): Surface early child death instead of masking it
+                # as a generic startup timeout.
                 if not proc.is_alive():
                     details = ""
                     try:
-                        traceback_text = startup_error_channel.get(timeout=0.2)
-                    except queue.Empty:
+                        traceback_text = startup_error_channel.get_nowait()
+                    except (queue.Empty, EOFError):
                         pass
                     else:
                         details = f"\nStartup failure detail:\n{traceback_text}"
@@ -313,6 +305,24 @@ class StageGroup:
                         f"Process {process_label} died during startup "
                         f"(exit code {proc.exitcode}){details}"
                     )
+
+                try:
+                    traceback_text = startup_error_channel.get_nowait()
+                except (queue.Empty, EOFError):
+                    traceback_text = None
+                if traceback_text is not None:
+                    details = f"\nStartup failure detail:\n{traceback_text}"
+                    raise RuntimeError(
+                        f"Process {process_label} failed during startup "
+                        f"(exit code {proc.exitcode}){details}"
+                    )
+
+                if remaining <= 0:
+                    raise TimeoutError(
+                        f"Process {process_label} did not become ready "
+                        f"within {timeout:.0f}s"
+                    )
+
                 await loop.run_in_executor(None, event.wait, min(remaining, 1.0))
 
             logger.info("Process %s ready", process_label)
@@ -406,6 +416,8 @@ def stage_process_main(
         )
         if startup_error_channel is not None:
             startup_error_channel.put(traceback_text)
+            startup_error_channel.close()
+            startup_error_channel.join_thread()
         sys.exit(1)
 
 

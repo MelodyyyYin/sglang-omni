@@ -225,10 +225,8 @@ class StageConfig(BaseModel):
     # --- Communication pool tuning ---
     comm: CommConfig | None = None
 
-    # --- Prefill/decode disaggregation ---
-    # Compiler expands this stage into <name>_prefill and <name>_decode.
     pd_disaggregation: PDConfig | None = None
-    # Compiler-only typed field; intentionally not part of factory_args.
+    # Note (Yue Yin): Keep generated runtime identity out of user factory kwargs.
     pd_execution: PDExecution | None = None
 
     def model_post_init(self, __context: Any = None) -> None:
@@ -613,8 +611,6 @@ class PipelineConfig(BaseModel):
                     )
 
     def _validate_pd(self) -> None:
-        # Validate PD placement on the logical stage; structural expansion is
-        # done later by the compiler.
         fused = {name for group in (self.fused_stages or []) for name in group}
         existing_names = {s.name for s in self.stages}
 
@@ -622,20 +618,6 @@ class PipelineConfig(BaseModel):
             pd = s.pd_disaggregation
             if pd is None:
                 continue
-            # The rewrite will generate <name>_prefill/<name>_decode; reject name
-            # collisions up front so expansion never overwrites a user stage.
-            for suffix in ("_prefill", "_decode"):
-                generated = f"{s.name}{suffix}"
-                if generated in existing_names:
-                    raise ValueError(
-                        f"Stage {s.name!r} pd_disaggregation would generate "
-                        f"{generated!r}, which collides with an existing stage"
-                    )
-            if s.name in fused:
-                raise ValueError(
-                    f"Stage {s.name!r} cannot set pd_disaggregation and appear "
-                    "in fused_stages"
-                )
             p_gpu = pd.prefill.gpu
             d_gpu = pd.decode.gpu
             if p_gpu is None or d_gpu is None:
@@ -653,6 +635,20 @@ class PipelineConfig(BaseModel):
                     raise ValueError(
                         f"Stage {s.name!r} pd_disaggregation {role}.gpu has "
                         f"{len(gpu)} entries but tp_size={s.tp_size}"
+                    )
+            if s.name in fused:
+                raise ValueError(
+                    f"Stage {s.name!r} cannot set pd_disaggregation and appear "
+                    "in fused_stages"
+                )
+            # Note (Yue Yin): Reject collisions before expansion to preserve
+            # user-declared stages instead of silently overwriting them.
+            for suffix in ("_prefill", "_decode"):
+                generated = f"{s.name}{suffix}"
+                if generated in existing_names:
+                    raise ValueError(
+                        f"Stage {s.name!r} pd_disaggregation would generate "
+                        f"{generated!r}, which collides with an existing stage"
                     )
 
     def apply_fusion(self) -> tuple[list[StageConfig], dict[str, str], str]:

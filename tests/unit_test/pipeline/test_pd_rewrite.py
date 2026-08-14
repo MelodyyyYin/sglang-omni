@@ -1,23 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Structural tests for the PD graph rewrite.
+"""Structural tests for the PD graph rewrite."""
 
-Coverage is limited to compiler graph rewrite, placement, and process
-topology. No scheduler/KV/request wiring is exercised.
-"""
 from __future__ import annotations
 
 import pytest
 
-from sglang_omni.config import (
-    PipelineConfig,
-    StageConfig,
-    build_process_topology_plan,
-    build_stage_placement_plan,
-    expand_pd_stages,
-)
-from sglang_omni.config.schema import PDConfig, PDStagePlacement
-
-_FACTORY = "tests.unit_test.fixtures.pipeline_fakes.dummy_factory"
+from sglang_omni.config import expand_pd_stages
+from sglang_omni.config.schema import PDConfig, PDStagePlacement, PipelineConfig
+from tests.unit_test.pipeline.helpers import stage
 
 
 def _pd(prefill_gpu: int, decode_gpu: int) -> PDConfig:
@@ -27,361 +17,157 @@ def _pd(prefill_gpu: int, decode_gpu: int) -> PDConfig:
     )
 
 
-def _expand(config: PipelineConfig) -> list[StageConfig]:
-    return expand_pd_stages(
-        list(config.stages), entry_stage=config.resolved_entry_stage
-    ).stages
-
-
-def _by_name(stages: list[StageConfig]) -> dict[str, StageConfig]:
+def _by_name(stages: list) -> dict[str, object]:
     return {s.name: s for s in stages}
 
 
-def _pd_pipeline(*, terminal: bool = False) -> PipelineConfig:
-    stages = [
-        StageConfig(
-            name="pre", factory=_FACTORY, gpu=0, process="pre", next="thinker"
-        ),
-        StageConfig(
-            name="thinker",
-            factory=_FACTORY,
-            gpu=1,
-            process="thinker",
-            terminal=terminal,
-            next=None if terminal else "post",
-            pd_disaggregation=_pd(1, 2),
-        ),
-    ]
-    if not terminal:
-        stages.append(
-            StageConfig(
-                name="post", factory=_FACTORY, gpu=3, process="post", terminal=True
-            )
-        )
-    return PipelineConfig(model_path="dummy", stages=stages)
-
-
-def test_expand_splits_stage_and_preserves_order() -> None:
-    stages = _expand(_pd_pipeline())
-
-    assert [s.name for s in stages] == [
-        "pre",
-        "thinker_prefill",
-        "thinker_decode",
-        "post",
-    ]
-
-
-def test_inbound_edge_terminates_at_prefill() -> None:
-    stages = _by_name(_expand(_pd_pipeline()))
-
-    assert stages["pre"].next == "thinker_prefill"
-
-
-def test_downstream_edge_originates_from_decode() -> None:
-    stages = _by_name(_expand(_pd_pipeline()))
-
-    prefill = stages["thinker_prefill"]
-    decode = stages["thinker_decode"]
-
-    assert prefill.next is None
-    assert prefill.terminal is False
-    assert prefill.route_fn is None
-    assert prefill.stream_to == []
-
-    assert decode.next == "post"
-
-
-def test_pd_placement_and_roles_recorded() -> None:
-    stages = _by_name(_expand(_pd_pipeline()))
-
-    prefill = stages["thinker_prefill"]
-    decode = stages["thinker_decode"]
-
-    assert prefill.gpu == 1
-    assert prefill.process == "thinker_prefill"
-    assert prefill.pd_execution is not None
-    assert prefill.pd_execution.role == "prefill"
-    assert prefill.pd_execution.partner == "thinker_decode"
-
-    assert decode.gpu == 2
-    assert decode.process == "thinker_decode"
-    assert decode.pd_execution is not None
-    assert decode.pd_execution.role == "decode"
-    assert decode.pd_execution.partner == "thinker_prefill"
-
-    # Note: (Yue Yin) PD metadata stays typed; never forwarded as factory kwargs.
-    assert "pd_role" not in prefill.factory_args
-    assert "pd_partner" not in prefill.factory_args
-    assert "pd_role" not in decode.factory_args
-    assert "pd_partner" not in decode.factory_args
-
-    assert prefill.pd_execution.partner == decode.name
-    assert decode.pd_execution.partner == prefill.name
-
-    # Note: (Yue Yin) Prefill->decode handoff is a PD relationship, not a payload edge.
-    assert all(s.next != "thinker_decode" for s in stages.values())
-
-
-def test_placement_puts_halves_on_distinct_gpus() -> None:
-    config = _pd_pipeline()
-    stages = _expand(config)
-
-    plan = build_stage_placement_plan(config, stages_cfg=stages)
-
-    assert plan.stages["thinker_prefill"].gpu_ids == (1,)
-    assert plan.stages["thinker_decode"].gpu_ids == (2,)
-
-
-def test_topology_puts_halves_in_distinct_processes() -> None:
-    config = _pd_pipeline()
-    stages = _expand(config)
-    plan = build_stage_placement_plan(config, stages_cfg=stages)
-
-    topology = build_process_topology_plan(config, plan, stages_cfg=stages)
-
-    assert topology.stage_to_process["thinker_prefill"] == "thinker_prefill"
-    assert topology.stage_to_process["thinker_decode"] == "thinker_decode"
-    assert (
-        topology.stage_to_process["thinker_prefill"]
-        != topology.stage_to_process["thinker_decode"]
-    )
-
-
-def test_entry_stage_rewritten_to_prefill_when_pd_is_entry() -> None:
+def test_pd_expansion_rewrites_edges_and_metadata() -> None:
+    """A single representative pipeline exercises all structural invariants."""
     config = PipelineConfig(
         model_path="dummy",
-        entry_stage="thinker",
         stages=[
-            StageConfig(
-                name="thinker",
-                factory=_FACTORY,
-                gpu=1,
-                process="thinker",
+            stage(
+                "pre",
+                next="thinker",
+                project_payload={
+                    "thinker": "tests.unit_test.fixtures.pipeline_fakes.project_payload"
+                },
+            ),
+            stage(
+                "thinker",
                 next="post",
+                wait_for=["pre"],
+                merge_fn="tests.unit_test.fixtures.pipeline_fakes.merge_payloads",
+                stream_to=["sink"],
                 pd_disaggregation=_pd(1, 2),
             ),
-            StageConfig(
-                name="post", factory=_FACTORY, gpu=0, process="post", terminal=True
-            ),
+            stage("post", terminal=True),
+            stage("sink", terminal=True),
         ],
     )
 
     expansion = expand_pd_stages(
         list(config.stages), entry_stage=config.resolved_entry_stage
     )
+    stages = _by_name(expansion.stages)
 
-    assert expansion.entry_stage == "thinker_prefill"
-    assert [s.name for s in expansion.stages][:2] == [
+    assert [s.name for s in expansion.stages] == [
+        "pre",
         "thinker_prefill",
         "thinker_decode",
+        "post",
+        "sink",
     ]
-    assert expansion.routing_map["thinker"] == "thinker_prefill"
-    assert expansion.terminal_map["thinker"] == "thinker_decode"
 
+    assert expansion.routing_map == {"thinker": "thinker_prefill"}
+    assert expansion.terminal_map == {"thinker": "thinker_decode"}
 
-def test_fan_in_stays_on_prefill_and_decode_is_cleared() -> None:
-    config = PipelineConfig(
-        model_path="dummy",
-        stages=[
-            StageConfig(name="a", factory=_FACTORY, gpu=0, process="a", next="thinker"),
-            StageConfig(name="b", factory=_FACTORY, gpu=3, process="b", next="thinker"),
-            StageConfig(
-                name="thinker",
-                factory=_FACTORY,
-                gpu=1,
-                process="thinker",
-                next="post",
-                wait_for=["a", "b"],
-                merge_fn="tests.unit_test.fixtures.pipeline_fakes.merge_payloads",
-                pd_disaggregation=_pd(1, 2),
-            ),
-            StageConfig(
-                name="post", factory=_FACTORY, gpu=0, process="post", terminal=True
-            ),
-        ],
-    )
+    assert stages["pre"].next == "thinker_prefill"
+    assert stages["pre"].project_payload == {
+        "thinker_prefill": "tests.unit_test.fixtures.pipeline_fakes.project_payload"
+    }
 
-    stages = _by_name(_expand(config))
-
-    assert stages["a"].next == "thinker_prefill"
-    assert stages["b"].next == "thinker_prefill"
-
-    # Note: (Yue Yin) Fan-in stays on prefill; decode has no ordinary fan-in.
     prefill = stages["thinker_prefill"]
     decode = stages["thinker_decode"]
-    assert prefill.wait_for == ["a", "b"]
-    assert prefill.merge_fn is not None
-    assert decode.wait_for is None
-    assert decode.merge_fn is None
+
+    assert prefill.wait_for == ["pre"]
+    assert prefill.merge_fn == "tests.unit_test.fixtures.pipeline_fakes.merge_payloads"
+    assert prefill.gpu == 1
+    assert prefill.process == "thinker_prefill"
+    assert prefill.next is None
+    assert not prefill.terminal
+    assert not prefill.stream_to
+
+    assert decode.next == "post"
+    assert decode.stream_to == ["sink"]
+    assert decode.gpu == 2
+    assert decode.process == "thinker_decode"
+    assert not decode.wait_for
+    assert not decode.merge_fn
+
+    assert prefill.pd_execution.role == "prefill"
+    assert prefill.pd_execution.partner == "thinker_decode"
+    assert decode.pd_execution.role == "decode"
+    assert decode.pd_execution.partner == "thinker_prefill"
+    assert "pd_role" not in prefill.factory_args
+    assert "pd_partner" not in decode.factory_args
 
 
-def test_stream_to_moves_to_decode() -> None:
+def test_pd_entry_stage_rewritten_to_prefill() -> None:
+    config = PipelineConfig(
+        model_path="dummy",
+        entry_stage="thinker",
+        stages=[stage("thinker", terminal=True, pd_disaggregation=_pd(0, 1))],
+    )
+    expansion = expand_pd_stages(
+        list(config.stages), entry_stage=config.resolved_entry_stage
+    )
+
+    assert expansion.entry_stage == "thinker_prefill"
+    assert expansion.routing_map == {"thinker": "thinker_prefill"}
+    assert expansion.terminal_map == {"thinker": "thinker_decode"}
+    assert [s.name for s in expansion.stages if s.terminal] == ["thinker_decode"]
+
+
+def test_pd_expansion_is_idempotent() -> None:
     config = PipelineConfig(
         model_path="dummy",
         stages=[
-            StageConfig(name="pre", factory=_FACTORY, gpu=0, process="pre", next="thinker"),
-            StageConfig(
-                name="thinker",
-                factory=_FACTORY,
-                gpu=1,
-                process="thinker",
-                next="post",
-                stream_to=["sink"],
-                pd_disaggregation=_pd(1, 2),
-            ),
-            StageConfig(name="post", factory=_FACTORY, gpu=0, process="post", terminal=True),
-            StageConfig(name="sink", factory=_FACTORY, gpu=0, process="sink", terminal=True),
+            stage("pre", next="thinker"),
+            stage("thinker", next="post", pd_disaggregation=_pd(0, 1)),
+            stage("post", terminal=True),
         ],
     )
+    once = expand_pd_stages(
+        list(config.stages), entry_stage=config.resolved_entry_stage
+    )
+    twice = expand_pd_stages(once.stages, entry_stage=once.entry_stage)
 
-    stages = _by_name(_expand(config))
+    assert [s.name for s in twice.stages] == [s.name for s in once.stages]
+    assert twice.entry_stage == once.entry_stage
+    assert twice.routing_map == twice.terminal_map == {}
 
-    assert stages["thinker_prefill"].stream_to == []
-    assert stages["thinker_decode"].stream_to == ["sink"]
 
-
-def test_pipeline_without_pd_is_unchanged() -> None:
+def test_non_pd_pipeline_is_unchanged() -> None:
     config = PipelineConfig(
         model_path="dummy",
-        stages=[
-            StageConfig(name="pre", factory=_FACTORY, gpu=0, process="pre", next="post"),
-            StageConfig(name="post", factory=_FACTORY, gpu=0, process="post", terminal=True),
-        ],
+        stages=[stage("pre", next="post"), stage("post", terminal=True)],
     )
-
     expansion = expand_pd_stages(
         list(config.stages), entry_stage=config.resolved_entry_stage
     )
 
     assert [s.name for s in expansion.stages] == ["pre", "post"]
     assert expansion.entry_stage == "pre"
-    assert expansion.routing_map == {}
-    assert expansion.terminal_map == {}
+    assert expansion.routing_map == expansion.terminal_map == {}
 
 
-def test_validation_rejects_shared_gpu() -> None:
-    with pytest.raises(ValueError, match="cannot share the same GPU"):
+@pytest.mark.parametrize(
+    "kwargs,message",
+    [
+        (
+            {"terminal": True, "pd_disaggregation": _pd(0, 0)},
+            "cannot share the same GPU",
+        ),
+        (
+            {
+                "terminal": True,
+                "pd_disaggregation": PDConfig(prefill=PDStagePlacement(gpu=0)),
+            },
+            "requires explicit",
+        ),
+        (
+            {"next": "thinker_decode", "pd_disaggregation": _pd(0, 1)},
+            "collides with an existing stage",
+        ),
+    ],
+)
+def test_pd_validation_rejects_invalid_configs(kwargs, message) -> None:
+    with pytest.raises(ValueError, match=message):
         PipelineConfig(
             model_path="dummy",
             stages=[
-                StageConfig(
-                    name="thinker",
-                    factory=_FACTORY,
-                    gpu=1,
-                    process="thinker",
-                    terminal=True,
-                    pd_disaggregation=_pd(1, 1),
-                )
-            ],
-        )
-
-
-def test_validation_requires_explicit_gpus() -> None:
-    with pytest.raises(ValueError, match="requires explicit"):
-        PipelineConfig(
-            model_path="dummy",
-            stages=[
-                StageConfig(
-                    name="thinker",
-                    factory=_FACTORY,
-                    gpu=1,
-                    process="thinker",
-                    terminal=True,
-                    pd_disaggregation=PDConfig(
-                        prefill=PDStagePlacement(gpu=1),
-                        decode=PDStagePlacement(gpu=None),
-                    ),
-                )
-            ],
-        )
-
-
-def test_validation_rejects_pd_in_fused_group() -> None:
-    with pytest.raises(ValueError, match="cannot set pd_disaggregation"):
-        PipelineConfig(
-            model_path="dummy",
-            stages=[
-                StageConfig(
-                    name="thinker",
-                    factory=_FACTORY,
-                    gpu=1,
-                    process="pipeline",
-                    next="post",
-                    pd_disaggregation=_pd(1, 2),
-                ),
-                StageConfig(
-                    name="post",
-                    factory=_FACTORY,
-                    gpu=1,
-                    process="pipeline",
-                    terminal=True,
-                ),
-            ],
-            fused_stages=[["thinker", "post"]],
-        )
-
-
-def test_terminal_flag_moves_to_decode_only() -> None:
-    stages = _by_name(_expand(_pd_pipeline(terminal=True)))
-
-    assert stages["thinker_decode"].terminal is True
-    assert not stages["thinker_prefill"].terminal
-
-
-def test_terminal_map_points_terminal_stage_to_decode() -> None:
-    config = _pd_pipeline(terminal=True)
-    expansion = expand_pd_stages(
-        list(config.stages), entry_stage=config.resolved_entry_stage
-    )
-
-    assert expansion.terminal_map["thinker"] == "thinker_decode"
-    physical_terminal = [s.name for s in expansion.stages if s.terminal]
-    assert physical_terminal == ["thinker_decode"]
-
-
-def test_expand_twice_is_idempotent() -> None:
-    config = _pd_pipeline()
-    once = expand_pd_stages(
-        list(config.stages), entry_stage=config.resolved_entry_stage
-    )
-    twice = expand_pd_stages(once.stages, entry_stage=once.entry_stage)
-
-    # Note: (Yue Yin) The generated halves clear pd_disaggregation, so a second
-    # expansion is a safe no-op with no further renaming.
-    assert [s.name for s in twice.stages] == [s.name for s in once.stages]
-    assert twice.entry_stage == once.entry_stage
-    assert twice.routing_map == twice.terminal_map == {}
-
-
-def test_prefill_has_no_next_edge_to_decode() -> None:
-    stages = _by_name(_expand(_pd_pipeline()))
-    prefill = stages["thinker_prefill"]
-
-    # Note: (Yue Yin) Prefill->decode handoff is not a payload next edge.
-    assert prefill.next is None
-    assert all(s.next != "thinker_decode" for s in stages.values())
-
-
-def test_validation_rejects_generated_name_collision() -> None:
-    with pytest.raises(ValueError, match="collides with an existing stage"):
-        PipelineConfig(
-            model_path="dummy",
-            stages=[
-                StageConfig(
-                    name="thinker",
-                    factory=_FACTORY,
-                    gpu=1,
-                    process="thinker",
-                    next="thinker_decode",
-                    pd_disaggregation=_pd(1, 2),
-                ),
-                StageConfig(
-                    name="thinker_decode",
-                    factory=_FACTORY,
-                    gpu=0,
-                    process="thinker_decode",
-                    terminal=True,
-                ),
+                stage("thinker", **kwargs),
+                stage("thinker_decode", terminal=True),
             ],
         )

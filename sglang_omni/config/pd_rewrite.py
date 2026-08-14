@@ -57,8 +57,8 @@ def expand_pd_stages(
             terminal_map={},
         )
 
-    # External references resolve to the prefill half; completion/terminal
-    # identity is owned by the decode half.
+    # Note (Yue Yin): Split routing from completion because only Decode can
+    # report the terminal result after a handoff.
     inbound_rename = {name: f"{name}{PREFILL_SUFFIX}" for name in pd_names}
     terminal_rename = {name: f"{name}{DECODE_SUFFIX}" for name in pd_names}
 
@@ -128,7 +128,6 @@ def _split_pd_stage(
     prefill_name = f"{s.name}{PREFILL_SUFFIX}"
     decode_name = f"{s.name}{DECODE_SUFFIX}"
 
-    # Prefill keeps fan-in; it has no ordinary downstream edge.
     prefill = s.model_copy(
         deep=True,
         update={
@@ -141,12 +140,11 @@ def _split_pd_stage(
             "stream_to": [],
             "stream_done_to_fn": None,
             "pd_disaggregation": None,
-            # Typed PD metadata travels outside factory_args.
+            # Note (Yue Yin): Keep compiler metadata out of user factory kwargs.
             "pd_execution": PDExecution(role="prefill", partner=decode_name),
         },
     )
 
-    # Decode owns downstream edges, streaming, and terminal flag; no fan-in.
     decode = s.model_copy(
         deep=True,
         update={
