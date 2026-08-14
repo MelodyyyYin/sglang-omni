@@ -41,20 +41,37 @@ class PDCapabilityPolicy:
     ) -> None:
         """Raise `PDCapabilityError` if the continuation is not supported."""
 
+        # Classification A: the rank-to-rank transfer currently requires matching
+        # TP sizes and does not yet support resharding between prefill/decode.
         if self.require_equal_tp_size and source_tp_size != target_tp_size:
             raise PDCapabilityError(
                 f"TP size mismatch: prefill={source_tp_size} decode={target_tp_size}"
             )
 
+        # Classification A: only local cuda_ipc topology is implemented;
+        # cross-node transport would need RDMA/SHM backend wiring.
         if not is_local and not self.allow_cross_node:
             raise PDCapabilityError("cross-node PD handoff is not supported")
 
-        if getattr(continuation, "input_embeds_are_projected", False):
+        # Classification A: the generic continuation only carries token ids.
+        # Transferring projected input embeddings needs a different data path.
+        if (
+            not self.allow_projected_input_embeds
+            and getattr(continuation, "input_embeds_are_projected", False)
+        ):
             raise PDCapabilityError("projected input embeddings are not supported")
 
-        if getattr(continuation, "speculative", False):
+        # Classification A: speculative decode requires spec_info, output_topk,
+        # hidden-state replay, etc., which are not in the generic contract.
+        if (
+            not self.allow_speculative_decoding
+            and getattr(continuation, "speculative", False)
+        ):
             raise PDCapabilityError("speculative decoding is not supported")
 
+        # Classification B: multimodal resume data is an opaque schema-versioned
+        # blob.  PR 2 is text-only, so the allow-list is empty by default.
+        # PR 3 can opt-in known schemas.
         mm_resume = getattr(continuation, "multimodal_resume", None) or {}
         if mm_resume:
             schema = mm_resume.get("schema") if isinstance(mm_resume, dict) else None
@@ -63,10 +80,15 @@ class PDCapabilityPolicy:
                     f"multimodal resume schema {schema!r} is not supported"
                 )
 
+        # Classification B: grammar/structured-output requires reconstructing a
+        # model-specific grammar object on the decode side and accepting tokens
+        # during process_prebuilt.  PR 2 conservatively rejects it.
         sampling = getattr(continuation, "sampling_params", None) or {}
         if not self.allow_grammar and self._sampling_has_grammar(sampling):
             raise PDCapabilityError("grammar / structured-output sampling is not supported")
 
+        # Classification B: custom logit processors need runtime lookup/registration
+        # on the decode side.  PR 2 does not carry the processor object, only a key.
         if not self.allow_custom_logit_processor and getattr(
             continuation, "custom_logit_processor", None
         ):

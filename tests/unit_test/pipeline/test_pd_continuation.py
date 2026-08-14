@@ -95,58 +95,58 @@ def test_unknown_key_rejection():
         ContinuationSerializer.decode(bad)
 
 
-def test_exactly_once_admission():
-    admitted: list[PendingHandoff] = []
+def test_exactly_once_rank_ready():
+    rank_ready: list[PendingHandoff] = []
 
-    def admit(pending: PendingHandoff) -> None:
-        admitted.append(pending)
+    def on_rank_ready(pending: PendingHandoff) -> None:
+        rank_ready.append(pending)
 
-    ctrl = PDHandoffController(admit_callback=admit)
+    ctrl = PDHandoffController(rank_ready_callback=on_rank_ready)
     cont = _sample_continuation()
 
     ctrl.start_handoff(cont.request_id, cont.transfer_id)
     ctrl.set_continuation(cont.request_id, cont)
-    assert not ctrl.is_admitted(cont.request_id)
+    assert not ctrl.is_rank_ready(cont.request_id)
 
     ctrl.set_kv_committed(cont.request_id)
-    assert ctrl.is_admitted(cont.request_id)
-    assert len(admitted) == 1
-    assert admitted[0].continuation is cont
+    assert ctrl.is_rank_ready(cont.request_id)
+    assert len(rank_ready) == 1
+    assert rank_ready[0].continuation is cont
 
-    # Duplicate commit/continuation must not trigger another admission.
+    # Duplicate commit/continuation must not trigger another rank_ready callback.
     ctrl.set_kv_committed(cont.request_id)
     ctrl.set_continuation(cont.request_id, cont)
-    assert len(admitted) == 1
+    assert len(rank_ready) == 1
 
 
-def test_kv_first_then_continuation_still_admits():
-    admitted: list[PendingHandoff] = []
-    ctrl = PDHandoffController(admit_callback=lambda p: admitted.append(p))
+def test_kv_first_then_continuation_still_becomes_rank_ready():
+    rank_ready: list[PendingHandoff] = []
+    ctrl = PDHandoffController(rank_ready_callback=lambda p: rank_ready.append(p))
     cont = _sample_continuation()
 
     ctrl.start_handoff(cont.request_id, cont.transfer_id)
     ctrl.set_kv_committed(cont.request_id)
-    assert not ctrl.is_admitted(cont.request_id)
+    assert not ctrl.is_rank_ready(cont.request_id)
     ctrl.set_continuation(cont.request_id, cont)
-    assert ctrl.is_admitted(cont.request_id)
-    assert len(admitted) == 1
+    assert ctrl.is_rank_ready(cont.request_id)
+    assert len(rank_ready) == 1
 
 
-def test_ack_not_required_for_admission():
-    """Admission is continuation + KV commit; no ACK is modelled here."""
-    admitted: list[PendingHandoff] = []
-    ctrl = PDHandoffController(admit_callback=lambda p: admitted.append(p))
+def test_ack_not_required_for_rank_ready():
+    """Rank-ready is continuation + KV commit; no ACK is modelled here."""
+    rank_ready: list[PendingHandoff] = []
+    ctrl = PDHandoffController(rank_ready_callback=lambda p: rank_ready.append(p))
     cont = _sample_continuation()
 
     ctrl.start_handoff(cont.request_id, cont.transfer_id)
     ctrl.set_continuation(cont.request_id, cont)
     ctrl.set_kv_committed(cont.request_id)
-    assert admitted
+    assert rank_ready
 
 
 def test_duplicate_and_stale_messages():
-    admitted: list[PendingHandoff] = []
-    ctrl = PDHandoffController(admit_callback=lambda p: admitted.append(p))
+    rank_ready: list[PendingHandoff] = []
+    ctrl = PDHandoffController(rank_ready_callback=lambda p: rank_ready.append(p))
     cont = _sample_continuation()
 
     ctrl.start_handoff(cont.request_id, cont.transfer_id)
@@ -157,12 +157,12 @@ def test_duplicate_and_stale_messages():
     with pytest.raises(KeyError):
         ctrl.set_continuation("unknown-req", cont)
 
-    # After admission, extra commits are ignored.
+    # After rank_ready, extra commits are ignored.
     ctrl.set_kv_committed(cont.request_id)
-    assert len(admitted) == 1
+    assert len(rank_ready) == 1
 
 
-def test_abort_cleanup_before_admission():
+def test_abort_cleanup_before_rank_ready():
     cleanups: list[tuple[PendingHandoff, str]] = []
 
     def cleanup(pending: PendingHandoff, reason: str) -> None:
@@ -184,7 +184,7 @@ def test_abort_cleanup_before_admission():
     assert len(cleanups) == 1
 
 
-def test_abort_after_commit_before_admission():
+def test_abort_after_commit_before_rank_ready():
     cleanups: list[tuple[PendingHandoff, str]] = []
     ctrl = PDHandoffController(
         cleanup_callback=lambda p, r: cleanups.append((p, r))
@@ -198,15 +198,15 @@ def test_abort_after_commit_before_admission():
     ctrl.set_continuation(cont.request_id, cont)
 
     assert ctrl.get_pending(cont.request_id).aborted
-    assert not ctrl.is_admitted(cont.request_id)
+    assert not ctrl.is_rank_ready(cont.request_id)
     assert len(cleanups) == 1
 
 
-def test_abort_after_admission_is_ignored():
-    admitted: list[PendingHandoff] = []
+def test_abort_after_rank_ready_is_ignored():
+    rank_ready: list[PendingHandoff] = []
     cleanups: list[tuple[PendingHandoff, str]] = []
     ctrl = PDHandoffController(
-        admit_callback=lambda p: admitted.append(p),
+        rank_ready_callback=lambda p: rank_ready.append(p),
         cleanup_callback=lambda p, r: cleanups.append((p, r)),
     )
     cont = _sample_continuation()
@@ -214,7 +214,7 @@ def test_abort_after_admission_is_ignored():
     ctrl.start_handoff(cont.request_id, cont.transfer_id)
     ctrl.set_continuation(cont.request_id, cont)
     ctrl.set_kv_committed(cont.request_id)
-    assert admitted
+    assert rank_ready
 
     ctrl.abort(cont.request_id, reason="late")
     assert not ctrl.get_pending(cont.request_id).aborted
@@ -312,8 +312,8 @@ def test_tp_metadata_duplication():
 
 def test_continuation_aware_kv_receiver():
     inner = _FakeReceiver()
-    admitted: list[PendingHandoff] = []
-    ctrl = PDHandoffController(admit_callback=lambda p: admitted.append(p))
+    rank_ready: list[PendingHandoff] = []
+    ctrl = PDHandoffController(rank_ready_callback=lambda p: rank_ready.append(p))
     receiver = ContinuationAwareKVReceiver(
         inner=inner,
         controller=ctrl,
@@ -348,8 +348,8 @@ def test_continuation_aware_kv_receiver():
 
     receiver.commit(prepare, destination)
     assert len(inner.commits) == 1
-    assert len(admitted) == 1
-    assert admitted[0].continuation.request_id == cont.request_id
+    assert len(rank_ready) == 1
+    assert rank_ready[0].continuation.request_id == cont.request_id
 
 
 def test_continuation_aware_kv_receiver_invalid_continuation():
@@ -409,3 +409,67 @@ def test_continuation_aware_kv_receiver_abort():
     assert len(inner.aborts) == 1
     assert ctrl.get_pending(cont.request_id).aborted
     assert len(cleanups) == 1
+
+def test_continuation_aware_kv_receiver_non_rank0_has_no_continuation():
+    """Non-rank-0 TP shards receive a presence flag, not the full continuation."""
+    inner = _FakeReceiver()
+    rank_ready: list[PendingHandoff] = []
+    ctrl = PDHandoffController(rank_ready_callback=lambda p: rank_ready.append(p))
+    receiver = ContinuationAwareKVReceiver(inner=inner, controller=ctrl)
+
+    cont = _sample_continuation()
+    producer = PrefillContinuationProducer(tp_size=2)
+    meta = producer.prepare_rank_metadata(cont, 1)
+    assert meta == {"pd_continuation_present": False}
+
+    prepare = KVTransferPrepareMessage(
+        request_id=cont.request_id,
+        transfer_id=cont.transfer_id,
+        from_stage="prefill",
+        to_stage="decode",
+        source_pool_id="src",
+        target_pool_id="dst",
+        source_page_indices=(0, 1),
+        source_layout=KVPoolLayout(
+            layout_id="l1",
+            page_size=16,
+            buffers=(KVBufferSpec(name="k", bytes_per_page=8192),),
+        ),
+        metadata=meta,
+    )
+
+    destination = receiver.reserve(prepare)
+    assert len(inner.reserves) == 1
+    assert ctrl.get_pending(cont.request_id).continuation is None
+    assert ctrl.get_pending(cont.request_id).continuation_expected is False
+
+    receiver.commit(prepare, destination)
+    assert len(inner.commits) == 1
+    assert len(rank_ready) == 1
+    assert rank_ready[0].continuation is None
+
+
+def test_continuation_aware_kv_receiver_requires_rank0_continuation():
+    inner = _FakeReceiver()
+    ctrl = PDHandoffController()
+    receiver = ContinuationAwareKVReceiver(inner=inner, controller=ctrl)
+
+    prepare = KVTransferPrepareMessage(
+        request_id="r",
+        transfer_id="t",
+        from_stage="prefill",
+        to_stage="decode",
+        source_pool_id="src",
+        target_pool_id="dst",
+        source_page_indices=(0,),
+        source_layout=KVPoolLayout(
+            layout_id="l1",
+            page_size=16,
+            buffers=(KVBufferSpec(name="k", bytes_per_page=8192),),
+        ),
+        metadata={"pd_continuation_present": True},
+    )
+
+    with pytest.raises(ContinuationSchemaError, match="pd_continuation required"):
+        receiver.reserve(prepare)
+

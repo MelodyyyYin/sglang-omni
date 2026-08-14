@@ -38,14 +38,19 @@ class ContinuationSchemaError(ValueError):
     """Raised when a continuation payload has an unknown or incompatible schema."""
 
 
-class PDAdmissionCallback(Protocol):
-    """Called exactly once when a request is ready to be admitted to decode."""
+class PDRankReadyCallback(Protocol):
+    """Called exactly once when this rank is ready to continue the handoff.
+
+    This is a *rank-local* readiness event.  Logical decode admission for a
+    tensor-parallel request requires an additional cross-rank barrier/all-reduce
+    that the scheduler (PR 3) implements on top of this callback.
+    """
 
     def __call__(self, pending: "PendingHandoff") -> None: ...
 
 
 class PDCleanupCallback(Protocol):
-    """Called when a handoff is aborted or times out before admission."""
+    """Called when a handoff is aborted or times out before rank_ready."""
 
     def __call__(self, pending: "PendingHandoff", reason: str) -> None: ...
 
@@ -166,7 +171,8 @@ class PendingHandoff:
     continuation: DecodeContinuation | None = None
     kv_committed: bool = False
     aborted: bool = False
-    admitted: bool = False
+    rank_ready: bool = False
+    continuation_expected: bool = True
     cleanup_invoked: bool = False
     deadline: float | None = None
     timeout_handle: Any = None
@@ -174,11 +180,17 @@ class PendingHandoff:
 
 
 class PDHandoffController:
-    """Callback-driven join state machine: continuation + KV commit -> admission.
+    """Callback-driven join state machine: continuation + KV commit -> rank ready.
 
-    This class is thread-safe.  It must not add new polling loops: it is driven
-    by `set_continuation`, `set_kv_committed`, and `abort` calls (usually from
-    `CommEngine`/`KVReceiver` callbacks).
+    This class tracks the per-rank readiness of a decode handoff.  It is
+    thread-safe and does not add polling loops: it is driven by
+    `set_continuation`, `set_continuation_not_required`, `set_kv_committed`, and
+    `abort` calls (usually from `CommEngine`/`KVReceiver` callbacks).
+
+    The `rank_ready_callback` is a *rank-local* event.  Turning per-rank
+    readiness into a logical decode admission for a tensor-parallel request is
+    the scheduler's responsibility and is performed with a cross-rank barrier
+    (e.g. `torch.distributed.all_reduce`) on top of this callback.
     """
 
     def __init__(
@@ -186,12 +198,12 @@ class PDHandoffController:
         *,
         policy: PDCapabilityPolicy | None = None,
         default_timeout_s: float = 30.0,
-        admit_callback: PDAdmissionCallback | None = None,
+        rank_ready_callback: PDRankReadyCallback | None = None,
         cleanup_callback: PDCleanupCallback | None = None,
     ) -> None:
         self._policy = policy or PDCapabilityPolicy()
         self._default_timeout_s = default_timeout_s
-        self._admit_callback = admit_callback
+        self._rank_ready_callback = rank_ready_callback
         self._cleanup_callback = cleanup_callback
         self._lock = threading.RLock()
         self._pending: dict[str, PendingHandoff] = {}
@@ -253,11 +265,11 @@ class PDHandoffController:
             if pending is None:
                 raise KeyError(f"continuation for unknown request {request_id!r}")
 
-            if pending.admitted or pending.aborted:
+            if pending.rank_ready or pending.aborted:
                 logger.warning(
                     "ignoring continuation for %s: already %s",
                     request_id,
-                    "admitted" if pending.admitted else "aborted",
+                    "rank_ready" if pending.rank_ready else "aborted",
                 )
                 return
 
@@ -274,9 +286,10 @@ class PDHandoffController:
                 is_local=is_local,
             )
 
+            pending.continuation_expected = True
             pending.continuation = continuation
             logger.debug("continuation set for request=%s", request_id)
-            self._try_admit(pending)
+            self._try_mark_rank_ready(pending)
 
     def set_continuation_bytes(
         self,
@@ -304,11 +317,11 @@ class PDHandoffController:
             if pending is None:
                 logger.warning("kv_committed for unknown request %s", request_id)
                 return
-            if pending.admitted or pending.aborted:
+            if pending.rank_ready or pending.aborted:
                 logger.debug(
                     "ignoring kv_committed for %s: already %s",
                     request_id,
-                    "admitted" if pending.admitted else "aborted",
+                    "rank_ready" if pending.rank_ready else "aborted",
                 )
                 return
             if pending.kv_committed:
@@ -316,16 +329,16 @@ class PDHandoffController:
                 return
             pending.kv_committed = True
             logger.debug("kv committed for request=%s", request_id)
-            self._try_admit(pending)
+            self._try_mark_rank_ready(pending)
 
     def abort(self, request_id: str, reason: str = "abort") -> None:
-        """Abort a pending handoff before admission."""
+        """Abort a pending handoff before it becomes rank-ready."""
         with self._lock:
             pending = self._pending.get(request_id)
             if pending is None:
                 return
-            if pending.admitted:
-                logger.debug("abort after admission ignored for %s", request_id)
+            if pending.rank_ready:
+                logger.debug("abort after rank_ready ignored for %s", request_id)
                 return
             if pending.aborted:
                 return
@@ -346,7 +359,7 @@ class PDHandoffController:
         with self._lock:
             for request_id, pending in list(self._pending.items()):
                 if (
-                    not pending.admitted
+                    not pending.rank_ready
                     and not pending.aborted
                     and pending.deadline is not None
                     and now >= pending.deadline
@@ -358,31 +371,48 @@ class PDHandoffController:
         with self._lock:
             return self._pending.get(request_id)
 
-    def is_admitted(self, request_id: str) -> bool:
+    def is_rank_ready(self, request_id: str) -> bool:
         with self._lock:
             pending = self._pending.get(request_id)
-            return pending.admitted if pending else False
+            return pending.rank_ready if pending else False
 
-    def _try_admit(self, pending: PendingHandoff) -> None:
+    def set_continuation_not_required(self, request_id: str) -> None:
+        """Mark a pending handoff as not expecting a continuation payload.
+
+        This is used by TP ranks other than rank 0, where the decode
+        continuation is not shipped and only the KV transfer must complete.
+        """
+        with self._lock:
+            pending = self._pending.get(request_id)
+            if pending is None:
+                logger.warning("continuation_not_required for unknown request %s", request_id)
+                return
+            if pending.rank_ready or pending.aborted:
+                return
+            pending.continuation_expected = False
+            logger.debug("continuation not required for request=%s", request_id)
+            self._try_mark_rank_ready(pending)
+
+    def _try_mark_rank_ready(self, pending: PendingHandoff) -> None:
         if (
-            pending.continuation is not None
+            (pending.continuation is not None or not pending.continuation_expected)
             and pending.kv_committed
             and not pending.aborted
-            and not pending.admitted
+            and not pending.rank_ready
         ):
-            pending.admitted = True
+            pending.rank_ready = True
             self._cancel_timeout(pending)
-            logger.debug("admitting request=%s transfer=%s", pending.request_id, pending.transfer_id)
-            if self._admit_callback is not None:
+            logger.debug("rank_ready request=%s transfer=%s", pending.request_id, pending.transfer_id)
+            if self._rank_ready_callback is not None:
                 try:
-                    self._admit_callback(pending)
+                    self._rank_ready_callback(pending)
                 except Exception:
-                    logger.exception("admit callback failed for %s", pending.request_id)
+                    logger.exception("rank_ready callback failed for %s", pending.request_id)
 
     def _on_timeout(self, request_id: str) -> None:
         with self._lock:
             pending = self._pending.get(request_id)
-            if pending is None or pending.admitted or pending.aborted:
+            if pending is None or pending.rank_ready or pending.aborted:
                 return
             self._do_abort_locked(pending, "timeout")
 
@@ -414,7 +444,8 @@ class ContinuationAwareKVReceiver:
 
     This is the generic PR 2 adapter that lets the existing `CommEngine`
     hand off a rank-0 continuation without modifying the PR 1 `KVReceiver`
-    protocol.
+    protocol.  The decode continuation is opaque to `CommEngine`; it is
+    extracted from the rank-0 `KVTransferPrepareMessage.metadata` here.
     """
 
     def __init__(
@@ -452,14 +483,29 @@ class ContinuationAwareKVReceiver:
         error: BaseException,
     ) -> None:
         self._inner.abort(request, destination, error)
-        self._controller.abort(request.request_id, reason=str(error) or type(error).__name__)
+        self._controller.abort(
+            request.request_id, reason=str(error) or type(error).__name__
+        )
 
-    def _maybe_ingest_continuation(self, request: KVTransferPrepareMessage) -> None:
+    def _maybe_ingest_continuation(
+        self, request: KVTransferPrepareMessage
+    ) -> None:
+        present = request.metadata.get("pd_continuation_present")
+        if present is False:
+            self._controller.set_continuation_not_required(request.request_id)
+            return
+
         raw = request.metadata.get("pd_continuation")
         if raw is None:
+            if present is True:
+                raise ContinuationSchemaError(
+                    "pd_continuation required by metadata but missing"
+                )
             return
+
         if not isinstance(raw, (bytes, bytearray)):
             raise ContinuationSchemaError("pd_continuation metadata must be bytes")
+
         self._controller.set_continuation_bytes(
             request.request_id,
             bytes(raw),
@@ -472,9 +518,12 @@ class ContinuationAwareKVReceiver:
 class PrefillContinuationProducer:
     """Build per-rank metadata for `CommEngine.send_kv_pages`.
 
-    The full continuation is embedded only on rank 0.  All other ranks carry a
-    tiny handle so the `ContinuationAwareKVReceiver` can still correlate the
-    per-rank KV transfer.
+    The full `DecodeContinuation` is embedded only on rank 0.  All other ranks
+    carry only a presence flag so the decode-side adapter can tell the
+    controller that no continuation payload is expected for this rank.
+
+    `CommEngine` itself treats `metadata` as opaque bytes; it does not parse
+    or depend on any continuation field.
     """
 
     def __init__(self, tp_size: int = 1) -> None:
@@ -486,25 +535,12 @@ class PrefillContinuationProducer:
         tp_rank: int,
     ) -> dict[str, Any]:
         if not 0 <= tp_rank < self._tp_size:
-            raise ValueError(f"tp_rank {tp_rank} out of range for tp_size {self._tp_size}")
+            raise ValueError(
+                f"tp_rank {tp_rank} out of range for tp_size {self._tp_size}"
+            )
         if tp_rank == 0:
             return {
                 "pd_continuation": ContinuationSerializer.encode(continuation),
                 "pd_continuation_present": True,
-                "tp_rank": tp_rank,
-                "tp_size": self._tp_size,
             }
-        return {
-            "pd_continuation_present": False,
-            "pd_continuation_handle": continuation.transfer_id,
-            "request_id": continuation.request_id,
-            "tp_rank": tp_rank,
-            "tp_size": self._tp_size,
-        }
-
-
-class DecodeContinuationConsumer(Protocol):
-    """Interface a decode scheduler implements to consume a joined handoff."""
-
-    def on_admit(self, pending: PendingHandoff) -> None: ...
-    def on_cleanup(self, pending: PendingHandoff, reason: str) -> None: ...
+        return {"pd_continuation_present": False}
