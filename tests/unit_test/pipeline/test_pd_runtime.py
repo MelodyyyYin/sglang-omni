@@ -258,6 +258,7 @@ def test_decode_admission_retries_pool_exhaustion_without_releasing_kv() -> None
 
     assert scheduler._pd_deferred_admission is None
     assert [req.rid for req in scheduler.waiting_queue] == ["request-1"]
+    assert [list(req.output_ids) for req in scheduler.waiting_queue] == [[42]]
     assert freed == []
     assert [scheduler.outbox.get_nowait().request_id] == ["request-1"]
     assert scheduler.outbox.empty()
@@ -278,6 +279,7 @@ def test_decode_admission_preserves_fifo_across_capacity_waves() -> None:
         admitted.append(scheduler.outbox.get_nowait().request_id)
         req = scheduler.waiting_queue.pop(0)
         assert req.rid == expected
+        assert list(req.output_ids) == [42]
         pool.free(req)
 
     scheduler._drain_pd_admissions()
@@ -393,13 +395,82 @@ def test_prefill_handoff_reuses_request_mapping_and_detaches_batch() -> None:
     scheduler.outbox = queue.Queue()
     batch = SimpleNamespace(reqs=[req])
 
-    scheduler._queue_pd_prefill_handoffs(batch)
+    scheduler._queue_pd_prefill_handoffs(batch, {id(req)})
 
     assert batch.reqs == []
     handoff = scheduler.outbox.get_nowait()
     assert handoff.type == "pd_handoff"
     assert handoff.data.source_page_indices == (7, 8, 9)
     assert handoff.data.continuation.output_ids == [42]
+
+
+def test_prefill_middle_chunk_waits_for_sampled_token(monkeypatch) -> None:
+    req = _prefill_req()
+    req.output_ids.pop()
+    req.inflight_middle_chunks = 1
+    pool = _ReqPool()
+    pool.alloc([req])
+    pool.write(
+        (req.req_pool_idx, slice(0, 3)),
+        torch.tensor([7, 8, 9], dtype=torch.int64),
+    )
+    scheduler = object.__new__(OmniScheduler)
+    scheduler._pd_role = "prefill"
+    scheduler.req_to_token_pool = pool
+    scheduler.page_size = 1
+    scheduler._pd_pool_id = "prefill:kv"
+    scheduler._pd_partner = "decode"
+    scheduler.tree_cache = object()
+    scheduler.outbox = queue.Queue()
+    batch = SimpleNamespace(
+        reqs=[req],
+        forward_mode=SimpleNamespace(is_extend=lambda: True),
+    )
+
+    def process_result(_scheduler, _batch, _result):
+        if req.inflight_middle_chunks:
+            req.inflight_middle_chunks -= 1
+        else:
+            req.output_ids.append(42)
+
+    monkeypatch.setattr(
+        omni_scheduler_module._Upstream,
+        "process_batch_result",
+        process_result,
+    )
+
+    scheduler.process_batch_result(batch, object())
+
+    assert batch.reqs == [req]
+    assert list(req.output_ids) == []
+    assert req.req_pool_idx == 0
+    assert not hasattr(req, "_pd_handoff_started")
+    assert scheduler.outbox.empty()
+
+    scheduler.process_batch_result(batch, object())
+
+    assert batch.reqs == []
+    handoff = scheduler.outbox.get_nowait().data
+    assert handoff.continuation.output_ids == [42]
+    assert list(req.output_ids) == [42]
+
+    releases = []
+    monkeypatch.setattr(
+        "sglang.srt.mem_cache.common.release_kv_cache",
+        lambda released_req, tree_cache: releases.append((released_req, tree_cache)),
+    )
+    handoff.lease.release()
+    handoff.lease.release()
+
+    assert releases == [(req, scheduler.tree_cache)]
+
+
+def test_continuation_rejects_missing_prefill_token() -> None:
+    req = _prefill_req()
+    req.output_ids.pop()
+
+    with pytest.raises(ValueError, match="has no sampled output token"):
+        continuation_from_req(req, "transfer-1")
 
 
 def test_decode_scheduler_delegates_prebuilt_admission(monkeypatch) -> None:

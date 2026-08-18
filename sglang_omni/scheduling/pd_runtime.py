@@ -42,6 +42,8 @@ def sampling_params_to_dict(params: Any) -> dict[str, Any]:
 
 
 def continuation_from_req(req: Any, transfer_id: str) -> DecodeContinuation:
+    if not req.output_ids:
+        raise ValueError(f"PD Prefill request {req.rid!r} has no sampled output token")
     data = req._omni_data
     stage_payload = data.stage_payload
     return DecodeContinuation(

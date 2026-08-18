@@ -667,13 +667,19 @@ class OmniScheduler:
                     return
                 self.token_to_kv_pool_allocator.free(admission.allocation.slots)
 
-    def _queue_pd_prefill_handoffs(self, batch: ScheduleBatch) -> None:
+    def _queue_pd_prefill_handoffs(
+        self,
+        batch: ScheduleBatch,
+        sampled_request_ids: set[int],
+    ) -> None:
         retained = []
         for req in batch.reqs:
-            if req.inflight_middle_chunks > 0:
-                retained.append(req)
-                continue
             if req.finished() or getattr(req, "_pd_handoff_started", False):
+                continue
+            if id(req) not in sampled_request_ids or req.inflight_middle_chunks > 0:
+                # Note (Yue Yin): Upstream decrements middle-chunk accounting
+                # before returning even though that chunk produced no token.
+                retained.append(req)
                 continue
             if req.req_pool_idx is None:
                 self._emit_request_error(
@@ -1553,12 +1559,23 @@ class OmniScheduler:
         return plan.batch_to_run
 
     def process_batch_result(self, batch, result):
-        _Upstream.process_batch_result(self, batch, result)
-        if (
+        is_pd_prefill = (
             self.__dict__.get("_pd_role") == "prefill"
             and batch.forward_mode.is_extend()
-        ):
-            self._queue_pd_prefill_handoffs(batch)
+        )
+        output_lengths = (
+            {id(req): len(req.output_ids) for req in batch.reqs}
+            if is_pd_prefill
+            else {}
+        )
+        _Upstream.process_batch_result(self, batch, result)
+        if is_pd_prefill:
+            sampled_request_ids = {
+                id(req)
+                for req in batch.reqs
+                if len(req.output_ids) > output_lengths[id(req)]
+            }
+            self._queue_pd_prefill_handoffs(batch, sampled_request_ids)
 
     def get_new_batch_prefill(self, running_batch):
         # Note: (maydomine) batch prefill admissions to amortize the fixed step
