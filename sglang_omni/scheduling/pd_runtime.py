@@ -32,6 +32,10 @@ class PDDecodeAdmission:
     allocation: ReservedAllocation
 
 
+class DecodeRequestPoolExhausted(RuntimeError):
+    pass
+
+
 def sampling_params_to_dict(params: Any) -> dict[str, Any]:
     allowed = inspect.signature(type(params)).parameters
     return {name: getattr(params, name) for name in allowed if hasattr(params, name)}
@@ -137,7 +141,7 @@ def req_from_continuation(
     )
     indices = req_to_token_pool.alloc([req])
     if indices is None:
-        raise RuntimeError("decode request pool is exhausted")
+        raise DecodeRequestPoolExhausted("decode request pool is exhausted")
     try:
         req_to_token_pool.write(
             (req.req_pool_idx, slice(0, allocation.seq_len)), allocation.slots

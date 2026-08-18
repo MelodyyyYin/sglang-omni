@@ -1014,7 +1014,10 @@ class Stage:
                         out.request_id
                     ):
                         self._stream_queue.open(out.request_id)
-                elif out.request_id in self._active_requests:
+                elif out.request_id in self._active_requests or (
+                    out.type == "error"
+                    and (out.metadata or {}).get("pd_pre_admission") is True
+                ):
                     if out.type == "result":
                         await self._route_result(out.request_id, out.data)
                     elif out.type == "pd_handoff":

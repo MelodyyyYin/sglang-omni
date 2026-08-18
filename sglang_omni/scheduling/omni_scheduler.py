@@ -73,6 +73,7 @@ from sglang_omni.scheduling.pd_kv_adapter import (
     resolve_page_indices,
 )
 from sglang_omni.scheduling.pd_runtime import (
+    DecodeRequestPoolExhausted,
     PDDecodeAdmission,
     PDPrefillHandoff,
     continuation_from_req,
@@ -485,6 +486,12 @@ class OmniScheduler:
         from sglang.srt.disaggregation.utils import DisaggregationMode
 
         self.disaggregation_mode = DisaggregationMode.NULL
+        # Note (Yue Yin): Upstream decode metrics inspect this queue even when
+        # Omni admits already-committed allocations without upstream preallocation.
+        self.disagg_decode_prealloc_queue = types.SimpleNamespace(
+            queue=[], retracted_queue=[], num_tokens_pre_allocated=0
+        )
+        self.disagg_decode_transfer_queue = types.SimpleNamespace(queue=[])
         self.is_hybrid_swa = False
         self.is_hybrid_ssm = False
         self.offload_tags: set = set()
@@ -534,7 +541,9 @@ class OmniScheduler:
         self._pd_role: str | None = None
         self._pd_partner: str | None = None
         self._pd_pool_id: str | None = None
-        self._pd_ready_queue = _queue_mod.SimpleQueue()
+        self._pd_ready_queue = _queue_mod.Queue()
+        self._pd_deferred_admission: PDDecodeAdmission | None = None
+        self._pd_admission_lock = threading.Lock()
         self._pd_receiver: AllocatorKVReceiver | None = None
         self._pd_controller: PDHandoffController | None = None
 
@@ -605,27 +614,58 @@ class OmniScheduler:
         ready_queue = self.__dict__.get("_pd_ready_queue")
         if ready_queue is None:
             return
-        while True:
-            try:
-                admission = ready_queue.get_nowait()
-            except _queue_mod.Empty:
-                return
-            request_id = admission.continuation.request_id
-            if request_id in self._aborted_request_ids:
-                self.token_to_kv_pool_allocator.free(admission.allocation.slots)
-                continue
-            try:
-                req = req_from_continuation(
-                    admission.continuation,
-                    admission.allocation,
-                    req_to_token_pool=self.req_to_token_pool,
+        with self._pd_admission_lock:
+            while True:
+                admission = self._pd_deferred_admission
+                if admission is None:
+                    try:
+                        admission = ready_queue.get_nowait()
+                    except _queue_mod.Empty:
+                        return
+                request_id = admission.continuation.request_id
+                if request_id in self._aborted_request_ids:
+                    self._pd_deferred_admission = None
+                    self.token_to_kv_pool_allocator.free(admission.allocation.slots)
+                    continue
+                try:
+                    req = req_from_continuation(
+                        admission.continuation,
+                        admission.allocation,
+                        req_to_token_pool=self.req_to_token_pool,
+                    )
+                except DecodeRequestPoolExhausted:
+                    # Note (Yue Yin): The committed KV must remain owned while
+                    # an earlier request is still using the request-pool slot.
+                    self._pd_deferred_admission = admission
+                    return
+                except Exception as exc:
+                    self._pd_deferred_admission = None
+                    self.token_to_kv_pool_allocator.free(admission.allocation.slots)
+                    self._emit_request_error(
+                        request_id, exc, metadata={"pd_pre_admission": True}
+                    )
+                    continue
+                self._pd_deferred_admission = None
+                self.waiting_queue.append(req)
+                self.outbox.put(
+                    OutgoingMessage(request_id=request_id, type="pd_admitted")
                 )
-            except Exception as exc:
+
+    def _discard_pd_admissions(self) -> None:
+        ready_queue = self.__dict__.get("_pd_ready_queue")
+        if ready_queue is None:
+            return
+        with self._pd_admission_lock:
+            admission = self._pd_deferred_admission
+            self._pd_deferred_admission = None
+            if admission is not None:
                 self.token_to_kv_pool_allocator.free(admission.allocation.slots)
-                self._emit_request_error(request_id, exc)
-                continue
-            self.waiting_queue.append(req)
-            self.outbox.put(OutgoingMessage(request_id=request_id, type="pd_admitted"))
+            while True:
+                try:
+                    admission = ready_queue.get_nowait()
+                except _queue_mod.Empty:
+                    return
+                self.token_to_kv_pool_allocator.free(admission.allocation.slots)
 
     def _queue_pd_prefill_handoffs(self, batch: ScheduleBatch) -> None:
         retained = []
@@ -1462,7 +1502,13 @@ class OmniScheduler:
             f"{mem_hint}"
         )
 
-    def _emit_request_error(self, request_id: str, error: Exception) -> None:
+    def _emit_request_error(
+        self,
+        request_id: str,
+        error: Exception,
+        *,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
         if not self.is_entry_rank:
             return
         self.outbox.put(
@@ -1470,6 +1516,7 @@ class OmniScheduler:
                 request_id=request_id,
                 type="error",
                 data=error,
+                metadata=metadata,
             )
         )
 
@@ -1482,7 +1529,17 @@ class OmniScheduler:
         batch back before handing the runnable batch to the caller.
         """
         self._drain_pd_admissions()
-        if self.__dict__.get("_pd_role") == "decode":
+        pd_role = self.__dict__.get("_pd_role")
+        if (
+            pd_role == "prefill"
+            and self.running_batch.is_empty()
+            and self.running_batch.batch_is_full
+            and self.req_to_token_pool.available_size() > 0
+        ):
+            # Note (Yue Yin): ACK can return a source request slot after the
+            # empty running batch was marked full by the prior admission wave.
+            self.running_batch.batch_is_full = False
+        if pd_role == "decode":
             # Note (Yue Yin): Reuse upstream admission so PREBUILT cache and
             # batching ownership stay aligned with the installed SGLang version.
             plan = _Upstream.get_next_disagg_decode_batch_to_run(
@@ -1918,6 +1975,7 @@ class OmniScheduler:
     def _discard_pending_request_admissions(self) -> None:
         with self._request_admission_lock:
             self._pending_request_admissions.clear()
+        self._discard_pd_admissions()
 
     def _shutdown_resources(self) -> None:
         with self._shutdown_lock:
