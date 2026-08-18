@@ -1004,7 +1004,7 @@ def make_thinker_scheduler_adapters(
     return request_builder, result_adapter
 
 
-def make_thinker_pd_adapters():
+def make_thinker_pd_adapters(*, tokenizer: Any = None):
     def state_builder(
         req: Any,
     ) -> tuple[dict[str, Any], dict[str, Any] | None, list[int]]:
@@ -1046,6 +1046,8 @@ def make_thinker_pd_adapters():
 
     def state_restorer(req: Any, data: Any, resume: dict[str, Any] | None) -> None:
         del data
+        # Note (Yue Yin): String stop conditions decode generated tails after resume.
+        req.tokenizer = tokenizer
         req.omni_model_inputs = None
         req._omni_consumed = None
         req._omni_mm_positions = None

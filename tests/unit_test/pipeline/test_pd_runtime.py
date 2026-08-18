@@ -7,6 +7,7 @@ import threading
 from array import array
 from types import SimpleNamespace
 
+import msgpack
 import pytest
 import torch
 from sglang.srt.disaggregation.utils import DisaggregationMode
@@ -586,9 +587,12 @@ def test_prefill_retries_admission_after_ack_returns_request_slot(monkeypatch) -
 
 
 class _Tokenizer:
+    eos_token_id = 2
+    additional_stop_token_ids = set()
+
     def decode(self, ids, skip_special_tokens=True):
         del skip_special_tokens
-        return "".join({42: "A", 43: "B"}[int(token)] for token in ids)
+        return "".join({2: "", 42: "A", 43: "B"}[int(token)] for token in ids)
 
 
 def _qwen_prefill_req(*, stream: bool) -> Req:
@@ -617,7 +621,8 @@ def _qwen_prefill_req(*, stream: bool) -> Req:
 
 def _rebuild_qwen_req(*, stream: bool) -> Req:
     source = _qwen_prefill_req(stream=stream)
-    state_builder, state_restorer = make_thinker_pd_adapters()
+    tokenizer = _Tokenizer()
+    state_builder, state_restorer = make_thinker_pd_adapters(tokenizer=tokenizer)
     continuation = continuation_from_req(source, "transfer-qwen", state_builder)
     assert continuation.multimodal_resume["schema"] == QWEN_THINKER_PD_RESUME_SCHEMA
     continuation = decode_continuation(encode_continuation(continuation))
@@ -626,12 +631,14 @@ def _rebuild_qwen_req(*, stream: bool) -> Req:
         page_indices=(7, 8, 9),
         seq_len=3,
     )
-    return req_from_continuation(
+    rebuilt = req_from_continuation(
         continuation,
         allocation,
         req_to_token_pool=_ReqPool(),
         state_restorer=state_restorer,
     )
+    assert rebuilt.tokenizer is tokenizer
+    return rebuilt
 
 
 def test_qwen_pd_continuation_projects_tensors_and_restores_mrope() -> None:
@@ -646,6 +653,72 @@ def test_qwen_pd_continuation_projects_tensors_and_restores_mrope() -> None:
     assert rebuilt._omni_data.stage_payload.data["prompt"]["input_ids"] == [10, 11, 12]
     assert rebuilt.multimodal_inputs.mrope_position_delta.tolist() == [[-2]]
     assert rebuilt.omni_model_inputs is None
+
+
+def test_qwen_pd_runtime_tokenizer_handles_resumed_stop_conditions() -> None:
+    stop_string = _rebuild_qwen_req(stream=False)
+    stop_string.sampling_params.stop_strs = ["B"]
+    stop_string.sampling_params.stop_regex_strs = []
+    stop_string.output_ids.append(43)
+    stop_string.update_finish_state()
+
+    stop_token = _rebuild_qwen_req(stream=False)
+    stop_token.sampling_params.stop_strs = []
+    stop_token.sampling_params.stop_regex_strs = []
+    stop_token.sampling_params.stop_token_ids = {43}
+    stop_token.output_ids.append(43)
+    stop_token.update_finish_state()
+
+    eos = _rebuild_qwen_req(stream=False)
+    eos.sampling_params.stop_strs = []
+    eos.sampling_params.stop_regex_strs = []
+    eos.sampling_params.stop_token_ids = set()
+    eos.output_ids.append(2)
+    eos.update_finish_state()
+
+    assert stop_string.finished_reason.matched == "B"
+    assert stop_token.finished_reason.matched == 43
+    assert eos.finished_reason.matched == 2
+
+
+def test_qwen_pd_continuation_does_not_serialize_runtime_tokenizer() -> None:
+    source = _qwen_prefill_req(stream=False)
+    tokenizer = _Tokenizer()
+    state_builder, _ = make_thinker_pd_adapters(tokenizer=tokenizer)
+
+    continuation = continuation_from_req(source, "transfer-qwen", state_builder)
+    encoded = encode_continuation(continuation)
+
+    assert b"tokenizer" not in encoded
+    assert decode_continuation(encoded).request_id == source.rid
+
+
+def test_qwen_max_one_result_uses_msgpack_safe_existing_result_path() -> None:
+    source = _qwen_prefill_req(stream=False)
+    source.sampling_params.max_new_tokens = 1
+    source.update_finish_state()
+    data = source._omni_data
+    data.output_ids = list(source.output_ids)
+    data.finish_reason = source.finished_reason.to_json()["type"]
+    _, result_adapter = make_thinker_scheduler_adapters(
+        tokenizer=_Tokenizer(),
+        vocab_size=128,
+    )
+
+    payload = project_thinker_to_decode(result_adapter(data))
+    decode = StreamingDetokenizeScheduler(tokenizer=_Tokenizer(), eos_token_id=None)
+    decode._on_new_request(source.rid, payload)
+    result = decode.outbox.get_nowait().data.data
+    encoded = msgpack.packb(result, use_bin_type=True)
+
+    assert encoded
+    assert result["text"] == "A"
+    assert result["finish_reason"] == "length"
+    assert result["usage"] == {
+        "prompt_tokens": 3,
+        "completion_tokens": 1,
+        "total_tokens": 4,
+    }
 
 
 def test_qwen_pd_decode_produces_existing_terminal_result_shape() -> None:

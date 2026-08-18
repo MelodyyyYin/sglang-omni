@@ -132,7 +132,7 @@ def create_thinker_scheduler(
         vocab_size=model_config.vocab_size,
         thinker_config=thinker_config,
     )
-    pd_state_builder, pd_state_restorer = make_thinker_pd_adapters()
+    pd_state_builder, pd_state_restorer = make_thinker_pd_adapters(tokenizer=tokenizer)
     stream_output_builder = make_thinker_stream_output_builder()
 
     return OmniScheduler(
