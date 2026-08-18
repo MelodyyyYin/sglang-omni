@@ -74,7 +74,7 @@ def test_pd_expansion_rewrites_edges_and_metadata() -> None:
     assert prefill.merge_fn == "tests.unit_test.fixtures.pipeline_fakes.merge_payloads"
     assert prefill.gpu == 1
     assert prefill.process == "thinker_prefill"
-    assert prefill.next is None
+    assert prefill.next == "post"
     assert not prefill.terminal
     assert not prefill.stream_to
 

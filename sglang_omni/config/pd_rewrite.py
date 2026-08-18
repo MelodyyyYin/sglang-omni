@@ -134,7 +134,9 @@ def _split_pd_stage(
             "name": prefill_name,
             "gpu": pd.prefill.gpu if pd.prefill.gpu is not None else s.gpu,
             "process": pd.prefill.process or prefill_name,
-            "next": None,
+            # Note (Yue Yin): Preserve the result path when the first sampled
+            # token finishes the request before a KV handoff is needed.
+            "next": _rename_targets(s.next, inbound_rename),
             "terminal": False,
             "route_fn": None,
             "stream_to": [],
