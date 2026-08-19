@@ -41,15 +41,24 @@ def sampling_params_to_dict(params: Any) -> dict[str, Any]:
     return {name: getattr(params, name) for name in allowed if hasattr(params, name)}
 
 
-def continuation_from_req(req: Any, transfer_id: str) -> DecodeContinuation:
+def continuation_from_req(
+    req: Any,
+    transfer_id: str,
+    state_builder: Any = None,
+) -> DecodeContinuation:
     if not req.output_ids:
         raise ValueError(f"PD Prefill request {req.rid!r} has no sampled output token")
     data = req._omni_data
     stage_payload = data.stage_payload
+    stage_payload_dict = stage_payload.to_dict()
+    multimodal_resume = None
+    origin_input_ids = list(req.origin_input_ids)
+    if state_builder is not None:
+        stage_payload_dict, multimodal_resume, origin_input_ids = state_builder(req)
     return DecodeContinuation(
         request_id=req.rid,
         transfer_id=transfer_id,
-        origin_input_ids=list(req.origin_input_ids),
+        origin_input_ids=origin_input_ids,
         origin_input_ids_unpadded=(
             list(req.origin_input_ids_unpadded)
             if req.origin_input_ids_unpadded is not None
@@ -66,7 +75,8 @@ def continuation_from_req(req: Any, transfer_id: str) -> DecodeContinuation:
         mm_image_tokens=int(req.mm_image_tokens),
         mm_audio_tokens=int(req.mm_audio_tokens),
         mm_video_tokens=int(req.mm_video_tokens),
-        return_logprob=bool(req.return_logprob),
+        return_logprob=bool(data.return_logprob),
+        output_token_logprobs=list(data.output_token_logprobs),
         top_logprobs_num=int(req.logprob.top_logprobs_num),
         token_ids_logprob=(
             list(req.logprob.token_ids_logprob)
@@ -81,7 +91,8 @@ def continuation_from_req(req: Any, transfer_id: str) -> DecodeContinuation:
         custom_logit_processor=req.custom_logit_processor,
         input_embeds_are_projected=bool(data.input_embeds_are_projected),
         speculative=False,
-        stage_payload=stage_payload.to_dict(),
+        multimodal_resume=multimodal_resume,
+        stage_payload=stage_payload_dict,
     )
 
 
@@ -90,8 +101,9 @@ def req_from_continuation(
     allocation: ReservedAllocation,
     *,
     req_to_token_pool: Any,
+    state_restorer: Any = None,
 ) -> Any:
-    from sglang.srt.managers.schedule_batch import Req
+    from sglang.srt.managers.schedule_batch import Req, ReqKvInfo
     from sglang.srt.sampling.sampling_params import SamplingParams
 
     sampling_params = SamplingParams(**continuation.sampling_params)
@@ -105,7 +117,9 @@ def req_from_continuation(
             else None
         ),
         sampling_params=sampling_params,
-        return_logprob=continuation.return_logprob,
+        # Note (Yue Yin): Omni owns resumed logprobs because upstream Req has no
+        # corresponding Prefill logits object on the Decode process.
+        return_logprob=False,
         top_logprobs_num=continuation.top_logprobs_num,
         token_ids_logprob=continuation.token_ids_logprob,
         return_sampling_mask=continuation.return_sampling_mask,
@@ -140,7 +154,11 @@ def req_from_continuation(
         max_new_tokens=int(sampling_params.max_new_tokens),
         temperature=float(sampling_params.temperature),
         return_logprob=continuation.return_logprob,
+        output_token_logprobs=list(continuation.output_token_logprobs),
     )
+    req._omni_data = data
+    if state_restorer is not None:
+        state_restorer(req, data, continuation.multimodal_resume)
     indices = req_to_token_pool.alloc([req])
     if indices is None:
         raise DecodeRequestPoolExhausted("decode request pool is exhausted")
@@ -153,8 +171,8 @@ def req_from_continuation(
         raise
     req.prefix_indices = allocation.slots
     req.kv_committed_len = allocation.seq_len
+    req.kv = ReqKvInfo(kv_allocated_len=allocation.seq_len, swa_evicted_seqlen=0)
     req.set_extend_range(allocation.seq_len, allocation.seq_len)
-    req._omni_data = data
     req._omni_terminal_claimed = False
     req._coalesce_enqueue_t = 0.0
     return req

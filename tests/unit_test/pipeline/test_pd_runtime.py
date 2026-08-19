@@ -176,8 +176,59 @@ def test_continuation_reconstructs_req_and_transferred_mapping() -> None:
     assert rebuilt.sampling_params.sampling_seed == 17
     assert rebuilt.sampling_params.stop_token_ids == {2}
     assert rebuilt.prefix_indices.tolist() == [7, 8, 9]
+    assert rebuilt.kv.kv_allocated_len == 3
     assert pool.req_to_token[0, :3].tolist() == [7, 8, 9]
     assert rebuilt._omni_data.stage_payload == source._omni_data.stage_payload
+
+
+def test_generic_pd_state_adapter_projects_and_restores_state() -> None:
+    source = _prefill_req()
+    source._omni_data.return_logprob = True
+    source._omni_data.output_token_logprobs = [[-0.25, 42]]
+    source._omni_data.stage_payload.data = {"position": torch.tensor([3, 4])}
+
+    def state_builder(req):
+        payload = req._omni_data.stage_payload
+        projected = StagePayload(
+            request_id=payload.request_id,
+            request=payload.request,
+            data={"position": payload.data["position"].tolist()},
+        )
+        return (
+            projected.to_dict(),
+            {"schema": "test-adapter-v1", "delta": [-2]},
+            list(req.origin_input_ids),
+        )
+
+    restored = []
+
+    def state_restorer(req, data, resume):
+        restored.append((req.rid, data.stage_payload.data, resume))
+
+    continuation = continuation_from_req(source, "transfer-1", state_builder)
+    continuation = decode_continuation(encode_continuation(continuation))
+    allocation = ReservedAllocation(
+        slots=torch.tensor([7, 8, 9], dtype=torch.int64),
+        page_indices=(7, 8, 9),
+        seq_len=3,
+    )
+    rebuilt = req_from_continuation(
+        continuation,
+        allocation,
+        req_to_token_pool=_ReqPool(),
+        state_restorer=state_restorer,
+    )
+
+    assert rebuilt._omni_data.return_logprob is True
+    assert rebuilt.return_logprob is False
+    assert rebuilt._omni_data.output_token_logprobs == [[-0.25, 42]]
+    assert restored == [
+        (
+            source.rid,
+            {"position": [3, 4]},
+            {"schema": "test-adapter-v1", "delta": [-2]},
+        )
+    ]
 
 
 def test_reconstruction_failure_releases_request_pool_slot() -> None:

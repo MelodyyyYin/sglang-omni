@@ -207,6 +207,9 @@ class OmniScheduler:
         model_runner: Any = None,
         request_builder: Callable | None = None,
         result_adapter: Callable | None = None,
+        pd_state_builder: Callable | None = None,
+        pd_state_restorer: Callable | None = None,
+        pd_resume_schemas: frozenset[str] = frozenset(),
         stream_output_builder: Callable | None = None,
         stream_chunk_handler: Callable | None = None,
         stream_done_handler: Callable | None = None,
@@ -231,6 +234,9 @@ class OmniScheduler:
         # --- Request builder: StagePayload → SGLangARRequestData ----------
         self._request_builder = request_builder
         self._result_adapter = result_adapter
+        self._pd_state_builder = pd_state_builder
+        self._pd_state_restorer = pd_state_restorer
+        self._pd_resume_schemas = pd_resume_schemas
         self._model_runner = None
         self._stream_output_builder = stream_output_builder
         self._stream_chunk_handler = stream_chunk_handler
@@ -596,9 +602,15 @@ class OmniScheduler:
             if pending.continuation is None:
                 raise RuntimeError("rank-ready handoff has no continuation")
             allocation = receiver.take_committed(pending.request_id)
-            self._pd_ready_queue.put(
-                PDDecodeAdmission(pending.continuation, allocation)
-            )
+            try:
+                self._pd_ready_queue.put(
+                    PDDecodeAdmission(pending.continuation, allocation)
+                )
+            except Exception:
+                # Note (Yue Yin): take_committed transfers ownership out of the
+                # receiver before the scheduler queue can accept it.
+                self.token_to_kv_pool_allocator.free(allocation.slots)
+                raise
 
         controller = PDHandoffController(
             rank_ready_callback=on_ready,
@@ -608,7 +620,11 @@ class OmniScheduler:
         )
         self._pd_receiver = receiver
         self._pd_controller = controller
-        return pool, ContinuationAwareKVReceiver(receiver, controller)
+        return pool, ContinuationAwareKVReceiver(
+            receiver,
+            controller,
+            allowed_resume_schemas=self._pd_resume_schemas,
+        )
 
     def _drain_pd_admissions(self) -> None:
         ready_queue = self.__dict__.get("_pd_ready_queue")
@@ -632,6 +648,7 @@ class OmniScheduler:
                         admission.continuation,
                         admission.allocation,
                         req_to_token_pool=self.req_to_token_pool,
+                        state_restorer=self.__dict__.get("_pd_state_restorer"),
                     )
                 except DecodeRequestPoolExhausted:
                     # Note (Yue Yin): The committed KV must remain owned while
@@ -690,7 +707,11 @@ class OmniScheduler:
             try:
                 req._pd_handoff_started = True
                 transfer_id = f"{req.rid}:pd:{uuid4().hex}"
-                continuation = continuation_from_req(req, transfer_id)
+                continuation = continuation_from_req(
+                    req,
+                    transfer_id,
+                    self.__dict__.get("_pd_state_builder"),
+                )
                 pages = resolve_page_indices(
                     self.req_to_token_pool,
                     req_pool_idx=req.req_pool_idx,
