@@ -74,6 +74,7 @@ def _build_stage_groups(
     *,
     stages_cfg: list[StageConfig],
     name_map: dict[str, str],
+    source_name_map: dict[str, str] | None = None,
     endpoints: dict[str, str],
     placement_plan: StagePlacementPlan,
     process_plan: ProcessTopologyPlan,
@@ -85,6 +86,7 @@ def _build_stage_groups(
     """
     if ctx is None:
         ctx = multiprocessing.get_context("spawn")
+    source_name_map = source_name_map or name_map
 
     stage_endpoints = {s.name: endpoints[f"stage_{s.name}"] for s in stages_cfg}
     rank_endpoints = {
@@ -164,6 +166,7 @@ def _build_stage_groups(
             can_accept_stream_before_payload=stage_cfg.can_accept_stream_before_payload,
             disable_direct_cuda_ipc_payload=stage_cfg.disable_direct_cuda_ipc_payload,
             name_map=name_map,
+            source_name_map=source_name_map,
             # Note (Yue Yin): Keep compiler metadata out of user factory kwargs.
             pd_execution=stage_cfg.pd_execution,
         )
@@ -471,6 +474,7 @@ class MultiProcessPipelineRunner:
                 ctx,
                 stages_cfg=prep.stages_cfg,
                 name_map=prep.name_map,
+                source_name_map=prep.source_name_map,
                 endpoints=prep.endpoints,
                 placement_plan=prep.placement_plan,
                 process_plan=prep.process_plan,

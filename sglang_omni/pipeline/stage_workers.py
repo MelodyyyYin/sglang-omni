@@ -101,6 +101,7 @@ class StageLaunchConfig:
 
     # Fusion name map
     name_map: dict[str, str] = field(default_factory=dict)
+    source_name_map: dict[str, str] = field(default_factory=dict)
 
     # Note (Yue Yin): Keep compiler metadata out of user factory kwargs.
     pd_execution: PDExecution | None = None
@@ -628,10 +629,14 @@ def _construct_stage(
         if sources is None:
             return None
         if isinstance(sources, str):
-            return [spec.name_map.get(sources, sources)]
+            return [spec.source_name_map.get(sources, sources)]
         if isinstance(sources, Iterable):
             return [
-                spec.name_map.get(source, source) if isinstance(source, str) else source
+                (
+                    spec.source_name_map.get(source, source)
+                    if isinstance(source, str)
+                    else source
+                )
                 for source in sources
             ]
         raise ValueError(
@@ -706,7 +711,7 @@ def _construct_stage(
     # --- Build input handler ---
     if spec.wait_for and spec.merge_fn:
         merge_fn = import_string(spec.merge_fn)
-        sources = {spec.name_map.get(n, n) for n in spec.wait_for}
+        sources = {spec.source_name_map.get(n, n) for n in spec.wait_for}
         expected_sources_fn = None
         if spec.wait_for_fn:
             wait_for_fn = import_string(spec.wait_for_fn)

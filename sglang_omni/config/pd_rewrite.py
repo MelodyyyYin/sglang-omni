@@ -24,16 +24,14 @@ DECODE_SUFFIX = "_decode"
 class PDExpansion:
     """Result of the PD graph rewrite.
 
-    ``routing_map`` sends logical stage names to the prefill half (used for
-    inbound routes and dynamic ``route_fn`` targets); ``terminal_map`` sends
-    logical terminal names to the decode half (used for completion accounting).
-    Splitting the two keeps routing identity separate from terminal identity.
+    ``routing_map`` sends logical stage names to the prefill half; ``output_map``
+    resolves logical output sources and terminal completion to the decode half.
     """
 
     stages: list[StageConfig]
     entry_stage: str
     routing_map: dict[str, str]
-    terminal_map: dict[str, str]
+    output_map: dict[str, str]
 
 
 def expand_pd_stages(
@@ -54,20 +52,20 @@ def expand_pd_stages(
             stages=list(stages),
             entry_stage=entry_stage,
             routing_map={},
-            terminal_map={},
+            output_map={},
         )
 
     # Note (Yue Yin): Split routing from completion because only Decode can
     # report the terminal result after a handoff.
     inbound_rename = {name: f"{name}{PREFILL_SUFFIX}" for name in pd_names}
-    terminal_rename = {name: f"{name}{DECODE_SUFFIX}" for name in pd_names}
+    output_rename = {name: f"{name}{DECODE_SUFFIX}" for name in pd_names}
 
     out: list[StageConfig] = []
     for s in stages:
         if s.pd_disaggregation is None:
-            out.append(_rewrite_inbound_refs(s, inbound_rename))
+            out.append(_rewrite_refs(s, inbound_rename, output_rename))
             continue
-        prefill, decode = _split_pd_stage(s, inbound_rename)
+        prefill, decode = _split_pd_stage(s, inbound_rename, output_rename)
         out.append(prefill)
         out.append(decode)
 
@@ -76,7 +74,7 @@ def expand_pd_stages(
         stages=out,
         entry_stage=new_entry,
         routing_map=dict(inbound_rename),
-        terminal_map=dict(terminal_rename),
+        output_map=dict(output_rename),
     )
 
 
@@ -91,14 +89,19 @@ def _rename_targets(
     return [rename.get(t, t) for t in targets]
 
 
-def _rewrite_inbound_refs(
+def _rewrite_refs(
     s: StageConfig,
-    rename: dict[str, str],
+    destination_rename: dict[str, str],
+    output_rename: dict[str, str],
 ) -> StageConfig:
-    next_ = _rename_targets(s.next, rename)
-    stream_to = [rename.get(t, t) for t in s.stream_to]
-    wait_for = [rename.get(t, t) for t in s.wait_for] if s.wait_for else s.wait_for
-    project_payload = {rename.get(k, k): v for k, v in s.project_payload.items()}
+    next_ = _rename_targets(s.next, destination_rename)
+    stream_to = [destination_rename.get(t, t) for t in s.stream_to]
+    wait_for = (
+        [output_rename.get(t, t) for t in s.wait_for] if s.wait_for else s.wait_for
+    )
+    project_payload = {
+        destination_rename.get(k, k): v for k, v in s.project_payload.items()
+    }
 
     if (
         next_ == s.next
@@ -122,6 +125,7 @@ def _rewrite_inbound_refs(
 def _split_pd_stage(
     s: StageConfig,
     inbound_rename: dict[str, str],
+    output_rename: dict[str, str],
 ) -> tuple[StageConfig, StageConfig]:
     pd = s.pd_disaggregation
     assert pd is not None
@@ -137,6 +141,14 @@ def _split_pd_stage(
             # Note (Yue Yin): Preserve the result path when the first sampled
             # token finishes the request before a KV handoff is needed.
             "next": _rename_targets(s.next, inbound_rename),
+            "project_payload": {
+                inbound_rename.get(k, k): v for k, v in s.project_payload.items()
+            },
+            "wait_for": (
+                [output_rename.get(source, source) for source in s.wait_for]
+                if s.wait_for
+                else s.wait_for
+            ),
             "terminal": False,
             "route_fn": None,
             "stream_to": [],

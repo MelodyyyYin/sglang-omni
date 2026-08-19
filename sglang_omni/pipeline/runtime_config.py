@@ -59,6 +59,7 @@ class PipelineRuntimePrep:
 
     stages_cfg: list[StageConfig]
     name_map: dict[str, str]
+    source_name_map: dict[str, str]
     entry_stage: str
     endpoints: dict[str, str]
     placement_plan: StagePlacementPlan
@@ -105,7 +106,11 @@ def prepare_pipeline_runtime(
     expansion = expand_pd_stages(stages_cfg, entry_stage=entry_stage)
     stages_cfg = expansion.stages
     entry_stage = expansion.entry_stage
-    name_map = _compose_name_map(name_map, expansion.routing_map, stages_cfg)
+    fusion_name_map = name_map
+    name_map = _compose_name_map(fusion_name_map, expansion.routing_map, stages_cfg)
+    source_name_map = _compose_name_map(
+        fusion_name_map, expansion.output_map, stages_cfg
+    )
     validate_pd_capabilities(stages_cfg)
     terminal_stages = [s.name for s in stages_cfg if s.terminal]
     runtime_dir = ipc_runtime_dir
@@ -134,6 +139,7 @@ def prepare_pipeline_runtime(
     return PipelineRuntimePrep(
         stages_cfg=stages_cfg,
         name_map=name_map,
+        source_name_map=source_name_map,
         entry_stage=entry_stage,
         endpoints=endpoints,
         placement_plan=placement_plan,
@@ -141,7 +147,7 @@ def prepare_pipeline_runtime(
         runtime_dir=runtime_dir,
         runtime_dir_created_here=runtime_dir_created_here,
         terminal_stages=terminal_stages,
-        terminal_name_map=expansion.terminal_map,
+        terminal_name_map=expansion.output_map,
     )
 
 

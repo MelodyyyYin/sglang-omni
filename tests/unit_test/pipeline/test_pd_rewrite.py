@@ -7,6 +7,8 @@ import pytest
 
 from sglang_omni.config import expand_pd_stages
 from sglang_omni.config.schema import PDConfig, PDStagePlacement, PipelineConfig
+from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
+from tests.unit_test.fixtures.pipeline_fakes import fake_factory_path
 from tests.unit_test.pipeline.helpers import stage
 
 
@@ -60,7 +62,7 @@ def test_pd_expansion_rewrites_edges_and_metadata() -> None:
     ]
 
     assert expansion.routing_map == {"thinker": "thinker_prefill"}
-    assert expansion.terminal_map == {"thinker": "thinker_decode"}
+    assert expansion.output_map == {"thinker": "thinker_decode"}
 
     assert stages["pre"].next == "thinker_prefill"
     assert stages["pre"].project_payload == {
@@ -105,7 +107,7 @@ def test_pd_entry_stage_rewritten_to_prefill() -> None:
 
     assert expansion.entry_stage == "thinker_prefill"
     assert expansion.routing_map == {"thinker": "thinker_prefill"}
-    assert expansion.terminal_map == {"thinker": "thinker_decode"}
+    assert expansion.output_map == {"thinker": "thinker_decode"}
     assert [s.name for s in expansion.stages if s.terminal] == ["thinker_decode"]
 
 
@@ -125,7 +127,7 @@ def test_pd_expansion_is_idempotent() -> None:
 
     assert [s.name for s in twice.stages] == [s.name for s in once.stages]
     assert twice.entry_stage == once.entry_stage
-    assert twice.routing_map == twice.terminal_map == {}
+    assert twice.routing_map == twice.output_map == {}
 
 
 def test_non_pd_pipeline_is_unchanged() -> None:
@@ -139,7 +141,80 @@ def test_non_pd_pipeline_is_unchanged() -> None:
 
     assert [s.name for s in expansion.stages] == ["pre", "post"]
     assert expansion.entry_stage == "pre"
-    assert expansion.routing_map == expansion.terminal_map == {}
+    assert expansion.routing_map == expansion.output_map == {}
+
+
+def test_pd_output_identity_drives_fan_in_sources() -> None:
+    config = PipelineConfig(
+        model_path="dummy",
+        stages=[
+            stage(
+                "source",
+                factory=fake_factory_path("pd_capable_factory"),
+                next="fanin",
+                pd_disaggregation=_pd(0, 1),
+            ),
+            stage(
+                "fanin",
+                wait_for=["source"],
+                wait_for_fn=fake_factory_path("identity_wait_sources"),
+                merge_fn=fake_factory_path("merge_payloads"),
+                terminal=True,
+            ),
+        ],
+    )
+
+    prep = prepare_pipeline_runtime(config)
+    try:
+        stages = _by_name(prep.stages_cfg)
+        assert stages["source_decode"].next == "fanin"
+        assert stages["fanin"].wait_for == ["source_decode"]
+        assert prep.name_map["source"] == "source_prefill"
+        assert prep.source_name_map["source"] == "source_decode"
+        assert prep.terminal_name_map["source"] == "source_decode"
+    finally:
+        prep.runtime_dir.close()
+
+
+def test_pd_source_and_destination_use_opposite_identities() -> None:
+    projector = fake_factory_path("project_payload")
+    config = PipelineConfig(
+        model_path="dummy",
+        stages=[
+            stage(
+                "source",
+                next="target",
+                project_payload={"target": projector},
+                pd_disaggregation=_pd(0, 1),
+            ),
+            stage(
+                "target",
+                wait_for=["source"],
+                merge_fn=fake_factory_path("merge_payloads"),
+                next="sink",
+                pd_disaggregation=_pd(2, 3),
+            ),
+            stage("sink", terminal=True),
+        ],
+    )
+
+    expansion = expand_pd_stages(
+        list(config.stages), entry_stage=config.resolved_entry_stage
+    )
+    stages = _by_name(expansion.stages)
+
+    for source_name in ("source_prefill", "source_decode"):
+        assert stages[source_name].next == "target_prefill"
+        assert stages[source_name].project_payload == {"target_prefill": projector}
+    assert stages["target_prefill"].wait_for == ["source_decode"]
+    assert expansion.routing_map == {
+        "source": "source_prefill",
+        "target": "target_prefill",
+    }
+    assert expansion.output_map == {
+        "source": "source_decode",
+        "target": "target_decode",
+    }
 
 
 @pytest.mark.parametrize(
