@@ -178,8 +178,8 @@ class PDHandoffController:
     """Join a per-rank continuation with a KV receiver commit.
 
     Fires the `rank_ready_callback` exactly once when this rank has both the
-    continuation and the KV commit.  The callback is rank-local; PR 3 must use
-    a cross-rank barrier on top of it before constructing a decode batch.
+    continuation and the KV commit. The callback is rank-local; the production
+    runtime currently admits TP=1 requests.
 
     The controller is callback-driven and thread-safe.  When no asyncio loop is
     running the caller must use `check_timeouts()`.
