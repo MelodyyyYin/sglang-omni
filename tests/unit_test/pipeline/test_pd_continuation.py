@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import threading
 import time
 
 import msgspec
@@ -168,6 +169,35 @@ def test_cleanup_callback_failure_does_not_retain_state():
     assert ctrl.pending_count() == 0
 
 
+def test_cleanup_runs_unlocked_and_blocks_request_id_reuse():
+    cleanup_started = threading.Event()
+    cleanup_release = threading.Event()
+
+    def cleanup(_pending: PendingHandoff, _reason: str) -> None:
+        cleanup_started.set()
+        assert cleanup_release.wait(timeout=1)
+
+    ctrl = PDHandoffController(cleanup_callback=cleanup)
+    continuation = _sample_continuation()
+    ctrl.start_handoff(continuation.request_id, continuation.transfer_id)
+    worker = threading.Thread(target=ctrl.abort, args=(continuation.request_id,))
+    worker.start()
+    assert cleanup_started.wait(timeout=1)
+
+    ctrl.start_handoff("another-request", "another-transfer")
+    with pytest.raises(ContinuationSchemaError, match="active transfer"):
+        ctrl.start_handoff(continuation.request_id, "xfer-2")
+    ctrl._on_timeout(continuation.request_id, continuation.transfer_id)
+
+    cleanup_release.set()
+    worker.join(timeout=1)
+    assert not worker.is_alive()
+    ctrl.start_handoff(continuation.request_id, "xfer-2")
+    ctrl.abort(continuation.request_id)
+    ctrl.abort("another-request")
+    assert ctrl.pending_count() == 0
+
+
 def test_ack_not_required_for_rank_ready():
     """Rank-ready depends on continuation and KV commit, not ACK."""
     rank_ready: list[PendingHandoff] = []
@@ -214,25 +244,34 @@ def test_request_id_can_be_reused_after_terminal_handoff():
     assert ctrl.pending_count() == 0
 
 
-def test_ready_callback_can_reuse_request_id():
-    next_continuation = _sample_continuation(transfer_id="xfer-2")
-    ctrl = None
+def test_ready_callback_runs_without_holding_controller_lock():
+    callback_started = threading.Event()
+    callback_release = threading.Event()
 
-    def on_ready(pending: PendingHandoff) -> None:
-        if pending.transfer_id == "xfer-1":
-            ctrl.start_handoff(
-                next_continuation.request_id, next_continuation.transfer_id
-            )
+    def on_ready(_pending: PendingHandoff) -> None:
+        callback_started.set()
+        assert callback_release.wait(timeout=1)
 
     ctrl = PDHandoffController(rank_ready_callback=on_ready)
-    first = _sample_continuation(transfer_id="xfer-1")
-    ctrl.start_handoff(first.request_id, first.transfer_id)
-    ctrl.set_continuation(first.request_id, first)
-    ctrl.set_kv_committed(first.request_id, first.transfer_id)
+    continuation = _sample_continuation()
+    ctrl.start_handoff(continuation.request_id, continuation.transfer_id)
+    ctrl.set_continuation(continuation.request_id, continuation)
+    worker = threading.Thread(
+        target=ctrl.set_kv_committed,
+        args=(continuation.request_id, continuation.transfer_id),
+    )
+    worker.start()
+    assert callback_started.wait(timeout=1)
 
-    pending = ctrl.get_pending(first.request_id)
-    assert pending is not None
-    assert pending.transfer_id == next_continuation.transfer_id
+    ctrl.start_handoff("another-request", "another-transfer")
+    with pytest.raises(ContinuationSchemaError, match="active transfer"):
+        ctrl.start_handoff(continuation.request_id, "xfer-2")
+
+    callback_release.set()
+    worker.join(timeout=1)
+    assert not worker.is_alive()
+    assert ctrl.get_pending(continuation.request_id) is None
+    ctrl.abort("another-request")
 
 
 def test_stale_timeout_does_not_abort_reused_request():

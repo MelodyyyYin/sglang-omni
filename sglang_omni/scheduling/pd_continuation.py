@@ -170,6 +170,7 @@ class PendingHandoff:
     kv_committed: bool = False
     aborted: bool = False
     rank_ready: bool = False
+    dispatching: bool = False
     deadline: float | None = None
     timeout_handle: Any | None = None
 
@@ -258,6 +259,8 @@ class PDHandoffController:
                     "ignoring continuation for inactive request %s", request_id
                 )
                 return
+            if pending.dispatching or pending.aborted:
+                return
             if continuation.request_id != request_id:
                 raise ContinuationSchemaError(
                     f"continuation request_id {continuation.request_id!r} does not "
@@ -291,6 +294,8 @@ class PDHandoffController:
             pending = self._pending.get(request_id)
             if pending is None:
                 return
+            if pending.dispatching or pending.aborted:
+                return
             if transfer_id is not None and transfer_id != pending.transfer_id:
                 logger.debug(
                     "ignoring continuation marker for stale transfer request=%s "
@@ -319,6 +324,8 @@ class PDHandoffController:
                     "ignoring kv_committed for inactive request %s", request_id
                 )
                 return
+            if pending.dispatching or pending.aborted:
+                return
             if transfer_id is not None and transfer_id != pending.transfer_id:
                 logger.debug(
                     "ignoring kv_committed for stale transfer request=%s transfer=%s",
@@ -346,6 +353,8 @@ class PDHandoffController:
         with self._lock:
             pending = self._pending.get(request_id)
             if pending is None:
+                return
+            if pending.dispatching or pending.aborted:
                 return
             if transfer_id is not None and transfer_id != pending.transfer_id:
                 logger.debug(
@@ -382,12 +391,14 @@ class PDHandoffController:
         # Note (Yue Yin): Local commit is the ownership boundary, so waiting for
         # the sender ACK here would unnecessarily serialize Decode admission.
         if (
-            pending.continuation is not None or not pending.continuation_expected
-        ) and pending.kv_committed:
+            (pending.continuation is not None or not pending.continuation_expected)
+            and pending.kv_committed
+            and not pending.dispatching
+            and not pending.aborted
+        ):
+            pending.dispatching = True
             self._cancel_timeout(pending)
-            if self._pending.get(pending.request_id) is pending:
-                del self._pending[pending.request_id]
-                return pending
+            return pending
         return None
 
     def _dispatch_ready(self, pending: PendingHandoff) -> None:
@@ -399,7 +410,9 @@ class PDHandoffController:
             pending.aborted = True
             self._run_cleanup(pending, f"rank_ready callback failed: {exc}")
             return
-        pending.rank_ready = True
+        with self._lock:
+            pending.rank_ready = True
+            self._remove_locked(pending)
         logger.debug(
             "rank_ready request=%s transfer=%s",
             pending.request_id,
@@ -410,7 +423,12 @@ class PDHandoffController:
         expired = None
         with self._lock:
             pending = self._pending.get(request_id)
-            if pending is None or pending.transfer_id != transfer_id:
+            if (
+                pending is None
+                or pending.transfer_id != transfer_id
+                or pending.aborted
+                or pending.dispatching
+            ):
                 return
             expired = self._take_abort_locked(pending)
         if expired is not None:
@@ -419,17 +437,22 @@ class PDHandoffController:
     def _take_abort_locked(self, pending: PendingHandoff) -> PendingHandoff:
         pending.aborted = True
         self._cancel_timeout(pending)
-        if self._pending.get(pending.request_id) is pending:
-            del self._pending[pending.request_id]
         return pending
 
     def _run_cleanup(self, pending: PendingHandoff, reason: str) -> None:
-        if self._cleanup_callback is not None:
-            try:
+        try:
+            if self._cleanup_callback is not None:
                 self._cleanup_callback(pending, reason)
-            except Exception:
-                logger.exception("cleanup callback failed for %s", pending.request_id)
+        except Exception:
+            logger.exception("cleanup callback failed for %s", pending.request_id)
+        finally:
+            with self._lock:
+                self._remove_locked(pending)
         logger.debug("handoff aborted request=%s reason=%s", pending.request_id, reason)
+
+    def _remove_locked(self, pending: PendingHandoff) -> None:
+        if self._pending.get(pending.request_id) is pending:
+            del self._pending[pending.request_id]
 
     def _cancel_timeout(self, pending: PendingHandoff) -> None:
         handle = pending.timeout_handle
