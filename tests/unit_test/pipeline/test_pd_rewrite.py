@@ -41,6 +41,7 @@ def test_pd_expansion_rewrites_edges_and_metadata() -> None:
                 wait_for=["pre"],
                 merge_fn="tests.unit_test.fixtures.pipeline_fakes.merge_payloads",
                 stream_to=["sink"],
+                stream_done_to_fn=fake_factory_path("identity_stream_targets"),
                 pd_disaggregation=_pd(1, 2),
             ),
             stage("post", terminal=True),
@@ -78,10 +79,12 @@ def test_pd_expansion_rewrites_edges_and_metadata() -> None:
     assert prefill.process == "thinker_prefill"
     assert prefill.next == "post"
     assert not prefill.terminal
-    assert not prefill.stream_to
+    assert prefill.stream_to == ["sink"]
+    assert prefill.stream_done_to_fn == fake_factory_path("identity_stream_targets")
 
     assert decode.next == "post"
     assert decode.stream_to == ["sink"]
+    assert decode.stream_done_to_fn == fake_factory_path("identity_stream_targets")
     assert decode.gpu == 2
     assert decode.process == "thinker_decode"
     assert not decode.wait_for

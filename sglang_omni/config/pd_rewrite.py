@@ -151,8 +151,9 @@ def _split_pd_stage(
             ),
             "terminal": False,
             "route_fn": None,
-            "stream_to": [],
-            "stream_done_to_fn": None,
+            # Note (Yue Yin): Prefill owns the first sampled token, and when it
+            # also finishes the request it must close the downstream stream.
+            "stream_to": [inbound_rename.get(t, t) for t in s.stream_to],
             "pd_disaggregation": None,
             # Note (Yue Yin): Keep compiler metadata out of user factory kwargs.
             "pd_execution": PDExecution(role="prefill", partner=decode_name),
