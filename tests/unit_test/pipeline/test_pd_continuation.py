@@ -107,12 +107,14 @@ def test_exactly_once_rank_ready():
     ctrl = PDHandoffController(rank_ready_callback=rank_ready.append)
     cont = _sample_continuation()
 
-    ctrl.start_handoff(cont.request_id, cont.transfer_id)
+    pending = ctrl.start_handoff(cont.request_id, cont.transfer_id)
     ctrl.set_continuation(cont.request_id, cont)
-    assert not ctrl.is_rank_ready(cont.request_id)
+    assert ctrl.pending_count() == 1
 
     ctrl.set_kv_committed(cont.request_id)
-    assert ctrl.is_rank_ready(cont.request_id)
+    assert pending.rank_ready
+    assert ctrl.get_pending(cont.request_id) is None
+    assert ctrl.pending_count() == 0
     assert len(rank_ready) == 1
     assert rank_ready[0].continuation is cont
 
@@ -126,12 +128,44 @@ def test_kv_first_then_continuation_still_becomes_rank_ready():
     ctrl = PDHandoffController(rank_ready_callback=rank_ready.append)
     cont = _sample_continuation()
 
-    ctrl.start_handoff(cont.request_id, cont.transfer_id)
+    pending = ctrl.start_handoff(cont.request_id, cont.transfer_id)
     ctrl.set_kv_committed(cont.request_id)
-    assert not ctrl.is_rank_ready(cont.request_id)
+    assert ctrl.pending_count() == 1
     ctrl.set_continuation(cont.request_id, cont)
-    assert ctrl.is_rank_ready(cont.request_id)
+    assert pending.rank_ready
+    assert ctrl.pending_count() == 0
     assert len(rank_ready) == 1
+
+
+def test_rank_ready_callback_failure_removes_state_and_cleans_once():
+    cleaned: list[tuple[PendingHandoff, str]] = []
+    cont = _sample_continuation()
+    ctrl = PDHandoffController(
+        rank_ready_callback=lambda _: (_ for _ in ()).throw(RuntimeError("admit")),
+        cleanup_callback=lambda pending, reason: cleaned.append((pending, reason)),
+    )
+    pending = ctrl.start_handoff(cont.request_id, cont.transfer_id)
+    ctrl.set_continuation(cont.request_id, cont)
+    ctrl.set_kv_committed(cont.request_id)
+
+    assert pending.aborted
+    assert not pending.rank_ready
+    assert ctrl.pending_count() == 0
+    assert len(cleaned) == 1
+    ctrl.abort(cont.request_id)
+    assert len(cleaned) == 1
+
+
+def test_cleanup_callback_failure_does_not_retain_state():
+    cont = _sample_continuation()
+    ctrl = PDHandoffController(
+        cleanup_callback=lambda *_: (_ for _ in ()).throw(RuntimeError("cleanup"))
+    )
+    ctrl.start_handoff(cont.request_id, cont.transfer_id)
+
+    ctrl.abort(cont.request_id)
+
+    assert ctrl.pending_count() == 0
 
 
 def test_ack_not_required_for_rank_ready():
@@ -155,11 +189,98 @@ def test_duplicate_and_stale_messages():
     ctrl.set_continuation(cont.request_id, cont)
     ctrl.set_kv_committed(cont.request_id)
 
-    with pytest.raises(KeyError):
-        ctrl.set_continuation("unknown-req", cont)
-
+    ctrl.set_continuation("unknown-req", cont)
     ctrl.set_kv_committed(cont.request_id)
+    ctrl.abort(cont.request_id)
     assert len(rank_ready) == 1
+
+
+def test_request_id_can_be_reused_after_terminal_handoff():
+    ready: list[PendingHandoff] = []
+    ctrl = PDHandoffController(rank_ready_callback=ready.append)
+
+    first = _sample_continuation(transfer_id="xfer-1")
+    ctrl.start_handoff(first.request_id, first.transfer_id)
+    ctrl.set_continuation(first.request_id, first)
+    ctrl.set_kv_committed(first.request_id, first.transfer_id)
+
+    second = _sample_continuation(transfer_id="xfer-2", output_ids=[43])
+    pending = ctrl.start_handoff(second.request_id, second.transfer_id)
+    ctrl.set_continuation(second.request_id, second)
+    ctrl.set_kv_committed(second.request_id, second.transfer_id)
+
+    assert pending.transfer_id == "xfer-2"
+    assert [item.transfer_id for item in ready] == ["xfer-1", "xfer-2"]
+    assert ctrl.pending_count() == 0
+
+
+def test_ready_callback_can_reuse_request_id():
+    next_continuation = _sample_continuation(transfer_id="xfer-2")
+    ctrl = None
+
+    def on_ready(pending: PendingHandoff) -> None:
+        if pending.transfer_id == "xfer-1":
+            ctrl.start_handoff(
+                next_continuation.request_id, next_continuation.transfer_id
+            )
+
+    ctrl = PDHandoffController(rank_ready_callback=on_ready)
+    first = _sample_continuation(transfer_id="xfer-1")
+    ctrl.start_handoff(first.request_id, first.transfer_id)
+    ctrl.set_continuation(first.request_id, first)
+    ctrl.set_kv_committed(first.request_id, first.transfer_id)
+
+    pending = ctrl.get_pending(first.request_id)
+    assert pending is not None
+    assert pending.transfer_id == next_continuation.transfer_id
+
+
+def test_stale_timeout_does_not_abort_reused_request():
+    ctrl = PDHandoffController()
+    first = _sample_continuation(transfer_id="xfer-1")
+    ctrl.start_handoff(first.request_id, first.transfer_id)
+    ctrl.abort(first.request_id, transfer_id=first.transfer_id)
+
+    second = _sample_continuation(transfer_id="xfer-2")
+    ctrl.start_handoff(second.request_id, second.transfer_id)
+    ctrl._on_timeout(second.request_id, first.transfer_id)
+
+    pending = ctrl.get_pending(second.request_id)
+    assert pending is not None
+    assert not pending.aborted
+
+
+def test_late_old_transfer_messages_do_not_mutate_reused_request():
+    ready: list[PendingHandoff] = []
+    ctrl = PDHandoffController(rank_ready_callback=ready.append)
+    first = _sample_continuation(transfer_id="xfer-1")
+    ctrl.start_handoff(first.request_id, first.transfer_id)
+    ctrl.set_continuation(first.request_id, first)
+    ctrl.set_kv_committed(first.request_id, first.transfer_id)
+
+    second = _sample_continuation(transfer_id="xfer-2", output_ids=[43])
+    ctrl.start_handoff(second.request_id, second.transfer_id)
+    ctrl.set_kv_committed(second.request_id, first.transfer_id)
+    ctrl.abort(second.request_id, transfer_id=first.transfer_id)
+
+    assert ctrl.pending_count() == 1
+    ctrl.set_continuation(second.request_id, second)
+    ctrl.set_kv_committed(second.request_id, second.transfer_id)
+    assert [item.transfer_id for item in ready] == ["xfer-1", "xfer-2"]
+
+
+def test_one_thousand_sequential_handoffs_leave_no_active_state():
+    ready: list[PendingHandoff] = []
+    ctrl = PDHandoffController(rank_ready_callback=ready.append)
+
+    for index in range(1000):
+        continuation = _sample_continuation(transfer_id=f"xfer-{index}")
+        ctrl.start_handoff(continuation.request_id, continuation.transfer_id)
+        ctrl.set_continuation(continuation.request_id, continuation)
+        ctrl.set_kv_committed(continuation.request_id, continuation.transfer_id)
+
+    assert len(ready) == 1000
+    assert ctrl.pending_count() == 0
 
 
 def test_abort_cleanup_before_rank_ready():
@@ -171,7 +292,8 @@ def test_abort_cleanup_before_rank_ready():
     ctrl.set_continuation(cont.request_id, cont)
     ctrl.abort(cont.request_id, reason="user-cancel")
 
-    assert ctrl.get_pending(cont.request_id).aborted
+    assert ctrl.get_pending(cont.request_id) is None
+    assert ctrl.pending_count() == 0
     assert len(cleanups) == 1
     assert cleanups[0][1] == "user-cancel"
 
@@ -190,8 +312,8 @@ def test_abort_after_commit_before_rank_ready():
     ctrl.abort(cont.request_id, reason="dropped")
     ctrl.set_continuation(cont.request_id, cont)
 
-    assert ctrl.get_pending(cont.request_id).aborted
-    assert not ctrl.is_rank_ready(cont.request_id)
+    assert ctrl.get_pending(cont.request_id) is None
+    assert ctrl.pending_count() == 0
     assert len(cleanups) == 1
 
 
@@ -210,7 +332,7 @@ def test_abort_after_rank_ready_is_ignored():
     assert rank_ready
 
     ctrl.abort(cont.request_id, reason="late")
-    assert not ctrl.get_pending(cont.request_id).aborted
+    assert ctrl.get_pending(cont.request_id) is None
     assert not cleanups
 
 
@@ -226,7 +348,8 @@ async def test_timeout_aborts_unfinished_handoff():
     ctrl.start_handoff(cont.request_id, cont.transfer_id)
     assert not ctrl.get_pending(cont.request_id).aborted
     await asyncio.sleep(0.15)
-    assert ctrl.get_pending(cont.request_id).aborted
+    assert ctrl.get_pending(cont.request_id) is None
+    assert ctrl.pending_count() == 0
     assert len(cleanups) == 1
     assert cleanups[0][1] == "timeout"
 
@@ -243,7 +366,8 @@ def test_timeout_check_timeouts_sync():
     assert not ctrl.get_pending(cont.request_id).aborted
     time.sleep(0.05)
     ctrl.check_timeouts()
-    assert ctrl.get_pending(cont.request_id).aborted
+    assert ctrl.get_pending(cont.request_id) is None
+    assert ctrl.pending_count() == 0
     assert cleanups
 
 
@@ -283,6 +407,7 @@ def test_continuation_aware_kv_receiver_rank0():
     assert len(inner.commits) == 1
     assert len(rank_ready) == 1
     assert rank_ready[0].continuation.request_id == cont.request_id
+    assert ctrl.pending_count() == 0
 
 
 def test_continuation_aware_kv_receiver_non_rank0():
@@ -306,6 +431,7 @@ def test_continuation_aware_kv_receiver_non_rank0():
     assert len(inner.commits) == 1
     assert len(rank_ready) == 1
     assert rank_ready[0].continuation is None
+    assert ctrl.pending_count() == 0
 
 
 def test_continuation_aware_kv_receiver_invalid_continuation():
@@ -360,6 +486,46 @@ def test_continuation_aware_kv_receiver_missing_continuation():
         receiver.reserve(prepare)
 
 
+def test_prepare_request_id_must_match_continuation():
+    inner = _FakeReceiver()
+    ctrl = PDHandoffController()
+    receiver = ContinuationAwareKVReceiver(inner=inner, controller=ctrl)
+    continuation = _sample_continuation()
+    prepare = dataclasses.replace(
+        _prepare(
+            continuation,
+            PrefillContinuationProducer().prepare_rank_metadata(continuation, 0),
+        ),
+        request_id="different-request",
+    )
+
+    with pytest.raises(ContinuationSchemaError, match="request_id"):
+        receiver.reserve(prepare)
+
+    assert ctrl.pending_count() == 0
+    assert not inner.reserves
+
+
+def test_prepare_transfer_id_must_match_continuation():
+    inner = _FakeReceiver()
+    ctrl = PDHandoffController()
+    receiver = ContinuationAwareKVReceiver(inner=inner, controller=ctrl)
+    continuation = _sample_continuation()
+    prepare = dataclasses.replace(
+        _prepare(
+            continuation,
+            PrefillContinuationProducer().prepare_rank_metadata(continuation, 0),
+        ),
+        transfer_id="different-transfer",
+    )
+
+    with pytest.raises(ContinuationSchemaError, match="transfer_id"):
+        receiver.reserve(prepare)
+
+    assert ctrl.pending_count() == 0
+    assert not inner.reserves
+
+
 def test_continuation_aware_kv_receiver_abort():
     inner = _FakeReceiver()
     cleanups: list[tuple[PendingHandoff, str]] = []
@@ -375,7 +541,8 @@ def test_continuation_aware_kv_receiver_abort():
     receiver.abort(prepare, None, err)
 
     assert len(inner.aborts) == 1
-    assert ctrl.get_pending(cont.request_id).aborted
+    assert ctrl.get_pending(cont.request_id) is None
+    assert ctrl.pending_count() == 0
     assert len(cleanups) == 1
 
 

@@ -206,7 +206,13 @@ class PDHandoffController:
     ) -> PendingHandoff:
         with self._lock:
             if request_id in self._pending:
-                return self._pending[request_id]
+                pending = self._pending[request_id]
+                if pending.transfer_id != transfer_id:
+                    raise ContinuationSchemaError(
+                        f"request {request_id!r} already has active transfer "
+                        f"{pending.transfer_id!r}, got {transfer_id!r}"
+                    )
+                return pending
 
             effective_timeout = (
                 timeout_s if timeout_s is not None else self._default_timeout_s
@@ -218,7 +224,10 @@ class PDHandoffController:
                 try:
                     loop = asyncio.get_running_loop()
                     handle = loop.call_later(
-                        effective_timeout, self._on_timeout, request_id
+                        effective_timeout,
+                        self._on_timeout,
+                        request_id,
+                        transfer_id,
                     )
                 except RuntimeError:
                     pass
@@ -241,17 +250,24 @@ class PDHandoffController:
         continuation: DecodeContinuation,
     ) -> None:
         """Accept a decoded continuation for a request."""
+        ready = None
         with self._lock:
             pending = self._pending.get(request_id)
             if pending is None:
-                raise KeyError(f"continuation for unknown request {request_id!r}")
-            if pending.rank_ready or pending.aborted:
-                logger.warning(
-                    "ignoring continuation for %s: already %s",
-                    request_id,
-                    "rank_ready" if pending.rank_ready else "aborted",
+                logger.debug(
+                    "ignoring continuation for inactive request %s", request_id
                 )
                 return
+            if continuation.request_id != request_id:
+                raise ContinuationSchemaError(
+                    f"continuation request_id {continuation.request_id!r} does not "
+                    f"match handoff request_id {request_id!r}"
+                )
+            if continuation.transfer_id != pending.transfer_id:
+                raise ContinuationSchemaError(
+                    f"continuation transfer_id {continuation.transfer_id!r} does not "
+                    f"match active transfer_id {pending.transfer_id!r}"
+                )
             if pending.continuation is not None:
                 logger.warning(
                     "duplicate continuation for request %s ignored", request_id
@@ -260,30 +276,54 @@ class PDHandoffController:
 
             pending.continuation = continuation
             logger.debug("continuation set for request=%s", request_id)
-            self._try_mark_rank_ready(pending)
+            ready = self._take_ready_locked(pending)
+        if ready is not None:
+            self._dispatch_ready(ready)
 
-    def set_continuation_not_required(self, request_id: str) -> None:
+    def set_continuation_not_required(
+        self,
+        request_id: str,
+        transfer_id: str | None = None,
+    ) -> None:
         """Mark a non-rank-0 handoff as not expecting a continuation payload."""
-        with self._lock:
-            pending = self._pending.get(request_id)
-            if pending is None or pending.rank_ready or pending.aborted:
-                return
-            pending.continuation_expected = False
-            logger.debug("continuation not required for request=%s", request_id)
-            self._try_mark_rank_ready(pending)
-
-    def set_kv_committed(self, request_id: str) -> None:
-        """Notify that the KV receiver has committed the transfer."""
+        ready = None
         with self._lock:
             pending = self._pending.get(request_id)
             if pending is None:
-                logger.warning("kv_committed for unknown request %s", request_id)
                 return
-            if pending.rank_ready or pending.aborted:
+            if transfer_id is not None and transfer_id != pending.transfer_id:
                 logger.debug(
-                    "ignoring kv_committed for %s: already %s",
+                    "ignoring continuation marker for stale transfer request=%s "
+                    "transfer=%s",
                     request_id,
-                    "rank_ready" if pending.rank_ready else "aborted",
+                    transfer_id,
+                )
+                return
+            pending.continuation_expected = False
+            logger.debug("continuation not required for request=%s", request_id)
+            ready = self._take_ready_locked(pending)
+        if ready is not None:
+            self._dispatch_ready(ready)
+
+    def set_kv_committed(
+        self,
+        request_id: str,
+        transfer_id: str | None = None,
+    ) -> None:
+        """Notify that the KV receiver has committed the transfer."""
+        ready = None
+        with self._lock:
+            pending = self._pending.get(request_id)
+            if pending is None:
+                logger.debug(
+                    "ignoring kv_committed for inactive request %s", request_id
+                )
+                return
+            if transfer_id is not None and transfer_id != pending.transfer_id:
+                logger.debug(
+                    "ignoring kv_committed for stale transfer request=%s transfer=%s",
+                    request_id,
+                    transfer_id,
                 )
                 return
             if pending.kv_committed:
@@ -291,73 +331,99 @@ class PDHandoffController:
                 return
             pending.kv_committed = True
             logger.debug("kv committed for request=%s", request_id)
-            self._try_mark_rank_ready(pending)
+            ready = self._take_ready_locked(pending)
+        if ready is not None:
+            self._dispatch_ready(ready)
 
-    def abort(self, request_id: str, reason: str = "abort") -> None:
+    def abort(
+        self,
+        request_id: str,
+        reason: str = "abort",
+        transfer_id: str | None = None,
+    ) -> None:
         """Abort a pending handoff before it becomes rank-ready."""
+        aborted = None
         with self._lock:
             pending = self._pending.get(request_id)
-            if pending is None or pending.rank_ready or pending.aborted:
+            if pending is None:
                 return
-            self._do_abort_locked(pending, reason)
+            if transfer_id is not None and transfer_id != pending.transfer_id:
+                logger.debug(
+                    "ignoring abort for stale transfer request=%s transfer=%s",
+                    request_id,
+                    transfer_id,
+                )
+                return
+            aborted = self._take_abort_locked(pending)
+        if aborted is not None:
+            self._run_cleanup(aborted, reason)
 
     def check_timeouts(self) -> None:
         """Synchronous timeout helper for callers without a running event loop."""
         now = time.monotonic()
+        expired = []
         with self._lock:
             for request_id, pending in list(self._pending.items()):
-                if (
-                    not pending.rank_ready
-                    and not pending.aborted
-                    and pending.deadline is not None
-                    and now >= pending.deadline
-                ):
+                if pending.deadline is not None and now >= pending.deadline:
                     logger.warning("handoff timeout for request=%s", request_id)
-                    self._do_abort_locked(pending, "timeout")
+                    expired.append(self._take_abort_locked(pending))
+        for pending in expired:
+            self._run_cleanup(pending, "timeout")
 
     def get_pending(self, request_id: str) -> PendingHandoff | None:
         with self._lock:
             return self._pending.get(request_id)
 
-    def is_rank_ready(self, request_id: str) -> bool:
+    def pending_count(self) -> int:
         with self._lock:
-            pending = self._pending.get(request_id)
-            return pending.rank_ready if pending else False
+            return len(self._pending)
 
-    def _try_mark_rank_ready(self, pending: PendingHandoff) -> None:
+    def _take_ready_locked(self, pending: PendingHandoff) -> PendingHandoff | None:
         # Note (Yue Yin): Local commit is the ownership boundary, so waiting for
         # the sender ACK here would unnecessarily serialize Decode admission.
         if (
-            (pending.continuation is not None or not pending.continuation_expected)
-            and pending.kv_committed
-            and not pending.aborted
-            and not pending.rank_ready
-        ):
-            pending.rank_ready = True
+            pending.continuation is not None or not pending.continuation_expected
+        ) and pending.kv_committed:
             self._cancel_timeout(pending)
-            logger.debug(
-                "rank_ready request=%s transfer=%s",
-                pending.request_id,
-                pending.transfer_id,
-            )
-            if self._rank_ready_callback is not None:
-                try:
-                    self._rank_ready_callback(pending)
-                except Exception:
-                    logger.exception(
-                        "rank_ready callback failed for %s", pending.request_id
-                    )
+            if self._pending.get(pending.request_id) is pending:
+                del self._pending[pending.request_id]
+                return pending
+        return None
 
-    def _on_timeout(self, request_id: str) -> None:
+    def _dispatch_ready(self, pending: PendingHandoff) -> None:
+        try:
+            if self._rank_ready_callback is not None:
+                self._rank_ready_callback(pending)
+        except Exception as exc:
+            logger.exception("rank_ready callback failed for %s", pending.request_id)
+            pending.aborted = True
+            self._run_cleanup(pending, f"rank_ready callback failed: {exc}")
+            return
+        pending.rank_ready = True
+        logger.debug(
+            "rank_ready request=%s transfer=%s",
+            pending.request_id,
+            pending.transfer_id,
+        )
+
+    def _on_timeout(self, request_id: str, transfer_id: str) -> None:
+        expired = None
         with self._lock:
             pending = self._pending.get(request_id)
-            if pending is None or pending.rank_ready or pending.aborted:
+            if pending is None or pending.transfer_id != transfer_id:
                 return
-            self._do_abort_locked(pending, "timeout")
+            expired = self._take_abort_locked(pending)
+        if expired is not None:
+            self._run_cleanup(expired, "timeout")
 
-    def _do_abort_locked(self, pending: PendingHandoff, reason: str) -> None:
+    def _take_abort_locked(self, pending: PendingHandoff) -> PendingHandoff:
         pending.aborted = True
         self._cancel_timeout(pending)
+        if self._pending.get(pending.request_id) is pending:
+            del self._pending[pending.request_id]
+        return pending
+
+    def _run_cleanup(self, pending: PendingHandoff, reason: str) -> None:
         if self._cleanup_callback is not None:
             try:
                 self._cleanup_callback(pending, reason)
@@ -400,8 +466,14 @@ class ContinuationAwareKVReceiver:
         self._is_local = is_local
 
     def reserve(self, request: KVTransferPrepareMessage) -> KVPageDestination:
+        continuation, continuation_expected = self._decode_metadata(request)
         self._controller.start_handoff(request.request_id, request.transfer_id)
-        self._maybe_ingest_continuation(request)
+        if continuation is not None:
+            self._controller.set_continuation(request.request_id, continuation)
+        elif not continuation_expected:
+            self._controller.set_continuation_not_required(
+                request.request_id, request.transfer_id
+            )
         return self._inner.reserve(request)
 
     def commit(
@@ -410,7 +482,7 @@ class ContinuationAwareKVReceiver:
         destination: KVPageDestination,
     ) -> None:
         self._inner.commit(request, destination)
-        self._controller.set_kv_committed(request.request_id)
+        self._controller.set_kv_committed(request.request_id, request.transfer_id)
 
     def abort(
         self,
@@ -420,14 +492,17 @@ class ContinuationAwareKVReceiver:
     ) -> None:
         self._inner.abort(request, destination, error)
         self._controller.abort(
-            request.request_id, reason=str(error) or type(error).__name__
+            request.request_id,
+            reason=str(error) or type(error).__name__,
+            transfer_id=request.transfer_id,
         )
 
-    def _maybe_ingest_continuation(self, request: KVTransferPrepareMessage) -> None:
+    def _decode_metadata(
+        self, request: KVTransferPrepareMessage
+    ) -> tuple[DecodeContinuation | None, bool]:
         present = request.metadata.get("pd_continuation_present")
         if present is False:
-            self._controller.set_continuation_not_required(request.request_id)
-            return
+            return None, False
 
         raw = request.metadata.get("pd_continuation")
         if raw is None:
@@ -435,19 +510,29 @@ class ContinuationAwareKVReceiver:
                 raise ContinuationSchemaError(
                     "pd_continuation required by metadata but missing"
                 )
-            return
+            return None, True
 
         if not isinstance(raw, (bytes, bytearray)):
             raise ContinuationSchemaError("pd_continuation metadata must be bytes")
 
         continuation = decode_continuation(bytes(raw))
+        if continuation.request_id != request.request_id:
+            raise ContinuationSchemaError(
+                f"prepare request_id {request.request_id!r} does not match "
+                f"continuation request_id {continuation.request_id!r}"
+            )
+        if continuation.transfer_id != request.transfer_id:
+            raise ContinuationSchemaError(
+                f"prepare transfer_id {request.transfer_id!r} does not match "
+                f"continuation transfer_id {continuation.transfer_id!r}"
+            )
         validate_continuation(
             continuation,
             source_tp_size=self._source_tp_size,
             target_tp_size=self._target_tp_size,
             is_local=self._is_local,
         )
-        self._controller.set_continuation(request.request_id, continuation)
+        return continuation, True
 
 
 class PrefillContinuationProducer:
