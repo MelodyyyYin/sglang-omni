@@ -655,30 +655,22 @@ def test_qwen_pd_continuation_projects_tensors_and_restores_mrope() -> None:
     assert rebuilt.omni_model_inputs is None
 
 
-def test_qwen_pd_runtime_tokenizer_handles_resumed_stop_conditions() -> None:
-    stop_string = _rebuild_qwen_req(stream=False)
-    stop_string.sampling_params.stop_strs = ["B"]
-    stop_string.sampling_params.stop_regex_strs = []
-    stop_string.output_ids.append(43)
-    stop_string.update_finish_state()
+@pytest.mark.parametrize(
+    ("stop_strs", "stop_token_ids", "token", "expected"),
+    [(["B"], set(), 43, "B"), ([], {43}, 43, 43), ([], set(), 2, 2)],
+)
+def test_qwen_pd_runtime_tokenizer_handles_resumed_stop_conditions(
+    stop_strs, stop_token_ids, token, expected
+) -> None:
+    req = _rebuild_qwen_req(stream=False)
+    req.sampling_params.stop_strs = stop_strs
+    req.sampling_params.stop_regex_strs = []
+    req.sampling_params.stop_token_ids = stop_token_ids
+    req.output_ids.append(token)
 
-    stop_token = _rebuild_qwen_req(stream=False)
-    stop_token.sampling_params.stop_strs = []
-    stop_token.sampling_params.stop_regex_strs = []
-    stop_token.sampling_params.stop_token_ids = {43}
-    stop_token.output_ids.append(43)
-    stop_token.update_finish_state()
+    req.update_finish_state()
 
-    eos = _rebuild_qwen_req(stream=False)
-    eos.sampling_params.stop_strs = []
-    eos.sampling_params.stop_regex_strs = []
-    eos.sampling_params.stop_token_ids = set()
-    eos.output_ids.append(2)
-    eos.update_finish_state()
-
-    assert stop_string.finished_reason.matched == "B"
-    assert stop_token.finished_reason.matched == 43
-    assert eos.finished_reason.matched == 2
+    assert req.finished_reason.matched == expected
 
 
 def test_qwen_pd_continuation_does_not_serialize_runtime_tokenizer() -> None:
