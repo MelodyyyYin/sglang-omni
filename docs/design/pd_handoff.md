@@ -35,8 +35,9 @@ polling.  For each request it waits for two rank-local events:
 done.
 
 When both are satisfied and the request is not aborted, it fires the
-`rank_ready_callback` exactly once.  The callback is rank-local; PR 3 must use
-a cross-rank barrier on top of it before constructing a decode batch.
+`rank_ready_callback` exactly once. The callback is rank-local. The current
+production runtime admits TP=1 requests; cross-rank admission for TP>1 is not
+implemented.
 
 ## ACK semantics
 
@@ -47,25 +48,30 @@ decode scheduling.
 
 ## Cleanup and abort
 
-- Before `rank_ready`, `abort()` or a timeout calls the `cleanup_callback`
-  exactly once and frees the reserved/committed pages.
-- After `rank_ready`, `abort()` is ignored because the normal request lifecycle
-  owns cleanup.
-- Duplicate continuation, KV commit, and abort calls are idempotent.
+- Before `rank_ready`, `abort()` or a timeout removes the active handoff and
+  calls the `cleanup_callback` exactly once.
+- A successful readiness callback removes the handoff before the normal request
+  lifecycle takes ownership.
+- Late duplicate continuation, KV commit, and abort calls are harmless, and a
+  request ID may be reused by a new transfer.
 
 ## Capability validation
 
-`validate_continuation` rejects anything that cannot be handled generically in
-PR 2: unequal prefill/decode TP sizes, cross-node handoffs, projected input
-embeddings, speculative decoding, multimodal resume payloads, grammar/structured
-output sampling, and custom logit processors.  The adapter performs this check
-when it ingests the rank-0 continuation.
+`validate_continuation` rejects unsupported contracts, including unequal
+prefill/decode TP sizes, cross-node handoffs, projected input embeddings,
+speculative decoding, multimodal resume payloads, grammar/structured output
+sampling, and custom logit processors. Speculative decoding is rejected here;
+it is not an objective of this stack. The adapter validates the rank-0
+continuation before associating it with a transfer.
 
 ## PR 2 / PR 3 boundary
 
 - **PR 2:** per-rank readiness join, opaque continuation transport, capability
   validation, and the `KVReceiver` adapter (`ContinuationAwareKVReceiver`) that
   feeds the controller.
-- **PR 3:** logical decode admission across TP ranks, `Req` reconstruction from
-  `DecodeContinuation`, `prepare_for_prebuilt()` scheduling, and model-specific
-  resume builders.
+- **PR 3:** TP=1 Decode request reconstruction, committed-KV ownership, and
+  scheduler-thread admission. The current runtime also requires `page_size=1`,
+  same-node local transfer, and disabled RadixCache.
+
+Model-specific state projection and restoration are supplied by sibling model
+integration PRs through the generic PR3 hooks.
