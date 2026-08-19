@@ -11,6 +11,7 @@ import msgspec
 import pytest
 
 from sglang_omni.comm.kv_transfer import KVPageDestination, KVTransferPrepareMessage
+from sglang_omni.pipeline.control_plane import deserialize_message, serialize_message
 from sglang_omni.proto import KVBufferSpec, KVPoolLayout
 from sglang_omni.scheduling.pd_continuation import (
     ContinuationAwareKVReceiver,
@@ -71,6 +72,18 @@ class _FakeReceiver:
 def test_continuation_round_trip():
     cont = _sample_continuation()
     assert decode_continuation(encode_continuation(cont)) == cont
+
+
+def test_continuation_bytes_survive_control_plane_round_trip():
+    cont = _sample_continuation()
+    prepare = _prepare(
+        cont,
+        PrefillContinuationProducer().prepare_rank_metadata(cont, 0),
+    )
+
+    decoded = deserialize_message(serialize_message(prepare))
+
+    assert decoded.metadata["pd_continuation"] == encode_continuation(cont)
 
 
 def test_schema_version_rejection():
