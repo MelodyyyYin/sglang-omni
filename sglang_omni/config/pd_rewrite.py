@@ -155,6 +155,25 @@ def pd_required_factory_args(
     return {**factory_args, "server_args_overrides": overrides}
 
 
+def _half_factory_args(
+    stage: StageConfig,
+    half_server_args: dict[str, object],
+) -> dict[str, object]:
+    """Merge one half's server args into that half's factory args.
+
+    The half's values win over the stage's, because they were written for this
+    half specifically. ``pd_required_factory_args`` runs later and still rejects
+    a value that contradicts what PD requires.
+    """
+    if not half_server_args:
+        return stage.factory_args
+    overrides = {
+        **(stage.factory_args.get("server_args_overrides") or {}),
+        **half_server_args,
+    }
+    return {**stage.factory_args, "server_args_overrides": overrides}
+
+
 def _split_pd_stage(
     s: StageConfig,
     inbound_rename: dict[str, str],
@@ -171,6 +190,7 @@ def _split_pd_stage(
             "name": prefill_name,
             "gpu": pd.prefill.gpu if pd.prefill.gpu is not None else s.gpu,
             "process": pd.prefill.process or prefill_name,
+            "factory_args": _half_factory_args(s, pd.prefill.server_args),
             # Note (Yue Yin): Preserve the result path when the first sampled
             # token finishes the request before a KV handoff is needed.
             "next": _rename_targets(s.next, inbound_rename),
@@ -199,6 +219,7 @@ def _split_pd_stage(
             "name": decode_name,
             "gpu": pd.decode.gpu if pd.decode.gpu is not None else s.gpu,
             "process": pd.decode.process or decode_name,
+            "factory_args": _half_factory_args(s, pd.decode.server_args),
             "next": _rename_targets(s.next, inbound_rename),
             "stream_to": [inbound_rename.get(t, t) for t in s.stream_to],
             "project_payload": {
