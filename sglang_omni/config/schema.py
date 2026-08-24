@@ -132,6 +132,13 @@ class PDStagePlacement(BaseModel):
 
     gpu: int | list[int] | None = None
     process: str | None = None
+    # Note (Audrey Zheng): this half's share of the whole card, needed when the
+    # halves share a GPU. It routes KV sizing through
+    # `calculate_stage_budget_available_bytes`, which computes
+    # `total x fraction - this stage's own usage`. Total is a constant, so the
+    # result does not depend on which half loads first, and two halves whose
+    # fractions sum to at most 1 cannot claim the same bytes.
+    memory_fraction: float | None = Field(default=None, gt=0.0, le=1.0)
 
 
 class PDConfig(BaseModel):
@@ -634,11 +641,14 @@ class PipelineConfig(BaseModel):
                     f"Stage {s.name!r} pd_disaggregation requires explicit "
                     "prefill.gpu and decode.gpu for real PD"
                 )
-            if _pd_gpu_set(p_gpu) & _pd_gpu_set(d_gpu):
-                raise ValueError(
-                    f"Stage {s.name!r} pd_disaggregation prefill and decode "
-                    "cannot share the same GPU"
-                )
+            # Note (Audrey Zheng): The halves may share a GPU. The separation
+            # PD needs is the process split, which happens either way, and two
+            # halves on one card are two process groups sharing a GPU like any
+            # other -- `_validate_gpu_memory_fractions` already requires each
+            # to declare `runtime.resources.total_gpu_memory_fraction` and
+            # caps their sum. That budget is a share of total physical memory,
+            # so unlike `mem_fraction_static` it does not depend on which half
+            # wins the startup lock.
             for role, gpu in (("prefill", p_gpu), ("decode", d_gpu)):
                 if isinstance(gpu, list) and len(gpu) != s.tp_size:
                     raise ValueError(
@@ -675,12 +685,6 @@ def _target_list(targets: str | list[str] | None) -> list[str]:
     if isinstance(targets, str):
         return [targets]
     return list(targets)
-
-
-def _pd_gpu_set(gpu: int | list[int]) -> set[int]:
-    if isinstance(gpu, int):
-        return {gpu}
-    return {int(gpu_id) for gpu_id in gpu}
 
 
 def _stage_gpu_ids_for_fusion(stage: StageConfig) -> tuple[int, ...]:
