@@ -119,7 +119,10 @@ allocates it on the first payload that crosses the boundary, not at startup, so
 a `mem_fraction_static` copied from a colocated deployment fails on the first
 multimodal request rather than at launch.
 
-Budget for that pool on the prefill half, or pass `pool_size_mb` to match the
+`--pd-stage` moves only the stage it names. Stages that feed it, including the
+encoders, keep the GPU they already had, so on a two-GPU multimodal deployment
+the prefill card carries the encoders as well. Budget for that pool and for the
+encoder activations on the prefill half, or pass `pool_size_mb` to match the
 payload. Measured on one H200: the prefill half at `mem_fraction_static=0.87`
 plus the encoder process reached 139.5 GiB of 139.80 GiB and failed a 750 MiB
 allocation on the first image request. 0.80 left room.
