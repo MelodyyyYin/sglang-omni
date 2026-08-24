@@ -75,3 +75,39 @@ continuation before associating it with a transfer.
 
 Model-specific state projection and restoration are supplied by sibling model
 integration PRs through the generic PR3 hooks.
+
+## Configuration surface (PR 1 capability)
+
+PR 1 can compile a stage into prefill and decode halves, but nothing exposes
+that capability: `pd_disaggregation` is a `StageConfig` field, `stage_overrides`
+accepts only `runtime` keys, and no CLI flag sets it. A deployment therefore
+cannot turn PD on.
+
+    --pd-stage STAGE=PREFILL_GPUS:DECODE_GPUS
+
+    --pd-stage thinker=0:1        # prefill on GPU 0, decode on GPU 1
+    --pd-stage thinker=0,1:2,3    # TP=2 on each half
+
+The flag addresses a stage by name and carries no model-specific knowledge,
+matching `--stage-process STAGE=PROCESS`. Placement is a CLI concern in this
+repo — `stage_overrides` rejects `gpu` — so this follows that boundary rather
+than widening it. `STAGE` also accepts a role alias through
+`isolation_role_to_stage()`, as `--stage-process` does.
+
+`apply_pd_stage_overrides` writes `PDConfig` onto the named stage and then
+re-runs `PipelineConfig._validate_pd`: `model_copy` does not re-enter
+`model_post_init`, so without that call the placement would reach expansion
+unvalidated.
+
+### Runtime prerequisites this flag does not set
+
+`bind_pd_runtime` requires `disable_radix_cache`, `page_size=1`, and
+`tp_size=1`. Those are SGLang server args, reachable today only through a
+stage's `factory_args.server_args_overrides`, which the CLI does not expose.
+`--pd-stage` therefore makes PD compile and launch only when those args are
+supplied some other way; on its own it still fails at bind time.
+
+Closing that gap is a PR 3 decision and is deliberately outside this surface.
+Either the PD path forces the required args on the generated halves and rejects
+a contradicting user value, as `models/ming_tts/engine_builder.py` does for
+`disable_radix_cache`, or compilation fails with a message naming what to set.

@@ -9,6 +9,7 @@ import yaml
 from sglang_omni.config import (
     PipelineConfig,
     StageConfig,
+    apply_pd_stage_overrides,
     apply_stage_process_overrides,
 )
 from sglang_omni.config.manager import ConfigManager
@@ -1077,6 +1078,19 @@ def serve(
             ),
         ),
     ] = None,
+    pd_stage: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--pd-stage",
+            metavar="STAGE=PREFILL_GPUS:DECODE_GPUS",
+            help=(
+                "Split STAGE into prefill and decode halves on the given GPUs, "
+                "for example --pd-stage thinker=0:1. Use the comma form on "
+                "either half for tensor parallelism, thinker=0,1:2,3. Repeat "
+                "the flag to split more than one stage."
+            ),
+        ),
+    ] = None,
     host: Annotated[
         str, typer.Option(help="Server bind address (default: 0.0.0.0).")
     ] = "0.0.0.0",
@@ -1498,6 +1512,7 @@ def serve(
         talker_gpu=talker_gpu,
         code2wav_gpu=code2wav_gpu,
     )
+    merged_config = apply_pd_stage_overrides(merged_config, pd_stages=pd_stage)
     merged_config = apply_stage_process_overrides(
         merged_config,
         isolate_stages=isolate_stage,
