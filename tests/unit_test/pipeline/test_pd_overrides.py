@@ -5,8 +5,17 @@ from __future__ import annotations
 
 import pytest
 
-from sglang_omni.config import apply_pd_stage_overrides, parse_pd_stage_assignment
-from sglang_omni.config.schema import EndpointsConfig, PipelineConfig
+from sglang_omni.config import (
+    apply_pd_stage_overrides,
+    expand_pd_stages,
+    parse_pd_stage_assignment,
+)
+from sglang_omni.config.schema import (
+    EndpointsConfig,
+    PDConfig,
+    PDStagePlacement,
+    PipelineConfig,
+)
 from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
 from tests.unit_test.fixtures.pipeline_fakes import fake_factory_path
 from tests.unit_test.pipeline.helpers import stage
@@ -117,3 +126,91 @@ def test_pipeline_declared_pd_is_not_silently_overridden(tmp_path) -> None:
     config = apply_pd_stage_overrides(_pipeline(tmp_path), pd_stages=["thinker=1:2"])
     with pytest.raises(ValueError, match="already declares pd_disaggregation"):
         apply_pd_stage_overrides(config, pd_stages=["thinker=3:4"])
+
+
+# --- PD-required server args -------------------------------------------------
+
+
+def _pd(prefill_gpu: int, decode_gpu: int) -> PDConfig:
+    return PDConfig(
+        prefill=PDStagePlacement(gpu=prefill_gpu),
+        decode=PDStagePlacement(gpu=decode_gpu),
+    )
+
+
+def _pd_stages(tmp_path, *, factory: str, server_args=None):
+    factory_args = {"server_args_overrides": dict(server_args)} if server_args else {}
+    config = PipelineConfig(
+        model_path="dummy",
+        name="pd",
+        endpoints=EndpointsConfig(base_path=str(tmp_path)),
+        entry_stage="thinker",
+        stages=[
+            stage(
+                "thinker",
+                factory=factory,
+                terminal=True,
+                factory_args=factory_args,
+                pd_disaggregation=_pd(1, 2),
+            )
+        ],
+    )
+    prep = prepare_pipeline_runtime(config)
+    with prep.runtime_dir:
+        return {s.name: s for s in prep.stages_cfg}
+
+
+def test_pd_halves_receive_the_server_args_pd_requires(tmp_path) -> None:
+    from sglang_omni.config.pd_rewrite import PD_REQUIRED_SERVER_ARGS
+
+    stages = _pd_stages(tmp_path, factory=fake_factory_path("pd_capable_factory"))
+
+    for name in ("thinker_prefill", "thinker_decode"):
+        overrides = stages[name].factory_args["server_args_overrides"]
+        for key, required in PD_REQUIRED_SERVER_ARGS.items():
+            assert overrides[key] == required, (name, key)
+
+
+def test_pd_injection_keeps_unrelated_server_args(tmp_path) -> None:
+    stages = _pd_stages(
+        tmp_path,
+        factory=fake_factory_path("pd_capable_factory"),
+        server_args={"enable_mixed_chunk": False},
+    )
+
+    overrides = stages["thinker_decode"].factory_args["server_args_overrides"]
+    assert overrides["enable_mixed_chunk"] is False
+    assert overrides["disable_radix_cache"] is True
+    assert overrides["page_size"] == 1
+
+
+def test_pd_injection_rejects_a_contradicting_server_arg(tmp_path) -> None:
+    with pytest.raises(ValueError, match="requires page_size=1"):
+        _pd_stages(
+            tmp_path,
+            factory=fake_factory_path("pd_capable_factory"),
+            server_args={"page_size": 16},
+        )
+
+
+def test_pd_injection_skips_a_factory_that_cannot_receive_it(tmp_path) -> None:
+    """A strict signature must not be handed a keyword it does not declare."""
+    stages = _pd_stages(
+        tmp_path, factory=fake_factory_path("strict_pd_capable_factory")
+    )
+
+    for name in ("thinker_prefill", "thinker_decode"):
+        assert "server_args_overrides" not in stages[name].factory_args
+
+
+def test_non_pd_pipeline_gets_no_server_args_injected(tmp_path) -> None:
+    config = PipelineConfig(
+        model_path="dummy",
+        name="plain",
+        endpoints=EndpointsConfig(base_path=str(tmp_path)),
+        stages=[stage("a", next="b"), stage("b", terminal=True)],
+    )
+    prep = prepare_pipeline_runtime(config)
+    with prep.runtime_dir:
+        for unchanged in prep.stages_cfg:
+            assert "server_args_overrides" not in unchanged.factory_args

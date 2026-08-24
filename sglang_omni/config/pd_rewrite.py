@@ -16,6 +16,15 @@ from dataclasses import dataclass
 
 from sglang_omni.config.schema import PDExecution, StageConfig
 
+# Note (Audrey Zheng): bind_pd_runtime refuses anything else, so the compiler
+# supplies these rather than letting a config compile and then fail at bind
+# time. models/ming_tts/engine_builder.py forces disable_radix_cache the same
+# way, with an explicit reason.
+PD_REQUIRED_SERVER_ARGS: dict[str, object] = {
+    "disable_radix_cache": True,
+    "page_size": 1,
+}
+
 PREFILL_SUFFIX = "_prefill"
 DECODE_SUFFIX = "_decode"
 
@@ -120,6 +129,30 @@ def _rewrite_refs(
             "project_payload": project_payload,
         },
     )
+
+
+
+def pd_required_factory_args(
+    stage_name: str,
+    factory_args: dict[str, object],
+) -> dict[str, object]:
+    """Return *factory_args* with the server args PD needs already set.
+
+    A user value that contradicts one of them is rejected here, because the
+    request cannot be honoured and failing at bind time would report it as a
+    runtime error instead of a configuration error.
+    """
+    overrides = dict(factory_args.get("server_args_overrides") or {})
+    for key, required in PD_REQUIRED_SERVER_ARGS.items():
+        current = overrides.get(key)
+        if current is not None and current != required:
+            raise ValueError(
+                f"Stage {stage_name!r} is PD-disaggregated, which requires "
+                f"{key}={required!r}, but server_args_overrides sets "
+                f"{key}={current!r}"
+            )
+        overrides[key] = required
+    return {**factory_args, "server_args_overrides": overrides}
 
 
 def _split_pd_stage(

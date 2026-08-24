@@ -12,7 +12,10 @@ from pathlib import Path
 
 import zmq
 
-from sglang_omni.config.pd_capability import validate_pd_capabilities
+from sglang_omni.config.pd_capability import (
+    apply_pd_required_server_args,
+    validate_pd_capabilities,
+)
 from sglang_omni.config.pd_rewrite import expand_pd_stages
 from sglang_omni.config.placement import StagePlacementPlan, build_stage_placement_plan
 from sglang_omni.config.schema import PipelineConfig, StageConfig
@@ -112,6 +115,7 @@ def prepare_pipeline_runtime(
         fusion_name_map, expansion.output_map, stages_cfg
     )
     validate_pd_capabilities(stages_cfg)
+    stages_cfg = apply_pd_required_server_args(stages_cfg)
     terminal_stages = [s.name for s in stages_cfg if s.terminal]
     runtime_dir = ipc_runtime_dir
     if runtime_dir is None:
