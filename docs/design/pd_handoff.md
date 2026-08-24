@@ -86,7 +86,7 @@ cannot turn PD on.
     --pd-stage STAGE=PREFILL_GPUS:DECODE_GPUS
 
     --pd-stage thinker=0:1        # prefill on GPU 0, decode on GPU 1
-    --pd-stage thinker=0,1:2,3    # TP=2 on each half
+    --pd-stage thinker=0,1:2,3    # two GPUs per half; see prerequisites below
 
 The flag addresses a stage by name and carries no model-specific knowledge,
 matching `--stage-process STAGE=PROCESS`. Placement is a CLI concern in this
@@ -105,7 +105,24 @@ unvalidated.
 `tp_size=1`. Those are SGLang server args, reachable today only through a
 stage's `factory_args.server_args_overrides`, which the CLI does not expose.
 `--pd-stage` therefore makes PD compile and launch only when those args are
-supplied some other way; on its own it still fails at bind time.
+supplied some other way; on its own it still fails at bind time. A two-GPU half
+parses and places, but `bind_pd_runtime` rejects `tp_size=2`, so that form does
+not run today.
+
+### Memory budget on the prefill half
+
+Splitting a multimodal stage moves the `mm_aggregate` to prefill edge across a
+process boundary. The CUDA-IPC relay then allocates a pool on the prefill GPU
+that a colocated deployment never allocates. The default size is 1024 MB:
+`relay/cuda_ipc.py` takes `slot_size_mb=512` and `credits=2`. The relay
+allocates it on the first payload that crosses the boundary, not at startup, so
+a `mem_fraction_static` copied from a colocated deployment fails on the first
+multimodal request rather than at launch.
+
+Budget for that pool on the prefill half, or pass `pool_size_mb` to match the
+payload. Measured on one H200: the prefill half at `mem_fraction_static=0.87`
+plus the encoder process reached 139.5 GiB of 139.80 GiB and failed a 750 MiB
+allocation on the first image request. 0.80 left room.
 
 Closing that gap is a PR 3 decision and is deliberately outside this surface.
 Either the PD path forces the required args on the generated halves and rejects
