@@ -76,7 +76,6 @@ continuation before associating it with a transfer.
 Model-specific state projection and restoration are supplied by sibling model
 integration PRs through the generic PR3 hooks.
 
-<<<<<<< HEAD
 ## Configuration surface (PR 1 capability)
 
 PR 1 can compile a stage into prefill and decode halves, but nothing exposes
@@ -100,15 +99,17 @@ re-runs `PipelineConfig._validate_pd`: `model_copy` does not re-enter
 `model_post_init`, so without that call the placement would reach expansion
 unvalidated.
 
-### Runtime prerequisites this flag does not set
+### Runtime prerequisites
 
 `bind_pd_runtime` requires `disable_radix_cache`, `page_size=1`, and
-`tp_size=1`. Those are SGLang server args, reachable today only through a
-stage's `factory_args.server_args_overrides`, which the CLI does not expose.
-`--pd-stage` therefore makes PD compile and launch only when those args are
-supplied some other way; on its own it still fails at bind time. A two-GPU half
-parses and places, but `bind_pd_runtime` rejects `tp_size=2`, so that form does
-not run today.
+`tp_size=1`. The first two are set for both halves at compile time by
+`pd_required_factory_args`, which also rejects a `server_args_overrides` value
+that contradicts them, so a contradiction is reported as a configuration error
+rather than as a bind-time failure.
+
+`tp_size` is not forced, because forcing it would silently discard a requested
+placement rather than reject it: a two-GPU half parses and places, and only
+`bind_pd_runtime` rejects `tp_size=2`. That form does not run today.
 
 ### Memory budget on the prefill half
 
@@ -132,7 +133,7 @@ Closing that gap is a PR 3 decision and is deliberately outside this surface.
 Either the PD path forces the required args on the generated halves and rejects
 a contradicting user value, as `models/ming_tts/engine_builder.py` does for
 `disable_radix_cache`, or compilation fails with a message naming what to set.
-=======
+
 ## Placement
 
 The two halves may land on different GPUs or on the same one. What PD needs is
@@ -173,4 +174,3 @@ that half and the pair reverts to order-dependent sizing without an error.
 Measured: at a cap of 131072 the half that won the lock took 131072 while the
 other logged `max_total_tokens=131072 is larger than the profiled value 50756`
 and took 50756.
->>>>>>> pd/free-placement-solo
