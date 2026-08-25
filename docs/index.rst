@@ -123,7 +123,6 @@ Supported Models
    basic_usage/tts_process_topology.md
    basic_usage/omni_router.md
    basic_usage/mps_dp.md
-   basic_usage/pd_disaggregation.md
 
 
 .. toctree::
