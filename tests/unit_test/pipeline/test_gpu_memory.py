@@ -217,15 +217,31 @@ def test_get_process_gpu_memory_retries_uuid_as_bytes(
     assert fake.uuid_handles == [b"GPU-abc"]
 
 
-def test_get_process_gpu_memory_returns_zero_when_pid_not_present(
+def test_get_process_gpu_memory_reports_a_failed_attribution_as_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Absent from the list means unattributable, not zero usage.
+
+    NVML reports host pids, so a caller inside a container never finds itself
+    and lands here on every run. Returning 0 made that indistinguishable from
+    a process that genuinely holds nothing.
+    """
     fake = _FakeNVML(processes=[SimpleNamespace(pid=os.getpid() + 1, usedGpuMemory=1)])
     _install_fake_nvml(monkeypatch, fake)
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
 
-    assert gpu_memory.get_process_gpu_memory_bytes(0) == 0
+    assert gpu_memory.get_process_gpu_memory_bytes(0) is None
     assert fake.index_handles == [0]
+
+
+def test_get_process_gpu_memory_reports_a_genuine_zero_as_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeNVML(processes=[SimpleNamespace(pid=os.getpid(), usedGpuMemory=0)])
+    _install_fake_nvml(monkeypatch, fake)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+
+    assert gpu_memory.get_process_gpu_memory_bytes(0) == 0
 
 
 def test_get_process_gpu_memory_returns_none_on_query_failure(

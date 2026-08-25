@@ -76,6 +76,7 @@ continuation before associating it with a transfer.
 Model-specific state projection and restoration are supplied by sibling model
 integration PRs through the generic PR3 hooks.
 
+<<<<<<< HEAD
 ## Configuration surface (PR 1 capability)
 
 PR 1 can compile a stage into prefill and decode halves, but nothing exposes
@@ -131,3 +132,45 @@ Closing that gap is a PR 3 decision and is deliberately outside this surface.
 Either the PD path forces the required args on the generated halves and rejects
 a contradicting user value, as `models/ming_tts/engine_builder.py` does for
 `disable_radix_cache`, or compilation fails with a message naming what to set.
+=======
+## Placement
+
+The two halves may land on different GPUs or on the same one. What PD needs is
+the process split, which happens either way: the prefill step leaves the decode
+scheduler thread whichever card it runs on. Sharing a card also makes PD
+runnable on a one-GPU box and in CI.
+
+Two halves on one card are two process groups sharing a GPU, so the existing
+colocation policy applies unchanged: each must declare a share of the card, and
+the shares on one GPU may not exceed
+`placement.max_total_gpu_memory_fraction_per_gpu`. Declare them per half:
+
+```yaml
+pd_disaggregation:
+  prefill: {gpu: 0, memory_fraction: 0.25}
+  decode:  {gpu: 0, memory_fraction: 0.65}
+```
+
+Use that share rather than `mem_fraction_static` when the halves share a card.
+`total_gpu_memory_fraction` is a fraction of total physical memory, so it does
+not depend on which half loads first. `mem_fraction_static` is computed against
+memory free at load time, and the halves race for one startup lock: measured on
+one H200, whichever half won the lock sized itself to 780,987 KV tokens and the
+other failed to start.
+
+Budget for two copies of the stage's weights on that card. Budget also for the
+CUDA-IPC relay pool if the stage carries multimodal payloads: `mm_aggregate` to
+the prefill half crosses a process boundary even on one device, and the relay
+allocates 1024 MB there. It allocates on the first payload that crosses, not at
+startup, so a deployment can pass startup and still be a gigabyte short when the
+first image arrives. Measured on one H200 with both halves at 32768 KV tokens:
+129,387 MiB of 143,771 used with the relay included.
+
+Prefer the share of the card over an absolute `max_total_tokens` on a shared
+GPU. `max_total_tokens` is applied as a minimum against the profiled capacity,
+so a cap larger than what the later-loading half can profile stops binding on
+that half and the pair reverts to order-dependent sizing without an error.
+Measured: at a cap of 131072 the half that won the lock took 131072 while the
+other logged `max_total_tokens=131072 is larger than the profiled value 50756`
+and took 50756.
+>>>>>>> pd/free-placement-solo

@@ -125,7 +125,19 @@ def get_process_gpu_memory_bytes(logical_gpu_id: int) -> int | None:
         for proc in pynvml.nvmlDeviceGetComputeRunningProcesses(handle):
             if proc.pid == pid:
                 return int(proc.usedGpuMemory)
-        return 0
+        # Note (Audrey Zheng): absent from the list is a failed attribution,
+        # not zero usage, and the two need different handling. NVML reports
+        # host pids; a caller inside a container sees a different number for
+        # itself, so the join never matches and every containerized run lands
+        # here. Returning 0 made that indistinguishable from a process that
+        # genuinely holds nothing, and the caller reads both as "unavailable".
+        logger.debug(
+            "pid %d is absent from the NVML compute list for device %d; "
+            "process-scoped memory is unattributable here",
+            pid,
+            device_id,
+        )
+        return None
     except _InvalidGpuDeviceError:
         raise
     except Exception as exc:
@@ -133,6 +145,51 @@ def get_process_gpu_memory_bytes(logical_gpu_id: int) -> int | None:
         return None
     finally:
         _shutdown_nvml(pynvml)
+
+
+
+def get_process_gpu_memory_bytes_from_torch(logical_gpu_id: int) -> int | None:
+    """Return this process's GPU memory from torch, with no pid join.
+
+    NVML attribution needs to recognise the caller among the device's
+    processes, and it cannot inside a container: NVML reports host pids while
+    the caller sees its namespace pid. This source asks torch what it reserved
+    instead, which no namespace can disagree about.
+
+    It undercounts by the CUDA context, which torch does not account for --
+    measured at 0.51 GiB in a small controlled process. That error is bounded
+    and the same every run. The alternative when attribution fails is a global
+    free-memory delta, whose error is neither: it depends on what else was
+    resident at the moment the "before" sample was taken, and it was measured
+    sizing one KV pool 11.9 GiB too large.
+    """
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return None
+        return int(torch.cuda.memory_reserved(logical_gpu_id))
+    except Exception as exc:
+        logger.debug("torch reserved-memory query failed: %s", exc)
+        return None
+
+def get_device_free_memory_bytes(logical_gpu_id: int) -> int | None:
+    """Return free memory on a CUDA logical device, or None if unavailable.
+
+    Uses torch rather than NVML so it needs no pid join and no namespace
+    agreement. Callers use it to clamp a budget that would otherwise count
+    only their own usage and over-commit a co-tenant.
+    """
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return None
+        free_bytes, _total = torch.cuda.mem_get_info(logical_gpu_id)
+        return int(free_bytes)
+    except Exception as exc:
+        logger.debug("free-memory query failed: %s", exc)
+        return None
 
 
 def get_gpu_device_info(logical_gpu_id: int) -> GpuDeviceInfo:
@@ -226,6 +283,8 @@ def calculate_stage_budget_available_bytes(
     accounted_memory_bytes: int,
     memory_fraction: float,
     accounted_memory_label: str = "accounted_used",
+    free_memory_bytes: int | None = None,
+    reserve_bytes: int = 0,
 ) -> int:
     """Return stage KV headroom under a total GPU memory fraction."""
     if total_memory_bytes <= 0:
@@ -237,6 +296,25 @@ def calculate_stage_budget_available_bytes(
 
     requested_bytes = int(total_memory_bytes * memory_fraction)
     available_bytes = requested_bytes - accounted_memory_bytes
+    # Note (Audrey Zheng): the budget above counts only this stage's own usage,
+    # so it over-commits whenever another process already holds memory on the
+    # card. Measured: on a card holding 34 GiB of another process, a stage at
+    # fraction 0.87 budgeted 122.49 GiB and ran out of memory at launch. Clamp
+    # by what the device actually reports free, so a co-tenant cannot be
+    # over-committed. Callers that cannot read free memory pass None and keep
+    # the old behaviour.
+    if free_memory_bytes is not None:
+        headroom = int(free_memory_bytes) - int(reserve_bytes)
+        if headroom < available_bytes:
+            logger.info(
+                "KV budget clamped by free memory: requested %s, free %s, "
+                "reserve %s, granting %s",
+                format_bytes_gib(available_bytes),
+                format_bytes_gib(int(free_memory_bytes)),
+                format_bytes_gib(int(reserve_bytes)),
+                format_bytes_gib(max(0, headroom)),
+            )
+            available_bytes = headroom
     if available_bytes <= 0:
         raise RuntimeError(
             "Colocated GPU memory budget leaves no KV-cache headroom: "

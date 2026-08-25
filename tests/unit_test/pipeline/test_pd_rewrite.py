@@ -224,10 +224,6 @@ def test_pd_source_and_destination_use_opposite_identities() -> None:
     "kwargs,message",
     [
         (
-            {"terminal": True, "pd_disaggregation": _pd(0, 0)},
-            "cannot share the same GPU",
-        ),
-        (
             {
                 "terminal": True,
                 "pd_disaggregation": PDConfig(prefill=PDStagePlacement(gpu=0)),

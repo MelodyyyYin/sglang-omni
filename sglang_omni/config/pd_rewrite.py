@@ -172,6 +172,19 @@ def _half_factory_args(
         **half_server_args,
     }
     return {**stage.factory_args, "server_args_overrides": overrides}
+def _half_runtime(stage: StageConfig, memory_fraction: float | None):
+    """Route one half's share of the card into the existing per-stage budget.
+
+    ``runtime.resources.total_gpu_memory_fraction`` is already a fraction of
+    total physical GPU memory, which is what makes it order independent. This
+    only gives the two halves a way to declare different shares of it.
+    """
+    if memory_fraction is None:
+        return stage.runtime
+    resources = stage.runtime.resources.model_copy(
+        update={"total_gpu_memory_fraction": memory_fraction}
+    )
+    return stage.runtime.model_copy(update={"resources": resources})
 
 
 def _split_pd_stage(
@@ -191,6 +204,7 @@ def _split_pd_stage(
             "gpu": pd.prefill.gpu if pd.prefill.gpu is not None else s.gpu,
             "process": pd.prefill.process or prefill_name,
             "factory_args": _half_factory_args(s, pd.prefill.server_args),
+            "runtime": _half_runtime(s, pd.prefill.memory_fraction),
             # Note (Yue Yin): Preserve the result path when the first sampled
             # token finishes the request before a KV handoff is needed.
             "next": _rename_targets(s.next, inbound_rename),
@@ -220,6 +234,7 @@ def _split_pd_stage(
             "gpu": pd.decode.gpu if pd.decode.gpu is not None else s.gpu,
             "process": pd.decode.process or decode_name,
             "factory_args": _half_factory_args(s, pd.decode.server_args),
+            "runtime": _half_runtime(s, pd.decode.memory_fraction),
             "next": _rename_targets(s.next, inbound_rename),
             "stream_to": [inbound_rename.get(t, t) for t in s.stream_to],
             "project_payload": {
