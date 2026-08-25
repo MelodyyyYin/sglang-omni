@@ -131,7 +131,6 @@ def _rewrite_refs(
     )
 
 
-
 def pd_required_factory_args(
     stage_name: str,
     factory_args: dict[str, object],
@@ -172,6 +171,8 @@ def _half_factory_args(
         **half_server_args,
     }
     return {**stage.factory_args, "server_args_overrides": overrides}
+
+
 def _half_runtime(stage: StageConfig, memory_fraction: float | None):
     """Route one half's share of the card into the existing per-stage budget.
 

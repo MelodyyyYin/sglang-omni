@@ -15,13 +15,13 @@ from sglang.srt.server_args import PortArgs, ServerArgs
 
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.utils.gpu_memory import (
-    get_device_free_memory_bytes,
-    get_process_gpu_memory_bytes_from_torch,
     calculate_stage_budget_available_bytes,
     calculate_stage_load_delta_bytes,
     format_bytes_gib,
+    get_device_free_memory_bytes,
     get_gpu_device_info,
     get_process_gpu_memory_bytes,
+    get_process_gpu_memory_bytes_from_torch,
 )
 from sglang_omni.vendor.sglang.parallel_state import create_parallel_state
 from sglang_omni.vendor.sglang.server_args import override_server_args

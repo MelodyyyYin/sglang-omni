@@ -5,11 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from sglang_omni.config import (
-    apply_pd_stage_overrides,
-    expand_pd_stages,
-    parse_pd_stage_assignment,
-)
+from sglang_omni.config import apply_pd_stage_overrides, parse_pd_stage_assignment
 from sglang_omni.config.schema import (
     EndpointsConfig,
     PDConfig,

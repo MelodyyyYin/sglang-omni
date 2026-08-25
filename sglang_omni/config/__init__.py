@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
-from sglang_omni.config.pd_overrides import (
-    apply_pd_stage_overrides,
-    parse_pd_stage_assignment,
-)
 from sglang_omni.config.pd_capability import (
     factory_supports_pd,
     pd_disaggregation_capable,
     validate_pd_capabilities,
+)
+from sglang_omni.config.pd_overrides import (
+    apply_pd_stage_overrides,
+    parse_pd_stage_assignment,
 )
 from sglang_omni.config.pd_rewrite import PDExpansion, expand_pd_stages
 from sglang_omni.config.placement import (

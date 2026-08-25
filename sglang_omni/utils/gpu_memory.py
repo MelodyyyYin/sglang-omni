@@ -147,7 +147,6 @@ def get_process_gpu_memory_bytes(logical_gpu_id: int) -> int | None:
         _shutdown_nvml(pynvml)
 
 
-
 def get_process_gpu_memory_bytes_from_torch(logical_gpu_id: int) -> int | None:
     """Return this process's GPU memory from torch, with no pid join.
 
@@ -172,6 +171,7 @@ def get_process_gpu_memory_bytes_from_torch(logical_gpu_id: int) -> int | None:
     except Exception as exc:
         logger.debug("torch reserved-memory query failed: %s", exc)
         return None
+
 
 def get_device_free_memory_bytes(logical_gpu_id: int) -> int | None:
     """Return free memory on a CUDA logical device, or None if unavailable.
