@@ -132,13 +132,6 @@ class PDStagePlacement(BaseModel):
 
     gpu: int | list[int] | None = None
     process: str | None = None
-    # Note (Audrey Zheng): this half's share of the whole card, needed when the
-    # halves share a GPU. It routes KV sizing through
-    # `calculate_stage_budget_available_bytes`, which computes
-    # `total x fraction - this stage's own usage`. Total is a constant, so the
-    # result does not depend on which half loads first, and two halves whose
-    # fractions sum to at most 1 cannot claim the same bytes.
-    memory_fraction: float | None = Field(default=None, gt=0.0, le=1.0)
 
 
 class PDConfig(BaseModel):
