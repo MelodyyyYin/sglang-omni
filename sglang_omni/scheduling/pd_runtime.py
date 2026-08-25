@@ -93,6 +93,7 @@ def continuation_from_req(
         speculative=False,
         multimodal_resume=multimodal_resume,
         stage_payload=stage_payload_dict,
+        priority=req.priority,
     )
 
 
@@ -133,6 +134,7 @@ def req_from_continuation(
             else None
         ),
         vocab_size=continuation.vocab_size,
+        priority=continuation.priority,
     )
     req.output_ids.extend(continuation.output_ids)
     req.cached_tokens = continuation.cached_tokens

@@ -135,3 +135,39 @@ def test_the_prefill_half_says_nothing(caplog) -> None:
         scheduler._warn_if_decode_queue_unbounded("thinker_prefill", "prefill")
 
     assert caplog.records == []
+
+
+def test_priority_survives_the_handoff() -> None:
+    """Decode ranks its waiting queue by priority; a dropped one ranks by arrival."""
+    from sglang_omni.scheduling.pd_continuation import DecodeContinuation
+
+    continuation = DecodeContinuation(
+        request_id="req-1",
+        transfer_id="t-1",
+        origin_input_ids=[1, 2],
+        output_ids=[3],
+        vocab_size=32,
+        sampling_params={},
+        cached_tokens=0,
+        priority=7,
+    )
+
+    assert DecodeContinuation.from_dict(continuation.to_dict()).priority == 7
+
+
+def test_a_continuation_without_a_priority_stays_valid() -> None:
+    """Priority is optional upstream, so its absence is not a schema error."""
+    from sglang_omni.scheduling.pd_continuation import DecodeContinuation
+
+    payload = DecodeContinuation(
+        request_id="req-1",
+        transfer_id="t-1",
+        origin_input_ids=[1],
+        output_ids=[2],
+        vocab_size=32,
+        sampling_params={},
+        cached_tokens=0,
+    ).to_dict()
+    payload.pop("priority")
+
+    assert DecodeContinuation.from_dict(payload).priority is None

@@ -76,6 +76,12 @@ class DecodeContinuation:
     speculative: bool = False
     multimodal_resume: dict[str, Any] | None = None
     stage_payload: dict[str, Any] | None = None
+    # Note (Audrey Zheng): the Decode half runs its own waiting queue, and both
+    # the queue-limit eviction and retraction rank requests by priority. A
+    # continuation that drops it hands Decode a request whose importance is
+    # unknown, so those rankings fall back to arrival order and an interactive
+    # request cannot outrank a batch one after the handoff.
+    priority: int | None = None
 
     def __post_init__(self) -> None:
         if self.version != CONTINUATION_VERSION:
