@@ -65,37 +65,6 @@ def test_nothing_is_mutated_before_the_check_passes() -> None:
     assert named == before
 
 
-def test_two_halves_on_one_gpu_get_a_plan() -> None:
-    from sglang_omni.model_runner.weight_sharing import plan_for_pd_halves
-
-    plan = plan_for_pd_halves(
-        stage_name="thinker_prefill",
-        peer_stage="thinker_decode",
-        own_gpu=0,
-        peer_gpu=0,
-        rendezvous_dir=Path("/run/x"),
-    )
-
-    assert plan is not None
-    assert plan.peer_stage == "thinker_decode"
-
-
-def test_halves_on_different_gpus_get_no_plan() -> None:
-    """A CUDA IPC handle names memory on one device; two cards need two copies."""
-    from sglang_omni.model_runner.weight_sharing import plan_for_pd_halves
-
-    assert (
-        plan_for_pd_halves(
-            stage_name="thinker_prefill",
-            peer_stage="thinker_decode",
-            own_gpu=0,
-            peer_gpu=1,
-            rendezvous_dir=Path("/run/x"),
-        )
-        is None
-    )
-
-
 def test_the_first_half_to_load_publishes(tmp_path) -> None:
     """Nothing is published yet, so this half exports rather than waiting."""
     from sglang_omni.model_runner.weight_sharing import (
@@ -108,6 +77,7 @@ def test_the_first_half_to_load_publishes(tmp_path) -> None:
         stage_name="thinker_prefill",
         peer_stage="thinker_decode",
         rendezvous_dir=tmp_path,
+        gpu_id=0,
     )
 
     assert apply_weight_sharing(model, plan) == 0
@@ -121,22 +91,59 @@ def test_the_second_half_to_load_adopts(tmp_path) -> None:
         apply_weight_sharing,
     )
 
-    first = WeightSharingPlan(
-        stage_name="thinker_prefill",
-        peer_stage="thinker_decode",
-        rendezvous_dir=tmp_path,
-    )
-    second = WeightSharingPlan(
-        stage_name="thinker_decode",
-        peer_stage="thinker_prefill",
-        rendezvous_dir=tmp_path,
-    )
     model = SimpleNamespace(named_parameters=lambda: iter(()))
-
-    apply_weight_sharing(model, first)
-    apply_weight_sharing(model, second)
+    apply_weight_sharing(
+        model,
+        WeightSharingPlan(
+            stage_name="thinker_prefill",
+            peer_stage="thinker_decode",
+            rendezvous_dir=tmp_path,
+            gpu_id=0,
+        ),
+    )
+    apply_weight_sharing(
+        model,
+        WeightSharingPlan(
+            stage_name="thinker_decode",
+            peer_stage="thinker_prefill",
+            rendezvous_dir=tmp_path,
+            gpu_id=0,
+        ),
+    )
 
     assert not (tmp_path / "pd-weights" / "thinker_decode.pkl").exists()
+
+
+def test_a_half_on_another_card_keeps_its_own_weights(tmp_path) -> None:
+    """Cross-GPU halves each need their own copy, and the device says so."""
+    from sglang_omni.model_runner.weight_sharing import (
+        WeightSharingPlan,
+        apply_weight_sharing,
+    )
+
+    model = SimpleNamespace(named_parameters=lambda: iter(()))
+    apply_weight_sharing(
+        model,
+        WeightSharingPlan(
+            stage_name="thinker_prefill",
+            peer_stage="thinker_decode",
+            rendezvous_dir=tmp_path,
+            gpu_id=0,
+        ),
+    )
+
+    released = apply_weight_sharing(
+        model,
+        WeightSharingPlan(
+            stage_name="thinker_decode",
+            peer_stage="thinker_prefill",
+            rendezvous_dir=tmp_path,
+            gpu_id=1,
+        ),
+    )
+
+    assert released == 0
+    assert (tmp_path / "pd-weights" / "thinker_decode.pkl").exists()
 
 
 def test_neither_half_blocks_on_the_other(tmp_path) -> None:
@@ -150,6 +157,7 @@ def test_neither_half_blocks_on_the_other(tmp_path) -> None:
         stage_name="thinker_decode",
         peer_stage="thinker_prefill",
         rendezvous_dir=tmp_path,
+        gpu_id=0,
     )
     started = time.monotonic()
 

@@ -40,17 +40,22 @@ def test_a_non_ipc_endpoint_is_rejected() -> None:
 def test_handles_survive_the_round_trip(tmp_path: Path) -> None:
     handles = {"model.layers.0.weight": ("rebuild", (1, 2, 3))}
 
-    publish_parameter_handles(handles, rendezvous_dir=tmp_path, stage_name="prefill")
+    publish_parameter_handles(
+        handles, rendezvous_dir=tmp_path, stage_name="prefill", gpu_id=0
+    )
 
     assert (
-        read_parameter_handles(rendezvous_dir=tmp_path, stage_name="prefill")
+        read_parameter_handles(rendezvous_dir=tmp_path, stage_name="prefill", gpu_id=0)
         == handles
     )
 
 
 def test_an_unpublished_peer_reads_as_none(tmp_path: Path) -> None:
     """The caller publishes its own handles instead, so nothing waits."""
-    assert read_parameter_handles(rendezvous_dir=tmp_path, stage_name="prefill") is None
+    assert (
+        read_parameter_handles(rendezvous_dir=tmp_path, stage_name="prefill", gpu_id=0)
+        is None
+    )
 
 
 def test_a_reader_never_observes_a_partial_file(tmp_path: Path) -> None:
@@ -59,8 +64,28 @@ def test_a_reader_never_observes_a_partial_file(tmp_path: Path) -> None:
     directory.mkdir()
     big = {f"layer.{i}.weight": ("rebuild", tuple(range(64))) for i in range(400)}
 
-    publish_parameter_handles(big, rendezvous_dir=tmp_path, stage_name="prefill")
+    publish_parameter_handles(
+        big, rendezvous_dir=tmp_path, stage_name="prefill", gpu_id=0
+    )
 
     leftovers = [p.name for p in directory.iterdir() if p.name != "prefill.pkl"]
     assert leftovers == []
-    assert read_parameter_handles(rendezvous_dir=tmp_path, stage_name="prefill") == big
+    assert (
+        read_parameter_handles(rendezvous_dir=tmp_path, stage_name="prefill", gpu_id=0)
+        == big
+    )
+
+
+def test_handles_published_for_another_gpu_are_declined(tmp_path: Path) -> None:
+    """A CUDA IPC handle names memory on one device; adopting across is wrong."""
+    publish_parameter_handles(
+        {"w": ("rebuild", ())},
+        rendezvous_dir=tmp_path,
+        stage_name="prefill",
+        gpu_id=0,
+    )
+
+    assert (
+        read_parameter_handles(rendezvous_dir=tmp_path, stage_name="prefill", gpu_id=1)
+        is None
+    )
