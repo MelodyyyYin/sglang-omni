@@ -1,18 +1,32 @@
 # Prefill/Decode Disaggregation
 
-> TL;DR: PD disaggregation splits one stage into a prefill process and a decode process so a prefill no longer stalls decoding. It removes that interference almost completely. It does not raise throughput at equal GPU count on Qwen3-Omni thinker: in the measurements below two colocated replicas beat one prefill/decode pair on both text and image. Turn it on when inter-token latency stability is what you need, not to serve more requests per GPU.
+> TL;DR: PD disaggregation splits one stage into a prefill process and a decode process, so a prefill no longer stalls the decoding already in flight. It removes that interference almost completely, on any placement, including both halves on one GPU. How much hardware you then give each half is a separate, continuous choice, and it is the choice that decides what the split costs and what it can return. One prefill half against one decode half on two cards is the configuration measured here: it has parity with two colocated replicas as its throughput ceiling, and on Qwen3-Omni thinker it currently lands below that.
 
 A colocated replica runs prefill and decode on one card and one scheduler thread. A prefill therefore blocks the decode steps of every request already running. On Qwen3-Omni that cost is large, and it is worst on images, where a 6127-token prompt cannot be chunked.
 
-PD disaggregation moves prefill into its own process. The prompt KV and the request's continuation state transfer once, over CUDA IPC, and decoding continues on the other half.
+PD disaggregation moves prefill into its own process. The prompt KV and the request's continuation state transfer once, over CUDA IPC, and decoding continues on the other half. Where that other half runs, and how much of a card it gets, is what the rest of this page is about.
+
+## What the split actually gives you
+
+PD here is not one topology. It is a resource split you set continuously, at three layers, and each layer answers a different question.
+
+| Layer | How you set it | What it decides |
+| --- | --- | --- |
+| Which devices each half gets | `thinker=0:1`, `thinker=0:0`, `thinker=0,1:2,3` | whether the halves are separated in execution only, or in hardware as well |
+| Each half's share of a device | `thinker=0@0.25:0@0.65` | how one card divides between the two halves, as a continuous fraction |
+| Each half's runtime settings | `pd_disaggregation.prefill.server_args` | lets a half be tuned for its own work rather than for the average of both |
+
+The first layer is the one people usually read as the whole feature, and it is the one with a degenerate case worth knowing: **both halves on one GPU still separates them.** What PD needs is the process split, and a prefill step leaves the decode scheduler thread whichever card it runs on. Giving prefill a second card is an additional, separable decision about hardware, not what makes PD work.
+
+That is why the split is a parameter rather than a topology. `thinker=0:0` and `thinker=0:1` differ in how much hardware you spend, not in whether the halves are separated.
 
 ## Choosing a configuration
 
-PD is one decision among several, and the others are not about the queue. Work through these in order; each one can rule PD out before you tune anything.
+Three questions decide whether and how to split. A fourth decides what the split is optimizing, and it selects a configuration rather than ruling PD in or out.
 
 ### 1. Is prefill a large enough share of your work?
 
-PD gives prefill its own hardware. That pays only if prefill is a large enough share of the GPU work to justify the hardware it gets. The share is governed by prompt length divided by output length.
+Prefill share is governed by prompt length divided by output length.
 
 | Prompt / output tokens | Prefill share |
 | --- | --- |
@@ -20,31 +34,29 @@ PD gives prefill its own hardware. That pays only if prefill is a large enough s
 | 6944 / 128 | about 9% |
 | 42 / 8 | about 42% |
 
-A 1:1 pair splits the hardware evenly. Against a 2.6% share that leaves the prefill card about 90% idle, which is what the equal-GPU-count measurement found. Long prompts with short outputs are the shape that justifies the split; short prompts with long outputs are not.
+This sets what a *second card* for prefill can be worth. Splitting across two cards divides the hardware evenly; against a 2.6% share that leaves the prefill card about 90% idle, which is what the equal-GPU-count run measured. Long prompts with short outputs — document QA, long-audio transcription, classification, scoring — are the shape that earns a second card. Short prompts with long outputs are not.
 
-If your workload sits at the low end, the interference PD removes may still be worth it, but expect to pay throughput for it. Read the next question before deciding.
+A low share does not rule out splitting. It argues for spending less hardware on it: the same-GPU form separates the halves without a second card at all.
 
-### 2. Is your problem throughput, or is it inter-token jitter?
+### 2. Which overload behaviour do you want?
 
-These want opposite answers, and the measurements separate them cleanly.
+Decide it, because the default is an unbounded queue and it surfaces as latency rather than as an error. See [What to expect](#what-to-expect) for the three settings and which question each answers.
 
-If the complaint is **throughput per GPU**, PD at 1:1 is not the fix. Two colocated replicas beat one pair on both text and image at equal GPU count.
+### 3. Does the prefill card have room for what moves onto it?
 
-If the complaint is **an audio or token stream that stutters when another request starts**, PD addresses exactly that. A colocated replica pays 5.9x to 8.5x on the inter-token gap that overlaps a prefill on text, and 8.4x to 20.5x on images. PD brings that to 1.0x. It is worst on images because a 6127-token image prompt cannot be chunked: `_needs_full_prefill` forces the whole prompt through in one step, and no decode work batches with it.
+`--pd-stage` moves only the stage it names. The encoders stay where they were, and the CUDA-IPC relay pool appears on the prefill card. Budget for both. This is the most common way a first PD launch fails.
 
-For a real-time stream with a repeating deadline, that jitter is the SLO, and a throughput number does not describe it.
+### 4. Are you optimizing throughput, or inter-token stability?
 
-### 3. Does your workload depend on prefix reuse?
+Both are real goals and they select different configurations.
 
-PD forces `disable_radix_cache` and `page_size=1` on both halves. A workload built on a long shared prefix loses that reuse: a fixed system prompt, a few-shot preamble, or a reference audio prefix. Measure your cache hit rate before splitting. This cost does not appear in a throughput comparison run with unique prompts.
+**Inter-token stability.** A colocated replica pays 5.9x to 8.5x on the inter-token gap that overlaps a prefill on text, and 8.4x to 20.5x on images. PD brings that to 1.0x: on the image arm a prefill in flight on the other card is statistically indistinguishable from no prefill at all. Images are worst because a 6127-token image prompt cannot be chunked — `_needs_full_prefill` forces the whole prompt through one step and no decode work batches with it. For a stream with a repeating deadline, such as speech output or a full-duplex voice turn, this jitter *is* the SLO and a throughput number does not describe it. Any split addresses it, including the same-GPU form.
 
-### 4. Which overload behaviour do you want?
+**Throughput.** One prefill half against one decode half, on two cards, has parity as its ceiling. That is arithmetic, not a defect: a card doing both jobs has the harmonic mean of its prefill-only and decode-only capacities, a 1:1 pair has the minimum of the two, and the minimum never exceeds the harmonic mean, with equality only when the halves are exactly balanced. So 1:1 across two cards is the wrong configuration to reach for when throughput is the goal — not because splitting is wrong, but because that particular ratio cannot exceed parity even in theory.
 
-Decide this deliberately, because the default is an unbounded queue and it shows up as latency rather than as an error. See [What to expect](#what-to-expect) for the three settings and which question each answers.
+The configurations whose arithmetic differs are ratios other than 1:1, and both halves on one card. Neither has been measured here yet. Ratios other than 1:1 are not configurable today.
 
-### 5. Does the prefill card have room for what moves onto it?
-
-`--pd-stage` moves only the stage it names. The encoders stay put, and the CUDA-IPC relay pool appears on the prefill card. Budget for both. This is the most common way a first PD launch fails.
+The measured gap is also larger than the arithmetic predicts: PD's decode card carries about a 2.9x handicap while its prefill card carries none. Four candidates can account for it and the data cannot yet separate them — the forced `page_size=1`, the forced `disable_radix_cache`, the absence of mixed-chunk batching on the decode side, and the cost of receiving KV over CUDA IPC. Three of those four are current constraints of this implementation rather than properties of disaggregation, so expect this number to move.
 
 ## Turn it on
 
@@ -126,6 +138,6 @@ Set priorities when one deployment serves both interactive and batch traffic. Th
 ## Limits today
 
 - `tp_size` must be 1. A two-GPU half parses and places, and is then rejected when the runtime binds.
-- `page_size` is forced to 1 and the radix cache is disabled, so prefix reuse is unavailable on a PD stage.
+- `page_size` is forced to 1 and the radix cache is disabled on both halves, so prefix reuse is unavailable on a PD stage. A workload built on a long shared prefix — a fixed system prompt, a few-shot preamble, a reference audio prefix — loses that reuse, and the loss does not appear in a throughput comparison run with unique prompts. This is a constraint of the current implementation, not of disaggregation.
 - One prefill half pairs with one decode half. Ratios other than 1:1 are not configurable.
 - Both halves must be on the same node.
