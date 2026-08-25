@@ -24,13 +24,23 @@ from tests.unit_test.pipeline.helpers import stage
 @pytest.mark.parametrize(
     "value,expected",
     [
-        ("thinker=0:1", ("thinker", 0, 1)),
-        ("thinker=0,1:2,3", ("thinker", [0, 1], [2, 3])),
-        (" thinker = 0 : 1 ", ("thinker", 0, 1)),
+        ("thinker=0:1", ("thinker", 0, 1, None, None)),
+        ("thinker=0,1:2,3", ("thinker", [0, 1], [2, 3], None, None)),
+        (" thinker = 0 : 1 ", ("thinker", 0, 1, None, None)),
+        ("thinker=0@0.25:0@0.65", ("thinker", 0, 0, 0.25, 0.65)),
+        ("thinker=0@0.3:1", ("thinker", 0, 1, 0.3, None)),
     ],
 )
 def test_parse_accepts_supported_forms(value, expected) -> None:
-    assert parse_pd_stage_assignment(value) == expected
+    parsed = parse_pd_stage_assignment(value)
+
+    assert (
+        parsed.stage_name,
+        parsed.prefill_gpu,
+        parsed.decode_gpu,
+        parsed.prefill_fraction,
+        parsed.decode_fraction,
+    ) == expected
 
 
 @pytest.mark.parametrize(
@@ -103,11 +113,16 @@ def test_no_override_leaves_the_pipeline_untouched(tmp_path) -> None:
         assert all(s.pd_execution is None for s in prep.stages_cfg)
 
 
-def test_same_gpu_is_rejected_by_schema_validation(tmp_path) -> None:
-    # model_copy does not re-enter model_post_init, so the override must re-run
-    # _validate_pd itself; without that this placement would reach expansion.
-    with pytest.raises(ValueError, match="cannot share the same GPU"):
-        apply_pd_stage_overrides(_pipeline(tmp_path), pd_stages=["thinker=1:1"])
+def test_the_flag_can_place_both_halves_on_one_gpu(tmp_path) -> None:
+    """Sharing a card is a placement choice, and the shares go with it."""
+    config = apply_pd_stage_overrides(
+        _pipeline(tmp_path), pd_stages=["thinker=1@0.3:1@0.6"]
+    )
+    pd = {s.name: s for s in config.stages}["thinker"].pd_disaggregation
+
+    assert pd.prefill.gpu == 1
+    assert pd.decode.gpu == 1
+    assert (pd.prefill.memory_fraction, pd.decode.memory_fraction) == (0.3, 0.6)
 
 
 def test_unknown_stage_names_the_known_stages(tmp_path) -> None:
@@ -214,3 +229,32 @@ def test_non_pd_pipeline_gets_no_server_args_injected(tmp_path) -> None:
     with prep.runtime_dir:
         for unchanged in prep.stages_cfg:
             assert "server_args_overrides" not in unchanged.factory_args
+
+
+def test_a_half_share_reaches_the_placement(tmp_path) -> None:
+    """`thinker=0@0.25:0@0.65` is how a shared card is expressed on the CLI."""
+    config = apply_pd_stage_overrides(
+        _pipeline(tmp_path), pd_stages=["thinker=0@0.25:0@0.65"]
+    )
+    pd = {s.name: s for s in config.stages}["thinker"].pd_disaggregation
+
+    assert pd.prefill.memory_fraction == 0.25
+    assert pd.decode.memory_fraction == 0.65
+
+
+def test_a_share_is_optional(tmp_path) -> None:
+    config = apply_pd_stage_overrides(_pipeline(tmp_path), pd_stages=["thinker=0:1"])
+    pd = {s.name: s for s in config.stages}["thinker"].pd_disaggregation
+
+    assert pd.prefill.memory_fraction is None
+    assert pd.decode.memory_fraction is None
+
+
+def test_a_share_outside_the_unit_interval_is_rejected(tmp_path) -> None:
+    with pytest.raises(ValueError, match="must be in"):
+        apply_pd_stage_overrides(_pipeline(tmp_path), pd_stages=["thinker=0@1.5:1"])
+
+
+def test_a_share_that_is_not_a_number_is_rejected(tmp_path) -> None:
+    with pytest.raises(ValueError, match="is not a number"):
+        apply_pd_stage_overrides(_pipeline(tmp_path), pd_stages=["thinker=0@half:1"])

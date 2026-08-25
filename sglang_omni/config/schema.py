@@ -137,6 +137,14 @@ class PDStagePlacement(BaseModel):
     # the other, and an experiment that varies one has to leave the other
     # fixed. Values here merge into this half's server_args_overrides.
     server_args: dict[str, Any] = Field(default_factory=dict)
+    # Note (Audrey Zheng): this half's share of the whole card. Two halves on
+    # one GPU are two process groups sharing a device, and the existing
+    # colocation policy requires each to declare a share and caps their sum.
+    # It routes KV sizing through `calculate_stage_budget_available_bytes`,
+    # which computes `total x fraction - this stage's own usage`; total is a
+    # constant, so unlike `mem_fraction_static` the result does not depend on
+    # which half wins the startup lock.
+    memory_fraction: float | None = Field(default=None, gt=0.0, le=1.0)
 
 
 class PDConfig(BaseModel):
