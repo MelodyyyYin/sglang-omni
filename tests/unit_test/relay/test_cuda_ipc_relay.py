@@ -683,3 +683,25 @@ def test_cuda_ipc_paged_multi_buffer_round_trip_with_storage_offsets() -> None:
 )
 def test_cuda_ipc_cross_gpu_round_trip() -> None:
     _run_case(0, 1)
+
+
+def test_cuda_ipc_pool_is_lazy_by_default() -> None:
+    """Unchanged default: construction allocates nothing."""
+    relay = CudaIpcRelay(engine_id="sender", device="cuda:0")
+    assert relay._pool_tensor is None
+
+
+def test_cuda_ipc_preallocate_moves_the_allocation_to_construction() -> None:
+    """A budget that cannot hold the pool then fails at launch, not later.
+
+    The pool is otherwise allocated on the first payload that crosses a
+    process boundary. Measured on a PD pair: `mem_fraction_static=0.87`
+    launched cleanly and then failed a 750 MiB allocation 19 minutes in, when
+    the image arm began and `mm_aggregate` first relayed a CUDA tensor. Text
+    traffic never triggers it, so a text smoke test cannot catch the shortfall.
+    """
+    relay = CudaIpcRelay(
+        engine_id="sender", device="cuda:0", pool_size_mb=1, preallocate_pool=True
+    )
+    assert relay._pool_tensor is not None
+    assert relay._pool_tensor.numel() == relay.pool_size
