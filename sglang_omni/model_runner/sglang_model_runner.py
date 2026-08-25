@@ -97,7 +97,14 @@ class _OmniKVCacheConfigurator(KVCacheConfigurator):
             process_memory = get_process_gpu_memory_bytes_from_torch(self.gpu_id)
             accounting = "torch_reserved"
 
-        if process_memory is None or process_memory <= 0:
+        if process_memory is None:
+            # Note (Audrey Zheng): only a failed attribution routes to the
+            # delta. A process that genuinely holds nothing has a budget --
+            # `total x fraction` -- and the delta would discard it. The two
+            # used to share this branch because the query returned 0 for both;
+            # they no longer do, so keep them apart here as well. This path
+            # runs after the model loads, so a genuine zero is not reachable
+            # today; the test states the contract rather than guarding a case.
             return self._profile_available_bytes_from_stage_load_delta(
                 pre_model_load_memory,
                 total_memory,

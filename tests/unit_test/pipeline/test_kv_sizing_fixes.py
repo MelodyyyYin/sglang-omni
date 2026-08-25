@@ -49,3 +49,12 @@ def test_ample_free_memory_does_not_shrink_the_budget() -> None:
 def test_a_budget_leaving_nothing_still_raises() -> None:
     with pytest.raises(RuntimeError, match="no KV-cache headroom"):
         _budget(memory_fraction=0.4)
+
+
+def test_a_genuine_zero_keeps_its_budget() -> None:
+    """A process holding nothing can use the whole fraction.
+
+    The failed-attribution case and the genuine-zero case shared one branch
+    while the query returned 0 for both. They no longer do.
+    """
+    assert _budget(accounted_memory_bytes=0) == int(140 * _GIB * 0.87)
