@@ -57,13 +57,19 @@ def publish_parameter_handles(
     *,
     rendezvous_dir: Path,
     stage_name: str,
+    gpu_id: int,
 ) -> Path:
-    """Write *handles* where the peer half can read them. Returns the path."""
+    """Write *handles* where the peer half can read them. Returns the path.
+
+    The device is recorded alongside them. A CUDA IPC handle names memory on
+    one GPU, so a half on another card must not adopt these, and stating the
+    device here lets the reader check that rather than assume it.
+    """
     directory = Path(rendezvous_dir) / _SUBDIR
     directory.mkdir(parents=True, exist_ok=True)
     final = directory / f"{stage_name}.pkl"
     staging = directory / f"{stage_name}.pkl.{os.getpid()}"
-    staging.write_bytes(pickle.dumps(handles))
+    staging.write_bytes(pickle.dumps({"gpu_id": int(gpu_id), "handles": handles}))
     os.replace(staging, final)
     logger.info(
         "published %d parameter handles for %s at %s",
@@ -78,8 +84,12 @@ def read_parameter_handles(
     *,
     rendezvous_dir: Path,
     stage_name: str,
+    gpu_id: int,
 ) -> dict[str, Any] | None:
-    """Return the handles *stage_name* published, or None if it has not.
+    """Return the handles *stage_name* published for *gpu_id*, or None.
+
+    Returns None when the peer has not published, and when it published for a
+    different device.
 
     This does not wait. ``_construct_scheduler`` builds a stage inside
     ``gpu_startup_lock(gpu_id)``, so two halves on one device load one at a
@@ -96,6 +106,15 @@ def read_parameter_handles(
             stage_name,
         )
         return None
-    handles = pickle.loads(payload)
+    published = pickle.loads(payload)
+    if published["gpu_id"] != int(gpu_id):
+        logger.info(
+            "%s published handles for GPU %s, not GPU %s; this half keeps its own",
+            stage_name,
+            published["gpu_id"],
+            gpu_id,
+        )
+        return None
+    handles = published["handles"]
     logger.info("adopted %d parameter handles from %s", len(handles), stage_name)
     return handles

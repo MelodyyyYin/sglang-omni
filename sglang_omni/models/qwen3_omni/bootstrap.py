@@ -21,6 +21,7 @@ def create_thinker_scheduler(
     prefill_coalesce_requests: int = 0,
     prefill_coalesce_wait_ms: float = 60.0,
     prefill_coalesce_when_idle: bool = False,
+    weight_sharing_plan: Any = None,
 ):
     """Create the Qwen thinker scheduler."""
     from sglang.srt.utils.hf_transformers_utils import get_tokenizer
@@ -77,6 +78,7 @@ def create_thinker_scheduler(
             total_gpu_memory_fraction=total_gpu_memory_fraction,
             defer_cuda_graph_capture=defer_cuda_graph_capture,
             enable_prefill_input_embeds=enable_prefill_input_embeds,
+            weight_sharing_plan=weight_sharing_plan,
         )
     finally:
         if defer_cuda_graph_capture:

@@ -112,36 +112,20 @@ def _check_parameters_match(
 class WeightSharingPlan:
     """What this half does about weights at startup, and with whom.
 
-    Built by :func:`plan_for_pd_halves`, which returns ``None`` unless the two
-    halves are on one device: a CUDA IPC handle names memory on a particular
-    GPU, so halves on different cards each need their own copy.
+    Sharing applies only when the two halves are on one device, and that is
+    settled by the published handles rather than by this plan: a CUDA IPC
+    handle names memory on a particular GPU, the publisher records which, and
+    :func:`apply_weight_sharing` declines handles from another one.
     """
 
     stage_name: str
     peer_stage: str
     rendezvous_dir: Path
-
-
-def plan_for_pd_halves(
-    *,
-    stage_name: str,
-    peer_stage: str,
-    own_gpu: int | list[int] | None,
-    peer_gpu: int | list[int] | None,
-    rendezvous_dir: Path,
-) -> WeightSharingPlan | None:
-    """Return the plan for this half, or None when sharing does not apply."""
-    if own_gpu is None or peer_gpu != own_gpu:
-        return None
-    return WeightSharingPlan(
-        stage_name=stage_name,
-        peer_stage=peer_stage,
-        rendezvous_dir=rendezvous_dir,
-    )
+    gpu_id: int
 
 
 def apply_weight_sharing(model: Any, plan: WeightSharingPlan) -> int:
-    """Adopt the peer's weights if it published, else publish for it.
+    """Adopt the peer's weights if it published for this GPU, else publish.
 
     Neither half waits. ``_construct_scheduler`` builds a stage inside
     ``gpu_startup_lock(gpu_id)``, so two halves on one device load one at a
@@ -164,7 +148,9 @@ def apply_weight_sharing(model: Any, plan: WeightSharingPlan) -> int:
     )
 
     handles = read_parameter_handles(
-        rendezvous_dir=plan.rendezvous_dir, stage_name=plan.peer_stage
+        rendezvous_dir=plan.rendezvous_dir,
+        stage_name=plan.peer_stage,
+        gpu_id=plan.gpu_id,
     )
     if handles is not None:
         return adopt_parameter_handles(model, handles)
@@ -173,5 +159,6 @@ def apply_weight_sharing(model: Any, plan: WeightSharingPlan) -> int:
         export_parameter_handles(model),
         rendezvous_dir=plan.rendezvous_dir,
         stage_name=plan.stage_name,
+        gpu_id=plan.gpu_id,
     )
     return 0

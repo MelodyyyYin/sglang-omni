@@ -793,6 +793,37 @@ def _construct_stage(
     return stage
 
 
+def _weight_sharing_plan(spec: StageLaunchConfig, gpu_id: int | None) -> Any:
+    """Return this half's weight-sharing plan, or None when it does not apply.
+
+    Only reaches a factory that declares ``weight_sharing_plan``, because
+    ``resolve_factory_signature_args`` injects a default only when the factory
+    names it. A stage opts in by taking the parameter.
+
+    The run directory comes from this stage's own endpoint rather than a new
+    argument: ``allocate_endpoints`` puts every stage socket directly in the
+    directory ``create_ipc_runtime_dir`` made for this run.
+    """
+    if spec.pd_execution is None or gpu_id is None or not spec.recv_endpoint:
+        return None
+    from sglang_omni.model_runner.weight_rendezvous import (
+        RendezvousUnavailable,
+        rendezvous_dir_from_endpoint,
+    )
+    from sglang_omni.model_runner.weight_sharing import WeightSharingPlan
+
+    try:
+        rendezvous_dir = rendezvous_dir_from_endpoint(spec.recv_endpoint)
+    except RendezvousUnavailable:
+        return None
+    return WeightSharingPlan(
+        stage_name=spec.stage_name,
+        peer_stage=spec.pd_execution.partner,
+        rendezvous_dir=rendezvous_dir,
+        gpu_id=int(gpu_id),
+    )
+
+
 def _construct_scheduler(
     spec: StageLaunchConfig,
     gpu_id: int | None,
@@ -801,10 +832,14 @@ def _construct_scheduler(
     """Build a scheduler, serializing GPU factory work per visible device."""
 
     factory = import_string(spec.factory)
+    defaults = dict(spec.factory_arg_defaults)
+    plan = _weight_sharing_plan(spec, gpu_id)
+    if plan is not None:
+        defaults["weight_sharing_plan"] = plan
     factory_args = resolve_factory_signature_args(
         factory,
         spec.factory_args,
-        defaults=spec.factory_arg_defaults,
+        defaults=defaults,
     )
     if gpu_id is None:
         return factory(**factory_args)
