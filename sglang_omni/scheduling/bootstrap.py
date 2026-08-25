@@ -107,6 +107,7 @@ def create_sglang_infrastructure(
     total_gpu_memory_fraction: float | None = None,
     defer_cuda_graph_capture: bool = False,
     enable_prefill_input_embeds: bool = False,
+    weight_sharing_plan: Any = None,
 ):
     """Create SGLang worker, memory pools, tree cache, and prefill/decode managers."""
     from sglang_omni.model_runner.model_worker import ModelWorker, ModelWorkerConfig
@@ -148,6 +149,22 @@ def create_sglang_infrastructure(
     # initialization, and CUDA-graph initialization into explicit phases. Keep
     # the same order as upstream's Scheduler.init_model_worker(), while
     # preserving Omni's pre-backend hidden-capture hook installation above.
+    if weight_sharing_plan is not None:
+        # Note (Audrey Zheng): between load and pool allocation is the only
+        # point where this helps. Sharing after the pool is sized returns
+        # memory nothing will claim.
+        from sglang_omni.model_runner.weight_sharing import apply_weight_sharing
+
+        released = apply_weight_sharing(
+            model_worker.model_runner.model, weight_sharing_plan
+        )
+        if released:
+            logger.info(
+                "released %.1f GiB by sharing weights with %s",
+                released / (1024**3),
+                weight_sharing_plan.peer_stage,
+            )
+
     model_runner = model_worker.model_runner
     model_runner.alloc_memory_pool()
     model_runner.init_attention_backends()

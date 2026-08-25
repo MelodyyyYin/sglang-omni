@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Adopting shared weights refuses to proceed on a mismatch."""
+"""Sharing one copy of a stage's weights between two PD halves on one GPU."""
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -61,3 +62,71 @@ def test_nothing_is_mutated_before_the_check_passes() -> None:
         _check_parameters_match(named, dict.fromkeys(_model("other.weight")))
 
     assert named == before
+
+
+def test_two_halves_on_one_gpu_get_a_plan() -> None:
+    from sglang_omni.model_runner.weight_sharing import plan_for_pd_halves
+
+    plan = plan_for_pd_halves(
+        stage_name="thinker_prefill",
+        peer_stage="thinker_decode",
+        role="prefill",
+        own_gpu=0,
+        peer_gpu=0,
+        rendezvous_dir=Path("/run/x"),
+    )
+
+    assert plan is not None
+    assert plan.exports is True
+
+
+def test_halves_on_different_gpus_get_no_plan() -> None:
+    """A CUDA IPC handle names memory on one device; two cards need two copies."""
+    from sglang_omni.model_runner.weight_sharing import plan_for_pd_halves
+
+    assert (
+        plan_for_pd_halves(
+            stage_name="thinker_prefill",
+            peer_stage="thinker_decode",
+            role="prefill",
+            own_gpu=0,
+            peer_gpu=1,
+            rendezvous_dir=Path("/run/x"),
+        )
+        is None
+    )
+
+
+def test_the_decode_half_adopts_rather_than_exports() -> None:
+    """The exporter has to outlive the adopter, so which one exports is fixed."""
+    from sglang_omni.model_runner.weight_sharing import plan_for_pd_halves
+
+    plan = plan_for_pd_halves(
+        stage_name="thinker_decode",
+        peer_stage="thinker_prefill",
+        role="decode",
+        own_gpu=0,
+        peer_gpu=0,
+        rendezvous_dir=Path("/run/x"),
+    )
+
+    assert plan.exports is False
+    assert plan.peer_stage == "thinker_prefill"
+
+
+def test_an_adopter_whose_peer_never_publishes_keeps_its_weights(tmp_path) -> None:
+    """Giving up costs memory; raising here would cost the startup."""
+    from sglang_omni.model_runner.weight_sharing import (
+        WeightSharingPlan,
+        apply_weight_sharing,
+    )
+
+    plan = WeightSharingPlan(
+        stage_name="thinker_decode",
+        peer_stage="thinker_prefill",
+        exports=False,
+        rendezvous_dir=tmp_path,
+        timeout_s=0.1,
+    )
+
+    assert apply_weight_sharing(object(), plan) == 0

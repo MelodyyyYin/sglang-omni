@@ -19,7 +19,9 @@ space.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -104,3 +106,79 @@ def _check_parameters_match(
             f"{len(extra)} of this model's parameters were not exported, "
             f"starting with {extra[:3]}"
         )
+
+
+@dataclasses.dataclass(frozen=True)
+class WeightSharingPlan:
+    """What one half does about weights at startup, and with whom.
+
+    Built by :func:`plan_for_pd_halves`, which returns ``None`` unless the two
+    halves are on one device: a CUDA IPC handle names memory on a particular
+    GPU, so two halves on different cards each need their own copy.
+    """
+
+    stage_name: str
+    peer_stage: str
+    exports: bool
+    rendezvous_dir: Path
+    timeout_s: float = 300.0
+
+
+def plan_for_pd_halves(
+    *,
+    stage_name: str,
+    peer_stage: str,
+    role: str,
+    own_gpu: int | list[int] | None,
+    peer_gpu: int | list[int] | None,
+    rendezvous_dir: Path,
+    timeout_s: float = 300.0,
+) -> WeightSharingPlan | None:
+    """Return the plan for this half, or None when sharing does not apply.
+
+    The prefill half exports and the decode half adopts. Which one exports is
+    fixed rather than raced, because the exporting process has to outlive every
+    process that adopts its handles, and a race would leave that undecided.
+    """
+    if own_gpu is None or peer_gpu != own_gpu:
+        return None
+    if role not in ("prefill", "decode"):
+        return None
+    return WeightSharingPlan(
+        stage_name=stage_name,
+        peer_stage=peer_stage,
+        exports=role == "prefill",
+        rendezvous_dir=rendezvous_dir,
+        timeout_s=timeout_s,
+    )
+
+
+def apply_weight_sharing(model: Any, plan: WeightSharingPlan) -> int:
+    """Publish or adopt handles for *model*. Returns bytes released, 0 if none.
+
+    Call this after the weights are loaded and before the KV pool is sized.
+    Peak memory is unchanged either way, because the adopting half still loads
+    before it swaps, but the pool is sized after this returns and so sees the
+    space the swap released.
+    """
+    from sglang_omni.model_runner.weight_rendezvous import (
+        await_parameter_handles,
+        publish_parameter_handles,
+    )
+
+    if plan.exports:
+        publish_parameter_handles(
+            export_parameter_handles(model),
+            rendezvous_dir=plan.rendezvous_dir,
+            stage_name=plan.stage_name,
+        )
+        return 0
+
+    handles = await_parameter_handles(
+        rendezvous_dir=plan.rendezvous_dir,
+        stage_name=plan.peer_stage,
+        timeout_s=plan.timeout_s,
+    )
+    if handles is None:
+        return 0
+    return adopt_parameter_handles(model, handles)
