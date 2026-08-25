@@ -15,6 +15,8 @@ from sglang.srt.server_args import PortArgs, ServerArgs
 
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.utils.gpu_memory import (
+    get_device_free_memory_bytes,
+    get_process_gpu_memory_bytes_from_torch,
     calculate_stage_budget_available_bytes,
     calculate_stage_load_delta_bytes,
     format_bytes_gib,
@@ -84,6 +86,17 @@ class _OmniKVCacheConfigurator(KVCacheConfigurator):
                 "device visibility."
             )
 
+        accounting = "nvml_process"
+        if process_memory is None:
+            # Note (Audrey Zheng): NVML could not attribute memory to this
+            # process. Ask torch what it reserved before falling back to a
+            # global free-memory delta: torch's number undercounts by the CUDA
+            # context, which is bounded and the same every run, while the delta
+            # depends on what was already resident when the "before" sample was
+            # taken and was measured sizing one pool 11.9 GiB too large.
+            process_memory = get_process_gpu_memory_bytes_from_torch(self.gpu_id)
+            accounting = "torch_reserved"
+
         if process_memory is None or process_memory <= 0:
             return self._profile_available_bytes_from_stage_load_delta(
                 pre_model_load_memory,
@@ -93,6 +106,7 @@ class _OmniKVCacheConfigurator(KVCacheConfigurator):
         return self._profile_available_bytes_from_process_memory(
             total_memory,
             process_memory,
+            accounting=accounting,
         )
 
     def _profile_available_bytes_from_stage_load_delta(
@@ -136,15 +150,17 @@ class _OmniKVCacheConfigurator(KVCacheConfigurator):
         self,
         total_memory: int,
         process_memory: int,
+        accounting: str = "nvml_process",
     ) -> int:
         available_bytes = calculate_stage_budget_available_bytes(
             total_memory_bytes=total_memory,
             accounted_memory_bytes=process_memory,
             memory_fraction=self.total_gpu_memory_fraction,
             accounted_memory_label="process_used",
+            free_memory_bytes=get_device_free_memory_bytes(self.gpu_id),
         )
         logger.info(
-            f"SGLang AR memory profile: gpu_mem_accounting=nvml_process "
+            f"SGLang AR memory profile: gpu_mem_accounting={accounting} "
             f"gpu_id={self.gpu_id} "
             f"total_gpu_memory_fraction={self.total_gpu_memory_fraction:.3f} "
             f"mem_fraction_static={self.server_args.mem_fraction_static:.3f} "
