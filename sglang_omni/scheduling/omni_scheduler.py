@@ -577,6 +577,7 @@ class OmniScheduler:
         # bound at all on what Decode accumulates.
         self._pd_decode_pending_limit = decode_pending_limit
         self._pd_peer_pending_fn = peer_pending_fn
+        self._warn_if_decode_queue_unbounded(stage_name, role)
         self._pd_pool_id = f"{stage_name}:kv"
         raw_pool = self.token_to_kv_pool_allocator.get_kvcache()
         layout_id = (
@@ -1604,6 +1605,33 @@ class OmniScheduler:
                 if len(req.output_ids) > output_lengths[id(req)]
             }
             self._queue_pd_prefill_handoffs(batch, sampled_request_ids)
+
+    def _warn_if_decode_queue_unbounded(self, stage_name: str, role: str) -> None:
+        """Say which admission policy is in effect on the Decode half.
+
+        A colocated replica throttles admission by contention -- prefill and
+        decode share a card and a scheduler thread, so accepting more work
+        slows the accepting. Splitting the halves removes that, and with no
+        queue bound the excess arrives as latency rather than as rejection:
+        measured at offered 16, Decode held about 437 requests and a request
+        took 40.96 s against 2.29 s colocated, while admission read 100%
+        throughout.
+
+        Unbounded is a legitimate choice for an offline workload and a poor
+        one for interactive serving, so state which one is in effect rather
+        than pick one.
+        """
+        if role != "decode":
+            return
+        if getattr(self.server_args, "max_queued_requests", 0):
+            return
+        logger.info(
+            "PD decode stage %s has no max_queued_requests, so its queue is "
+            "unbounded and overload will appear as latency rather than "
+            "rejection. Set --max_queued_requests to bound it; "
+            "models/qwen3_tts sets 16 for its generation stage.",
+            stage_name,
+        )
 
     def _pd_decode_depth(self) -> int:
         """Requests this Decode half is holding, waiting or running.

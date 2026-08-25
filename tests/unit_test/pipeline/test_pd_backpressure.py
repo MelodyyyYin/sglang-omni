@@ -3,10 +3,13 @@
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 from sglang_omni.proto.messages import DataAckMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+
+_LOGGER = "sglang_omni.scheduling.omni_scheduler"
 
 
 def _prefill(limit, depth) -> OmniScheduler:
@@ -86,3 +89,49 @@ def test_a_peer_that_omits_the_depth_stays_compatible() -> None:
 
     assert "receiver_pending" not in wire
     assert DataAckMessage.from_dict(wire).receiver_pending is None
+
+
+def _half(role: str, max_queued: int) -> OmniScheduler:
+    scheduler = OmniScheduler.__new__(OmniScheduler)
+    scheduler.server_args = SimpleNamespace(max_queued_requests=max_queued)
+    return scheduler
+
+
+def test_an_unbounded_decode_queue_is_stated_at_bind(caplog) -> None:
+    """Otherwise the operator sees 100% admission and 41-second requests."""
+    scheduler = _half("decode", 0)
+
+    with caplog.at_level(logging.INFO, logger=_LOGGER):
+        scheduler._warn_if_decode_queue_unbounded("thinker_decode", "decode")
+
+    assert len(caplog.records) == 1
+    assert "thinker_decode" in caplog.records[0].getMessage()
+
+
+def test_the_notice_points_at_a_precedent(caplog) -> None:
+    """"Set something" without a reference leaves the operator guessing."""
+    scheduler = _half("decode", 0)
+
+    with caplog.at_level(logging.INFO, logger=_LOGGER):
+        scheduler._warn_if_decode_queue_unbounded("thinker_decode", "decode")
+
+    assert "qwen3_tts" in caplog.records[0].getMessage()
+
+
+def test_a_bounded_queue_says_nothing(caplog) -> None:
+    scheduler = _half("decode", 16)
+
+    with caplog.at_level(logging.INFO, logger=_LOGGER):
+        scheduler._warn_if_decode_queue_unbounded("thinker_decode", "decode")
+
+    assert caplog.records == []
+
+
+def test_the_prefill_half_says_nothing(caplog) -> None:
+    """The queue this describes is the Decode half's."""
+    scheduler = _half("prefill", 0)
+
+    with caplog.at_level(logging.INFO, logger=_LOGGER):
+        scheduler._warn_if_decode_queue_unbounded("thinker_prefill", "prefill")
+
+    assert caplog.records == []
