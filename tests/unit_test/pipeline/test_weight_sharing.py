@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import time
 from types import SimpleNamespace
 
 import pytest
@@ -160,9 +159,7 @@ def test_exactly_one_half_publishes_on_equal_shares() -> None:
             decode=PDStagePlacement(gpu=0, memory_fraction=0.47),
         )
     else:
-        pd = PDConfig(
-            prefill=PDStagePlacement(gpu=0), decode=PDStagePlacement(gpu=0)
-        )
+        pd = PDConfig(prefill=PDStagePlacement(gpu=0), decode=PDStagePlacement(gpu=0))
     stages = [stage("thinker", terminal=True, pd_disaggregation=pd)]
 
     halves = {s.name: s for s in expand_pd_stages(stages, entry_stage="thinker").stages}
