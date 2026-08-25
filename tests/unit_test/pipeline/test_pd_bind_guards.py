@@ -61,3 +61,35 @@ def test_a_supported_configuration_passes_every_guard() -> None:
     """
     with pytest.raises(AttributeError, match="token_to_kv_pool_allocator"):
         _bind(_scheduler())
+
+
+def test_cuda_graph_is_not_among_the_guards() -> None:
+    """PD does not require CUDA graph off, and turning it off is expensive.
+
+    `_run_batch_prebuilt` returns an empty `GenerationBatchResult` and runs no
+    forward whenever `batch.inner_idle_batch` is None, which it always is here:
+    the only assignment is in `dp_attn.py`, reachable only through
+    `require_mlp_sync`, and sglang-omni rejects DP attention at config time.
+    So admission has no shape for a captured graph to miss and every step after
+    it is `ForwardMode.DECODE`, which the graph covers.
+
+    Measured on two H200s, decode CUDA graph off against on, everything else
+    held: the pair's ceiling was 5.9-6.2 rps against 13.2-13.6 at
+    `max_running_requests=64`, and 0.50 rps against at least 2.88 at a cap of
+    4. Decode-card utilization sits at 10.9-16.5% with graphs off at every
+    offered rate and cannot be driven higher, which is the signature of a
+    launch-bound decode loop. The smaller the concurrency cap, the more the
+    flag costs, because a smaller batch leaves less GPU work to hide the launch
+    overhead behind.
+
+    This test exists so that a future change cannot quietly add the flag to
+    what PD enforces.
+    """
+    scheduler = _scheduler()
+    scheduler.server_args.disable_cuda_graph = False
+
+    # Clears every guard and fails later on an attribute the stand-in lacks,
+    # which is what "not guarded" looks like from here. A new guard on the flag
+    # would raise NotImplementedError instead and fail this test.
+    with pytest.raises(AttributeError, match="token_to_kv_pool_allocator"):
+        _bind(scheduler)
