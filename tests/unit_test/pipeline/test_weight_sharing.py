@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -70,14 +71,13 @@ def test_two_halves_on_one_gpu_get_a_plan() -> None:
     plan = plan_for_pd_halves(
         stage_name="thinker_prefill",
         peer_stage="thinker_decode",
-        role="prefill",
         own_gpu=0,
         peer_gpu=0,
         rendezvous_dir=Path("/run/x"),
     )
 
     assert plan is not None
-    assert plan.exports is True
+    assert plan.peer_stage == "thinker_decode"
 
 
 def test_halves_on_different_gpus_get_no_plan() -> None:
@@ -88,7 +88,6 @@ def test_halves_on_different_gpus_get_no_plan() -> None:
         plan_for_pd_halves(
             stage_name="thinker_prefill",
             peer_stage="thinker_decode",
-            role="prefill",
             own_gpu=0,
             peer_gpu=1,
             rendezvous_dir=Path("/run/x"),
@@ -97,25 +96,51 @@ def test_halves_on_different_gpus_get_no_plan() -> None:
     )
 
 
-def test_the_decode_half_adopts_rather_than_exports() -> None:
-    """The exporter has to outlive the adopter, so which one exports is fixed."""
-    from sglang_omni.model_runner.weight_sharing import plan_for_pd_halves
-
-    plan = plan_for_pd_halves(
-        stage_name="thinker_decode",
-        peer_stage="thinker_prefill",
-        role="decode",
-        own_gpu=0,
-        peer_gpu=0,
-        rendezvous_dir=Path("/run/x"),
+def test_the_first_half_to_load_publishes(tmp_path) -> None:
+    """Nothing is published yet, so this half exports rather than waiting."""
+    from sglang_omni.model_runner.weight_sharing import (
+        WeightSharingPlan,
+        apply_weight_sharing,
     )
 
-    assert plan.exports is False
-    assert plan.peer_stage == "thinker_prefill"
+    model = SimpleNamespace(named_parameters=lambda: iter(()))
+    plan = WeightSharingPlan(
+        stage_name="thinker_prefill",
+        peer_stage="thinker_decode",
+        rendezvous_dir=tmp_path,
+    )
+
+    assert apply_weight_sharing(model, plan) == 0
+    assert (tmp_path / "pd-weights" / "thinker_prefill.pkl").exists()
 
 
-def test_an_adopter_whose_peer_never_publishes_keeps_its_weights(tmp_path) -> None:
-    """Giving up costs memory; raising here would cost the startup."""
+def test_the_second_half_to_load_adopts(tmp_path) -> None:
+    """gpu_startup_lock serializes the two, so the second finds the first's file."""
+    from sglang_omni.model_runner.weight_sharing import (
+        WeightSharingPlan,
+        apply_weight_sharing,
+    )
+
+    first = WeightSharingPlan(
+        stage_name="thinker_prefill",
+        peer_stage="thinker_decode",
+        rendezvous_dir=tmp_path,
+    )
+    second = WeightSharingPlan(
+        stage_name="thinker_decode",
+        peer_stage="thinker_prefill",
+        rendezvous_dir=tmp_path,
+    )
+    model = SimpleNamespace(named_parameters=lambda: iter(()))
+
+    apply_weight_sharing(model, first)
+    apply_weight_sharing(model, second)
+
+    assert not (tmp_path / "pd-weights" / "thinker_decode.pkl").exists()
+
+
+def test_neither_half_blocks_on_the_other(tmp_path) -> None:
+    """A half that waited would hold the GPU startup lock against its peer."""
     from sglang_omni.model_runner.weight_sharing import (
         WeightSharingPlan,
         apply_weight_sharing,
@@ -124,9 +149,10 @@ def test_an_adopter_whose_peer_never_publishes_keeps_its_weights(tmp_path) -> No
     plan = WeightSharingPlan(
         stage_name="thinker_decode",
         peer_stage="thinker_prefill",
-        exports=False,
         rendezvous_dir=tmp_path,
-        timeout_s=0.1,
     )
+    started = time.monotonic()
 
-    assert apply_weight_sharing(object(), plan) == 0
+    apply_weight_sharing(SimpleNamespace(named_parameters=lambda: iter(())), plan)
+
+    assert time.monotonic() - started < 1.0

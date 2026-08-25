@@ -160,7 +160,7 @@ def create_sglang_infrastructure(
         )
         if released:
             logger.info(
-                "released %.1f GiB by sharing weights with %s",
+                "released %.1f GiB by adopting weights from %s",
                 released / (1024**3),
                 weight_sharing_plan.peer_stage,
             )

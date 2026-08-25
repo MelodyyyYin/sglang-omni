@@ -13,10 +13,12 @@ file there is therefore visible to both halves, private to the run, and cleaned
 up without new ownership rules.
 
 Publishing is a write to a temporary name followed by ``os.replace``, so a
-reader never observes a partial file. Waiting returns ``None`` at the deadline
-rather than raising: a half that cannot adopt still holds correct weights, so
-the cost of giving up is memory, not correctness, and a startup that fails
-outright would be the worse trade.
+reader never observes a partial file. Reading returns ``None`` when the peer
+has not published rather than waiting for it: ``_construct_scheduler`` builds
+each stage inside ``gpu_startup_lock(gpu_id)``, so two halves on one device
+load one at a time, and a reader that waited would hold that lock against the
+very half it is waiting for. A half that finds nothing publishes its own
+handles instead, so whichever loads second is the one that adopts.
 """
 
 from __future__ import annotations
@@ -24,14 +26,12 @@ from __future__ import annotations
 import logging
 import os
 import pickle
-import time
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 _SUBDIR = "pd-weights"
-_POLL_INTERVAL_S = 0.05
 
 
 class RendezvousUnavailable(RuntimeError):
@@ -74,34 +74,28 @@ def publish_parameter_handles(
     return final
 
 
-def await_parameter_handles(
+def read_parameter_handles(
     *,
     rendezvous_dir: Path,
     stage_name: str,
-    timeout_s: float,
 ) -> dict[str, Any] | None:
-    """Read the handles *stage_name* published, or return None at the deadline.
+    """Return the handles *stage_name* published, or None if it has not.
 
-    The two halves load concurrently, so the reader usually arrives first and
-    waits. ``timeout_s`` bounds that wait against a peer that never publishes,
-    which happens whenever the peer is not sharing.
+    This does not wait. ``_construct_scheduler`` builds a stage inside
+    ``gpu_startup_lock(gpu_id)``, so two halves on one device load one at a
+    time and the second one to load finds the first one's file already there.
+    Waiting here would instead hold that lock against the half being waited
+    for, which needs the same lock to load at all.
     """
     path = Path(rendezvous_dir) / _SUBDIR / f"{stage_name}.pkl"
-    deadline = time.monotonic() + timeout_s
-    while True:
-        try:
-            payload = path.read_bytes()
-        except FileNotFoundError:
-            if time.monotonic() >= deadline:
-                logger.info(
-                    "no parameter handles from %s after %.1fs; "
-                    "this half keeps the weights it loaded",
-                    stage_name,
-                    timeout_s,
-                )
-                return None
-            time.sleep(_POLL_INTERVAL_S)
-            continue
-        handles = pickle.loads(payload)
-        logger.info("adopted %d parameter handles from %s", len(handles), stage_name)
-        return handles
+    try:
+        payload = path.read_bytes()
+    except FileNotFoundError:
+        logger.info(
+            "%s has not published parameter handles; this half publishes its own",
+            stage_name,
+        )
+        return None
+    handles = pickle.loads(payload)
+    logger.info("adopted %d parameter handles from %s", len(handles), stage_name)
+    return handles

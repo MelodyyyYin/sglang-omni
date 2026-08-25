@@ -3,22 +3,21 @@
 
 The halves are separate processes with no channel at load time. These pin the
 three properties the exchange depends on: the run directory is derivable from
-an endpoint the stage already has, a reader never sees a partial file, and a
-peer that never publishes costs memory rather than the startup.
+an endpoint the stage already has, a reader never sees a partial file, and an
+unpublished peer reads as absent rather than blocking, because the reader holds
+the GPU startup lock that peer needs.
 """
 
 from __future__ import annotations
 
-import multiprocessing
-import time
 from pathlib import Path
 
 import pytest
 
 from sglang_omni.model_runner.weight_rendezvous import (
     RendezvousUnavailable,
-    await_parameter_handles,
     publish_parameter_handles,
+    read_parameter_handles,
     rendezvous_dir_from_endpoint,
 )
 
@@ -44,41 +43,14 @@ def test_handles_survive_the_round_trip(tmp_path: Path) -> None:
     publish_parameter_handles(handles, rendezvous_dir=tmp_path, stage_name="prefill")
 
     assert (
-        await_parameter_handles(
-            rendezvous_dir=tmp_path, stage_name="prefill", timeout_s=1.0
-        )
+        read_parameter_handles(rendezvous_dir=tmp_path, stage_name="prefill")
         == handles
     )
 
 
-def test_a_peer_that_never_publishes_returns_none(tmp_path: Path) -> None:
-    """Failing to share costs memory; failing startup would cost the run."""
-    started = time.monotonic()
-
-    result = await_parameter_handles(
-        rendezvous_dir=tmp_path, stage_name="prefill", timeout_s=0.2
-    )
-
-    assert result is None
-    assert time.monotonic() - started >= 0.2
-
-
-def test_the_reader_waits_for_a_late_publisher(tmp_path: Path) -> None:
-    """The halves load concurrently, so the reader normally arrives first."""
-    handles = {"w": ("rebuild", ())}
-    publisher = multiprocessing.Process(
-        target=_publish_after,
-        args=(str(tmp_path), 0.15, handles),
-    )
-    publisher.start()
-    try:
-        result = await_parameter_handles(
-            rendezvous_dir=tmp_path, stage_name="prefill", timeout_s=5.0
-        )
-    finally:
-        publisher.join(timeout=10)
-
-    assert result == handles
+def test_an_unpublished_peer_reads_as_none(tmp_path: Path) -> None:
+    """The caller publishes its own handles instead, so nothing waits."""
+    assert read_parameter_handles(rendezvous_dir=tmp_path, stage_name="prefill") is None
 
 
 def test_a_reader_never_observes_a_partial_file(tmp_path: Path) -> None:
@@ -91,16 +63,4 @@ def test_a_reader_never_observes_a_partial_file(tmp_path: Path) -> None:
 
     leftovers = [p.name for p in directory.iterdir() if p.name != "prefill.pkl"]
     assert leftovers == []
-    assert (
-        await_parameter_handles(
-            rendezvous_dir=tmp_path, stage_name="prefill", timeout_s=1.0
-        )
-        == big
-    )
-
-
-def _publish_after(directory: str, delay_s: float, handles: dict) -> None:
-    time.sleep(delay_s)
-    publish_parameter_handles(
-        handles, rendezvous_dir=Path(directory), stage_name="prefill"
-    )
+    assert read_parameter_handles(rendezvous_dir=tmp_path, stage_name="prefill") == big
