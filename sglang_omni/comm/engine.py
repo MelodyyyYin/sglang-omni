@@ -127,6 +127,8 @@ class CommEngine:
         self._retained_pending_kv_transfers: list[_PendingTransfer] = []
         self._kv_pools: dict[str, KVPool] = {}
         self._kv_receivers: dict[str, KVReceiver] = {}
+        # Note (Audrey Zheng): the newest depth each peer reported on an ack.
+        self._peer_pending: dict[str, int] = {}
         self._kv_ready: dict[str, asyncio.Future[KVTransferReadyMessage]] = {}
         self._outbound_kv_requests: dict[str, str] = {}
         self._inbound_kv: dict[str, _InboundKVTransfer] = {}
@@ -346,6 +348,32 @@ class CommEngine:
     def register_kv_receiver(self, pool_id: str, receiver: KVReceiver) -> None:
         self._kv_receivers[pool_id] = receiver
 
+    def _local_pending_depth(self) -> int | None:
+        """Requests this stage's receivers still hold, or None if unreported.
+
+        A receiver that does not implement ``pending_depth`` contributes
+        nothing, so a stage whose receivers all predate the method reports
+        nothing rather than a misleading zero.
+        """
+        total: int | None = None
+        for receiver in self._kv_receivers.values():
+            depth = getattr(receiver, "pending_depth", None)
+            if depth is None:
+                continue
+            try:
+                value = depth()
+            except Exception:
+                logger.debug("pending_depth failed", exc_info=True)
+                continue
+            if value is None:
+                continue
+            total = int(value) if total is None else total + int(value)
+        return total
+
+    def peer_pending(self, stage: str) -> int | None:
+        """Newest depth *stage* reported, or None if it has never reported one."""
+        return self._peer_pending.get(stage)
+
     async def send_kv_pages(
         self,
         *,
@@ -535,6 +563,7 @@ class CommEngine:
                 object_id=data_ref.object_id,
                 success=error is None,
                 error=None if error is None else (str(error) or type(error).__name__),
+                receiver_pending=self._local_pending_depth(),
             ),
         )
 
@@ -721,6 +750,10 @@ class CommEngine:
             raise ValueError(
                 f"data_ack for {ack.to_stage!r} delivered to {self.router.stage_name!r}"
             )
+        if ack.receiver_pending is not None:
+            # Note (Audrey Zheng): record before the staleness check, because a
+            # stale ack still carries a current reading of the peer's depth.
+            self._peer_pending[ack.from_stage] = ack.receiver_pending
         pending = self._pending.get(ack.object_id)
         if pending is None:
             logger.debug(

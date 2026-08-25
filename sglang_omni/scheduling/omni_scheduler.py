@@ -559,6 +559,8 @@ class OmniScheduler:
         stage_name: str,
         role: str,
         partner: str,
+        decode_pending_limit: int | None = None,
+        peer_pending_fn: Any = None,
     ) -> tuple[Any, Any | None]:
         if self.tp_size != 1:
             raise NotImplementedError("PR3 PD runtime supports tp_size == 1 only")
@@ -571,6 +573,10 @@ class OmniScheduler:
 
         self._pd_role = role
         self._pd_partner = partner
+        # Note (Audrey Zheng): None keeps the previous behaviour, which is no
+        # bound at all on what Decode accumulates.
+        self._pd_decode_pending_limit = decode_pending_limit
+        self._pd_peer_pending_fn = peer_pending_fn
         self._pd_pool_id = f"{stage_name}:kv"
         raw_pool = self.token_to_kv_pool_allocator.get_kvcache()
         layout_id = (
@@ -624,6 +630,7 @@ class OmniScheduler:
             receiver,
             controller,
             allowed_resume_schemas=self._pd_resume_schemas,
+            pending_depth_fn=self._pd_decode_depth,
         )
 
     def _drain_pd_admissions(self) -> None:
@@ -1598,7 +1605,67 @@ class OmniScheduler:
             }
             self._queue_pd_prefill_handoffs(batch, sampled_request_ids)
 
+    def _pd_decode_depth(self) -> int:
+        """Requests this Decode half is holding, waiting or running.
+
+        Read off the transfer ack by the Prefill half so it can pace itself.
+        Counts what is committed but not yet admitted alongside what the
+        scheduler already owns, because a request in either state is work this
+        half has accepted and not finished.
+        """
+        ready = self.__dict__.get("_pd_ready_queue")
+        depth = ready.qsize() if ready is not None else 0
+        if self.__dict__.get("_pd_deferred_admission") is not None:
+            depth += 1
+        waiting = self.__dict__.get("waiting_queue")
+        if waiting is not None:
+            depth += len(waiting)
+        running = self.__dict__.get("running_batch")
+        if running is not None and not running.is_empty():
+            depth += len(running.reqs)
+        return depth
+
+    def _pd_peer_pending(self) -> int | None:
+        """Newest depth the Decode half reported, or None if it never has.
+
+        The reading rides the transfer ack, which fires on commit rather than
+        on admission -- so its timing says nothing about when Decode admits.
+        Its value is a measurement taken at that moment, which is what a sender
+        needs to pace itself, and it costs no extra message.
+        """
+        reader = self.__dict__.get("_pd_peer_pending_fn")
+        if reader is None:
+            return None
+        try:
+            return reader()
+        except Exception:
+            logger.debug("peer pending read failed", exc_info=True)
+            return None
+
     def get_new_batch_prefill(self, running_batch):
+        # Note (Audrey Zheng): stop admitting when the Decode half is already
+        # holding more than it can work through. Colocated throttles admission
+        # implicitly, because prefill and decode contend for one card and one
+        # scheduler thread; splitting them removes that and nothing replaces
+        # it. Measured on two H200s at offered 16: Decode held about 437
+        # requests against `max_running_requests=64`, and a request took 40.96 s
+        # against 2.29 s colocated, while admission still read 100%.
+        #
+        # Holding here rather than at the handoff is deliberate. A request that
+        # already sampled cannot be kept in the Prefill batch -- it would
+        # continue decoding on the wrong half -- so the only safe place to stop
+        # is before its KV exists. The request waits in the Prefill queue and
+        # costs nothing.
+        limit = self.__dict__.get("_pd_decode_pending_limit")
+        if limit and self.__dict__.get("_pd_role") == "prefill":
+            pending = self._pd_peer_pending()
+            if pending is not None and pending >= limit:
+                logger.debug(
+                    "holding prefill admission: decode holds %d >= %d",
+                    pending,
+                    limit,
+                )
+                return NextBatchPlan(batch_to_run=None, running_batch=running_batch)
         # Note: (maydomine) batch prefill admissions to amortize the fixed step
         # cost; the oldest-request deadline survives partial admission and aborts.
         #

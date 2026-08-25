@@ -99,6 +99,17 @@ class DataReadyMessage:
         )
 
 
+def _optional_pending(value: Any) -> int | None:
+    """Parse ``receiver_pending``; absent stays absent, present must be valid."""
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError("receiver_pending must be int")
+    if value < 0:
+        raise ValueError("receiver_pending must not be negative")
+    return value
+
+
 class DataAckMessage(msgspec.Struct):
     """Receiver completion for one data-plane object."""
 
@@ -108,6 +119,12 @@ class DataAckMessage(msgspec.Struct):
     object_id: str
     success: bool = True
     error: str | None = None
+    # Note (Audrey Zheng): how many requests the receiver still holds when it
+    # sends this ack. The ack fires on commit, before the receiver admits the
+    # request, so its timing says nothing about admission. Its value is a
+    # reading taken at that moment, which is what a sender needs to pace
+    # itself. Optional so a peer that does not report it stays compatible.
+    receiver_pending: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         _require_str(self.request_id, "request_id")
@@ -131,6 +148,12 @@ class DataAckMessage(msgspec.Struct):
         }
         if self.error is not None:
             d["error"] = self.error
+        if self.receiver_pending is not None:
+            if not isinstance(self.receiver_pending, int):
+                raise TypeError("receiver_pending must be int")
+            if self.receiver_pending < 0:
+                raise ValueError("receiver_pending must not be negative")
+            d["receiver_pending"] = self.receiver_pending
         return d
 
     @classmethod
@@ -150,6 +173,7 @@ class DataAckMessage(msgspec.Struct):
             to_stage=_require_str(d.get("to_stage"), "to_stage"),
             object_id=_require_str(d.get("object_id"), "object_id"),
             success=success,
+            receiver_pending=_optional_pending(d.get("receiver_pending")),
             error=error,
         )
 
