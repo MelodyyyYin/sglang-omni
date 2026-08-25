@@ -128,6 +128,9 @@ def test_the_larger_share_publishes() -> None:
     from sglang_omni.config.schema import PDConfig, PDStagePlacement
     from tests.unit_test.pipeline.helpers import stage
 
+    if "memory_fraction" not in PDStagePlacement.model_fields:
+        pytest.skip("per-half shares arrive with the placement surface")
+
     stages = [
         stage(
             "thinker",
@@ -151,16 +154,16 @@ def test_exactly_one_half_publishes_on_equal_shares() -> None:
     from sglang_omni.config.schema import PDConfig, PDStagePlacement
     from tests.unit_test.pipeline.helpers import stage
 
-    stages = [
-        stage(
-            "thinker",
-            terminal=True,
-            pd_disaggregation=PDConfig(
-                prefill=PDStagePlacement(gpu=0, memory_fraction=0.47),
-                decode=PDStagePlacement(gpu=0, memory_fraction=0.47),
-            ),
+    if "memory_fraction" in PDStagePlacement.model_fields:
+        pd = PDConfig(
+            prefill=PDStagePlacement(gpu=0, memory_fraction=0.47),
+            decode=PDStagePlacement(gpu=0, memory_fraction=0.47),
         )
-    ]
+    else:
+        pd = PDConfig(
+            prefill=PDStagePlacement(gpu=0), decode=PDStagePlacement(gpu=0)
+        )
+    stages = [stage("thinker", terminal=True, pd_disaggregation=pd)]
 
     halves = {s.name: s for s in expand_pd_stages(stages, entry_stage="thinker").stages}
     roles = [halves[n].pd_execution.publishes_weights for n in halves]

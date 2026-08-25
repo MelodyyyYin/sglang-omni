@@ -205,10 +205,11 @@ def _publishing_half_is_prefill(pd: PDConfig) -> bool:
     adopted came up.
 
     Equal shares are a tie, and prefill takes it, which only fixes an order
-    that was previously a race.
+    that was previously a race. Shares are optional, and when either is absent
+    there is nothing to compare, so prefill publishes there too.
     """
-    prefill_share = pd.prefill.memory_fraction
-    decode_share = pd.decode.memory_fraction
+    prefill_share = getattr(pd.prefill, "memory_fraction", None)
+    decode_share = getattr(pd.decode, "memory_fraction", None)
     if prefill_share is None or decode_share is None:
         return True
     return prefill_share >= decode_share
