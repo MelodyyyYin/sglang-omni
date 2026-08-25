@@ -156,7 +156,11 @@ def _split_pd_stage(
             "stream_to": [inbound_rename.get(t, t) for t in s.stream_to],
             "pd_disaggregation": None,
             # Note (Yue Yin): Keep compiler metadata out of user factory kwargs.
-            "pd_execution": PDExecution(role="prefill", partner=decode_name),
+            "pd_execution": PDExecution(
+                role="prefill",
+                partner=decode_name,
+                max_inflight_handoffs=pd.max_inflight_handoffs,
+            ),
         },
     )
 
@@ -175,7 +179,11 @@ def _split_pd_stage(
             "wait_for_fn": None,
             "merge_fn": None,
             "pd_disaggregation": None,
-            "pd_execution": PDExecution(role="decode", partner=prefill_name),
+            "pd_execution": PDExecution(
+                role="decode",
+                partner=prefill_name,
+                max_inflight_handoffs=pd.max_inflight_handoffs,
+            ),
         },
     )
 

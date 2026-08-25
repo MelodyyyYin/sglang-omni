@@ -82,9 +82,7 @@ def test_the_ack_carries_the_depth_across_the_wire() -> None:
 
 def test_a_peer_that_omits_the_depth_stays_compatible() -> None:
     """An older peer sends no such field, and that is not an error."""
-    ack = DataAckMessage(
-        request_id="r", from_stage="d", to_stage="p", object_id="o"
-    )
+    ack = DataAckMessage(request_id="r", from_stage="d", to_stage="p", object_id="o")
     wire = ack.to_dict()
 
     assert "receiver_pending" not in wire
@@ -109,7 +107,7 @@ def test_an_unbounded_decode_queue_is_stated_at_bind(caplog) -> None:
 
 
 def test_the_notice_points_at_a_precedent(caplog) -> None:
-    """"Set something" without a reference leaves the operator guessing."""
+    """ "Set something" without a reference leaves the operator guessing."""
     scheduler = _half("decode", 0)
 
     with caplog.at_level(logging.INFO, logger=_LOGGER):
