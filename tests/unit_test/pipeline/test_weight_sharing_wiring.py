@@ -73,3 +73,44 @@ def test_the_infrastructure_builder_accepts_it() -> None:
         "weight_sharing_plan"
         in inspect.signature(create_sglang_infrastructure).parameters
     )
+
+
+def test_turning_sharing_off_yields_no_plan() -> None:
+    """The escape hatch has to stop the plan, not just the swap."""
+    spec = _spec(
+        pd_execution=SimpleNamespace(
+            role="prefill", partner="thinker_decode", share_weights=False
+        )
+    )
+
+    assert _weight_sharing_plan(spec, 0) is None
+
+
+def test_sharing_is_on_by_default() -> None:
+    """Two copies of the same static tensors buy nothing."""
+    from sglang_omni.config.schema import PDConfig
+
+    assert PDConfig().share_weights is True
+
+
+def test_the_setting_reaches_both_halves() -> None:
+    from sglang_omni.config import expand_pd_stages
+    from sglang_omni.config.schema import PDConfig, PDStagePlacement
+    from tests.unit_test.pipeline.helpers import stage
+
+    stages = [
+        stage(
+            "thinker",
+            terminal=True,
+            pd_disaggregation=PDConfig(
+                prefill=PDStagePlacement(gpu=0),
+                decode=PDStagePlacement(gpu=0),
+                share_weights=False,
+            ),
+        )
+    ]
+
+    halves = {s.name: s for s in expand_pd_stages(stages, entry_stage="thinker").stages}
+
+    assert halves["thinker_prefill"].pd_execution.share_weights is False
+    assert halves["thinker_decode"].pd_execution.share_weights is False

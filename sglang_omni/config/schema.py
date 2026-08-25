@@ -145,6 +145,12 @@ class PDConfig(BaseModel):
 
     prefill: PDStagePlacement = Field(default_factory=PDStagePlacement)
     decode: PDStagePlacement = Field(default_factory=PDStagePlacement)
+    # Note (Audrey Zheng): whether the two halves share one copy of the
+    # weights when they land on one device. On by default because two copies
+    # of the same static tensors buy nothing. Turning it off keeps each half
+    # loading its own, which is the state to fall back to if sharing is ever
+    # suspected of a fault, and is also how the saving is measured.
+    share_weights: bool = True
 
 
 class PDExecution(BaseModel):
@@ -159,6 +165,7 @@ class PDExecution(BaseModel):
 
     role: Literal["prefill", "decode"]
     partner: str
+    share_weights: bool = True
 
 
 class StageConfig(BaseModel):

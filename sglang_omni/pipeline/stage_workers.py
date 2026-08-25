@@ -806,6 +806,8 @@ def _weight_sharing_plan(spec: StageLaunchConfig, gpu_id: int | None) -> Any:
     """
     if spec.pd_execution is None or gpu_id is None or not spec.recv_endpoint:
         return None
+    if not getattr(spec.pd_execution, "share_weights", True):
+        return None
     from sglang_omni.model_runner.weight_rendezvous import (
         RendezvousUnavailable,
         rendezvous_dir_from_endpoint,
