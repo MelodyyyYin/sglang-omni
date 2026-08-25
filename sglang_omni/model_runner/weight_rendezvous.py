@@ -26,12 +26,14 @@ from __future__ import annotations
 import logging
 import os
 import pickle
+import time
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 _SUBDIR = "pd-weights"
+_POLL_INTERVAL_S = 0.2
 
 
 class RendezvousUnavailable(RuntimeError):
@@ -118,3 +120,37 @@ def read_parameter_handles(
     handles = published["handles"]
     logger.info("adopted %d parameter handles from %s", len(handles), stage_name)
     return handles
+
+
+def wait_for_parameter_handles(
+    *,
+    rendezvous_dir: Path,
+    stage_name: str,
+    gpu_id: int,
+    timeout_s: float,
+) -> dict[str, Any] | None:
+    """Block until *stage_name* publishes, or give up at the deadline.
+
+    Only safe to call before taking ``gpu_startup_lock``. Inside the lock this
+    would hold it against the very half being waited for, which is why
+    :func:`read_parameter_handles` does not wait.
+
+    Returning None at the deadline lets the caller load its own weights rather
+    than fail the stage, which is the right trade when the peer is absent.
+    """
+    deadline = time.monotonic() + timeout_s
+    while True:
+        handles = read_parameter_handles(
+            rendezvous_dir=rendezvous_dir, stage_name=stage_name, gpu_id=gpu_id
+        )
+        if handles is not None:
+            return handles
+        if time.monotonic() >= deadline:
+            logger.warning(
+                "%s published no parameter handles within %.0fs; "
+                "this half loads its own",
+                stage_name,
+                timeout_s,
+            )
+            return None
+        time.sleep(_POLL_INTERVAL_S)

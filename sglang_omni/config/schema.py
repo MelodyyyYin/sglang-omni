@@ -166,6 +166,7 @@ class PDExecution(BaseModel):
     role: Literal["prefill", "decode"]
     partner: str
     share_weights: bool = True
+    publishes_weights: bool = True
 
 
 class StageConfig(BaseModel):

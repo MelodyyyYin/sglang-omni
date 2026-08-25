@@ -122,43 +122,37 @@ class WeightSharingPlan:
     peer_stage: str
     rendezvous_dir: Path
     gpu_id: int
+    publishes: bool = True
+    adopted: dict[str, Any] | None = None
 
 
 def apply_weight_sharing(model: Any, plan: WeightSharingPlan) -> int:
-    """Adopt the peer's weights if it published for this GPU, else publish.
+    """Publish this half's weights, or adopt the peer's. Returns bytes released.
 
-    Neither half waits. ``_construct_scheduler`` builds a stage inside
-    ``gpu_startup_lock(gpu_id)``, so two halves on one device load one at a
-    time: the first finds nothing published and publishes, the second finds
-    that file and adopts. Assigning the exporting role in advance instead
-    would deadlock whenever the assigned adopter won the lock, because it
-    would hold the lock while waiting for a half that needs the same lock to
-    load at all.
+    Which half publishes is decided from the declared shares, not from load
+    order: the publisher keeps the copy it loaded, so its budget must hold the
+    weights as well as its KV, and letting a race pick that half makes the same
+    placement start one time and fail the next.
+
+    The adopter's wait happens before ``gpu_startup_lock`` is taken, so by the
+    time this runs the handles are already in hand.
 
     Call this after the weights are loaded and before the KV pool is sized.
     Peak memory is unchanged either way, because the adopting half still loads
     before it swaps, but the pool is sized after this returns and so sees the
     space the swap released.
-
-    Returns the bytes this half released, which is 0 when it published.
     """
-    from sglang_omni.model_runner.weight_rendezvous import (
-        publish_parameter_handles,
-        read_parameter_handles,
-    )
+    from sglang_omni.model_runner.weight_rendezvous import publish_parameter_handles
 
-    handles = read_parameter_handles(
-        rendezvous_dir=plan.rendezvous_dir,
-        stage_name=plan.peer_stage,
-        gpu_id=plan.gpu_id,
-    )
-    if handles is not None:
-        return adopt_parameter_handles(model, handles)
+    if plan.publishes:
+        publish_parameter_handles(
+            export_parameter_handles(model),
+            rendezvous_dir=plan.rendezvous_dir,
+            stage_name=plan.stage_name,
+            gpu_id=plan.gpu_id,
+        )
+        return 0
 
-    publish_parameter_handles(
-        export_parameter_handles(model),
-        rendezvous_dir=plan.rendezvous_dir,
-        stage_name=plan.stage_name,
-        gpu_id=plan.gpu_id,
-    )
-    return 0
+    if plan.adopted is None:
+        return 0
+    return adopt_parameter_handles(model, plan.adopted)

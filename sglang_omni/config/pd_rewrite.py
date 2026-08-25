@@ -131,6 +131,7 @@ def _split_pd_stage(
     assert pd is not None
     prefill_name = f"{s.name}{PREFILL_SUFFIX}"
     decode_name = f"{s.name}{DECODE_SUFFIX}"
+    prefill_publishes = _publishing_half_is_prefill(pd)
 
     prefill = s.model_copy(
         deep=True,
@@ -160,6 +161,7 @@ def _split_pd_stage(
                 role="prefill",
                 partner=decode_name,
                 share_weights=pd.share_weights,
+                publishes_weights=prefill_publishes,
             ),
         },
     )
@@ -183,8 +185,30 @@ def _split_pd_stage(
                 role="decode",
                 partner=prefill_name,
                 share_weights=pd.share_weights,
+                publishes_weights=not prefill_publishes,
             ),
         },
     )
 
     return prefill, decode
+
+
+def _publishing_half_is_prefill(pd: PDConfig) -> bool:
+    """Return whether the prefill half is the one that publishes its weights.
+
+    The publisher keeps the copy it loaded, so its budget has to hold the
+    weights on top of its own KV; the adopter releases what it loaded and
+    needs only KV. Deciding this from the declared shares rather than from
+    whichever half wins ``gpu_startup_lock`` is what makes a placement start
+    the same way twice: at ``thinker=0@0.30:0@0.62`` the 0.30 half cannot hold
+    a 56.94 GiB copy, so a run where it published failed while a run where it
+    adopted came up.
+
+    Equal shares are a tie, and prefill takes it, which only fixes an order
+    that was previously a race.
+    """
+    prefill_share = pd.prefill.memory_fraction
+    decode_share = pd.decode.memory_fraction
+    if prefill_share is None or decode_share is None:
+        return True
+    return prefill_share >= decode_share
