@@ -145,14 +145,25 @@ def apply_weight_sharing(model: Any, plan: WeightSharingPlan) -> int:
     from sglang_omni.model_runner.weight_rendezvous import publish_parameter_handles
 
     if plan.publishes:
+        handles = export_parameter_handles(model)
         publish_parameter_handles(
-            export_parameter_handles(model),
+            handles,
             rendezvous_dir=plan.rendezvous_dir,
             stage_name=plan.stage_name,
             gpu_id=plan.gpu_id,
+            weight_bytes=_parameter_bytes(model),
         )
         return 0
 
     if plan.adopted is None:
         return 0
     return adopt_parameter_handles(model, plan.adopted)
+
+
+def _parameter_bytes(model: Any) -> int:
+    """Total bytes of this model's CUDA parameters."""
+    total = 0
+    for _name, param in model.named_parameters():
+        if getattr(param, "is_cuda", False):
+            total += param.data.numel() * param.data.element_size()
+    return total

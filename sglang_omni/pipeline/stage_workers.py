@@ -850,6 +850,45 @@ def _adopt_peer_weights(plan: Any, log: logging.Logger) -> Any:
     return dataclasses.replace(plan, adopted=handles)
 
 
+def _check_room_to_load_before_swapping(plan: Any, gpu_id: int) -> None:
+    """Reject an adopting half that cannot materialize its own copy first.
+
+    Adopting does not lower peak memory: this half still loads the weights
+    before it can point at the peer's, and only then is the KV pool sized. On
+    one card the publisher is already holding its weights and its pool by now,
+    so the shares have to leave a whole extra copy free at this moment.
+
+    Measured on one H200 at ``thinker=0@0.30:0@0.62``: the 0.62 publisher ends
+    up holding 87.0 GiB of a 140.4 GiB card, and the adopter's own 56.94 GiB
+    load does not fit. Without this the failure is a CUDA out-of-memory
+    several frames deep in the loader, which does not say that the shares are
+    the problem.
+    """
+    from sglang_omni.model_runner.weight_rendezvous import read_published_weight_bytes
+
+    needed = read_published_weight_bytes(
+        rendezvous_dir=plan.rendezvous_dir, stage_name=plan.peer_stage
+    )
+    if needed <= 0:
+        return
+    try:
+        import torch
+
+        free_bytes, _total = torch.cuda.mem_get_info(gpu_id)
+    except Exception:  # noqa: BLE001 - a probe, not a contract
+        return
+    if free_bytes >= needed:
+        return
+    gib = 1024**3
+    raise RuntimeError(
+        f"Stage {plan.stage_name} shares weights with {plan.peer_stage} on GPU "
+        f"{gpu_id}, but only {free_bytes / gib:.1f} GiB is free and it must "
+        f"load its own {needed / gib:.1f} GiB copy before it can point at the "
+        f"peer's. Lower the share of {plan.peer_stage} so the card keeps one "
+        f"spare copy free while this half loads."
+    )
+
+
 def _construct_scheduler(
     spec: StageLaunchConfig,
     gpu_id: int | None,
@@ -876,6 +915,8 @@ def _construct_scheduler(
 
     with gpu_startup_lock(int(gpu_id)) as lock_path:
         log.info(f"Acquired GPU startup lock for stage {spec.stage_name}: {lock_path}")
+        if plan is not None and not plan.publishes:
+            _check_room_to_load_before_swapping(plan, int(gpu_id))
         return factory(**factory_args)
 
 

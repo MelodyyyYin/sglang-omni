@@ -60,8 +60,14 @@ def publish_parameter_handles(
     rendezvous_dir: Path,
     stage_name: str,
     gpu_id: int,
+    weight_bytes: int = 0,
 ) -> Path:
     """Write *handles* where the peer half can read them. Returns the path.
+
+    ``weight_bytes`` travels with them so the adopting half can check that it
+    has room to materialize its own copy before it loads one. On one card the
+    publisher is already holding weights and its KV pool by then, and the
+    adopter still has to load before it can swap.
 
     The device is recorded alongside them. A CUDA IPC handle names memory on
     one GPU, so a half on another card must not adopt these, and stating the
@@ -71,7 +77,15 @@ def publish_parameter_handles(
     directory.mkdir(parents=True, exist_ok=True)
     final = directory / f"{stage_name}.pkl"
     staging = directory / f"{stage_name}.pkl.{os.getpid()}"
-    staging.write_bytes(pickle.dumps({"gpu_id": int(gpu_id), "handles": handles}))
+    staging.write_bytes(
+        pickle.dumps(
+            {
+                "gpu_id": int(gpu_id),
+                "handles": handles,
+                "weight_bytes": int(weight_bytes),
+            }
+        )
+    )
     os.replace(staging, final)
     logger.info(
         "published %d parameter handles for %s at %s",
@@ -120,6 +134,20 @@ def read_parameter_handles(
     handles = published["handles"]
     logger.info("adopted %d parameter handles from %s", len(handles), stage_name)
     return handles
+
+
+def read_published_weight_bytes(
+    *,
+    rendezvous_dir: Path,
+    stage_name: str,
+) -> int:
+    """Return the byte count the publisher recorded, or 0 if it recorded none."""
+    path = Path(rendezvous_dir) / _SUBDIR / f"{stage_name}.pkl"
+    try:
+        published = pickle.loads(path.read_bytes())
+    except (FileNotFoundError, KeyError, EOFError):
+        return 0
+    return int(published.get("weight_bytes", 0))
 
 
 def wait_for_parameter_handles(

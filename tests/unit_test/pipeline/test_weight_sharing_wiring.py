@@ -114,3 +114,68 @@ def test_the_setting_reaches_both_halves() -> None:
 
     assert halves["thinker_prefill"].pd_execution.share_weights is False
     assert halves["thinker_decode"].pd_execution.share_weights is False
+
+
+def _plan(tmp_path, publishes: bool):
+    from sglang_omni.model_runner.weight_sharing import WeightSharingPlan
+
+    return WeightSharingPlan(
+        stage_name="thinker_decode",
+        peer_stage="thinker_prefill",
+        rendezvous_dir=tmp_path,
+        gpu_id=0,
+        publishes=publishes,
+    )
+
+
+def test_an_adopter_without_room_is_rejected_by_name(tmp_path, monkeypatch) -> None:
+    """A CUDA out-of-memory in the loader does not say the shares are wrong."""
+    import pytest
+
+    from sglang_omni.model_runner.weight_rendezvous import publish_parameter_handles
+    from sglang_omni.pipeline.stage_workers import (
+        _check_room_to_load_before_swapping,
+    )
+
+    publish_parameter_handles(
+        {"w": ("rebuild", ())},
+        rendezvous_dir=tmp_path,
+        stage_name="thinker_prefill",
+        gpu_id=0,
+        weight_bytes=60 * 1024**3,
+    )
+    monkeypatch.setattr(
+        "torch.cuda.mem_get_info", lambda _d: (10 * 1024**3, 140 * 1024**3)
+    )
+
+    with pytest.raises(RuntimeError, match="one spare copy free"):
+        _check_room_to_load_before_swapping(_plan(tmp_path, publishes=False), 0)
+
+
+def test_an_adopter_with_room_proceeds(tmp_path, monkeypatch) -> None:
+    from sglang_omni.model_runner.weight_rendezvous import publish_parameter_handles
+    from sglang_omni.pipeline.stage_workers import (
+        _check_room_to_load_before_swapping,
+    )
+
+    publish_parameter_handles(
+        {"w": ("rebuild", ())},
+        rendezvous_dir=tmp_path,
+        stage_name="thinker_prefill",
+        gpu_id=0,
+        weight_bytes=60 * 1024**3,
+    )
+    monkeypatch.setattr(
+        "torch.cuda.mem_get_info", lambda _d: (80 * 1024**3, 140 * 1024**3)
+    )
+
+    _check_room_to_load_before_swapping(_plan(tmp_path, publishes=False), 0)
+
+
+def test_a_publisher_without_a_recorded_size_is_not_blocked(tmp_path) -> None:
+    """An older peer records no size, and guessing one would reject good runs."""
+    from sglang_omni.pipeline.stage_workers import (
+        _check_room_to_load_before_swapping,
+    )
+
+    _check_room_to_load_before_swapping(_plan(tmp_path, publishes=False), 0)
