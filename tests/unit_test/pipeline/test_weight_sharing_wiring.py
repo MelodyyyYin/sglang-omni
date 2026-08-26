@@ -133,9 +133,7 @@ def test_an_adopter_without_room_is_rejected_by_name(tmp_path, monkeypatch) -> N
     import pytest
 
     from sglang_omni.model_runner.weight_rendezvous import publish_parameter_handles
-    from sglang_omni.pipeline.stage_workers import (
-        _check_room_to_load_before_swapping,
-    )
+    from sglang_omni.pipeline.stage_workers import _check_room_to_load_before_swapping
 
     publish_parameter_handles(
         {"w": ("rebuild", ())},
@@ -154,9 +152,7 @@ def test_an_adopter_without_room_is_rejected_by_name(tmp_path, monkeypatch) -> N
 
 def test_an_adopter_with_room_proceeds(tmp_path, monkeypatch) -> None:
     from sglang_omni.model_runner.weight_rendezvous import publish_parameter_handles
-    from sglang_omni.pipeline.stage_workers import (
-        _check_room_to_load_before_swapping,
-    )
+    from sglang_omni.pipeline.stage_workers import _check_room_to_load_before_swapping
 
     publish_parameter_handles(
         {"w": ("rebuild", ())},
@@ -174,8 +170,6 @@ def test_an_adopter_with_room_proceeds(tmp_path, monkeypatch) -> None:
 
 def test_a_publisher_without_a_recorded_size_is_not_blocked(tmp_path) -> None:
     """An older peer records no size, and guessing one would reject good runs."""
-    from sglang_omni.pipeline.stage_workers import (
-        _check_room_to_load_before_swapping,
-    )
+    from sglang_omni.pipeline.stage_workers import _check_room_to_load_before_swapping
 
     _check_room_to_load_before_swapping(_plan(tmp_path, publishes=False), 0)
