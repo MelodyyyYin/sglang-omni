@@ -8,7 +8,7 @@ from typing import ClassVar
 import pytest
 
 from sglang_omni.config import expand_pd_stages
-from sglang_omni.config.pd_capability import apply_pd_required_server_args
+from sglang_omni.config.pd_capability import apply_pd_required_engine_args
 from sglang_omni.config.schema import (
     PDConfig,
     PDStagePlacement,
@@ -51,15 +51,15 @@ def _overrides(stage_config) -> dict:
 
 def _required(halves, name):
     """Run the pass that sets what PD requires, and return that half."""
-    applied = apply_pd_required_server_args(halves.values())
+    applied = apply_pd_required_engine_args(halves.values())
     return {s.name: s for s in applied}[name]
 
 
-def test_each_half_receives_only_its_own_server_args() -> None:
+def test_each_half_receives_only_its_own_engine_args() -> None:
     halves = _halves(
         PDConfig(
-            prefill=PDStagePlacement(gpu=0, server_args={"chunked_prefill_size": 4096}),
-            decode=PDStagePlacement(gpu=1, server_args={"max_running_requests": 32}),
+            prefill=PDStagePlacement(gpu=0, engine={"chunked_prefill_size": 4096}),
+            decode=PDStagePlacement(gpu=1, engine={"max_running_requests": 32}),
         )
     )
 
@@ -71,7 +71,7 @@ def test_a_half_value_wins_over_the_stage_value() -> None:
     """The half's args were written for that half, so they take precedence."""
     halves = _halves(
         PDConfig(
-            prefill=PDStagePlacement(gpu=0, server_args={"max_running_requests": 8}),
+            prefill=PDStagePlacement(gpu=0, engine={"max_running_requests": 8}),
             decode=PDStagePlacement(gpu=1),
         ),
         engine={"max_running_requests": 64},
@@ -82,7 +82,7 @@ def test_a_half_value_wins_over_the_stage_value() -> None:
     assert _overrides(halves["thinker_decode"])["max_running_requests"] == 64
 
 
-def test_no_half_server_args_leaves_the_stage_engine_untouched() -> None:
+def test_no_half_engine_args_leaves_the_stage_engine_untouched() -> None:
     original = {"max_running_requests": 64}
     halves = _halves(
         PDConfig(prefill=PDStagePlacement(gpu=0), decode=PDStagePlacement(gpu=1)),
@@ -97,20 +97,20 @@ def test_a_half_cannot_contradict_what_pd_requires() -> None:
     """Setting page_size on a half still fails, and as a configuration error."""
     halves = _halves(
         PDConfig(
-            prefill=PDStagePlacement(gpu=0, server_args={"page_size": 16}),
+            prefill=PDStagePlacement(gpu=0, engine={"page_size": 16}),
             decode=PDStagePlacement(gpu=1),
         )
     )
 
     with pytest.raises(ValueError, match="requires engine.page_size=1"):
-        apply_pd_required_server_args(halves.values())
+        apply_pd_required_engine_args(halves.values())
 
 
 def test_a_half_may_set_args_pd_does_not_constrain() -> None:
     halves = _halves(
         PDConfig(
             prefill=PDStagePlacement(gpu=0),
-            decode=PDStagePlacement(gpu=1, server_args={"enable_mixed_chunk": False}),
+            decode=PDStagePlacement(gpu=1, engine={"enable_mixed_chunk": False}),
         )
     )
 

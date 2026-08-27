@@ -20,7 +20,7 @@ from sglang_omni.config.schema import EngineArgs, PDExecution, StageConfig
 # supplies these rather than letting a config compile and then fail at bind
 # time. models/ming_tts/engine_builder.py forces disable_radix_cache the same
 # way, with an explicit reason.
-PD_REQUIRED_SERVER_ARGS: dict[str, object] = {
+PD_REQUIRED_ENGINE_ARGS: dict[str, object] = {
     "disable_radix_cache": True,
     "page_size": 1,
 }
@@ -131,20 +131,20 @@ def _rewrite_refs(
     )
 
 
-def _half_engine(stage: StageConfig, half_server_args: dict[str, object]):
+def _half_engine(stage: StageConfig, half_engine: dict[str, object]):
     """Merge one half's engine args into that half's engine block.
 
     The half's values win over the stage's, because they were written for this
-    half specifically. ``apply_pd_required_server_args`` runs later and still
+    half specifically. ``apply_pd_required_engine_args`` runs later and still
     rejects a value that contradicts what PD requires.
 
     ``EngineArgs`` allows free-form keys, so a half may set any ServerArgs key
     without it being declared.
     """
-    if not half_server_args:
+    if not half_engine:
         return stage.engine
     engine = stage.engine or EngineArgs()
-    return engine.model_copy(update=dict(half_server_args))
+    return engine.model_copy(update=dict(half_engine))
 
 
 def _half_memory_fraction(
@@ -177,7 +177,7 @@ def _split_pd_stage(
             "name": prefill_name,
             "gpu": pd.prefill.gpu if pd.prefill.gpu is not None else s.gpu,
             "process": pd.prefill.process or prefill_name,
-            "engine": _half_engine(s, pd.prefill.server_args),
+            "engine": _half_engine(s, pd.prefill.engine),
             "gpu_memory_fraction": _half_memory_fraction(s, pd.prefill.memory_fraction),
             # Note (Yue Yin): Preserve the result path when the first sampled
             # token finishes the request before a KV handoff is needed.
@@ -207,7 +207,7 @@ def _split_pd_stage(
             "name": decode_name,
             "gpu": pd.decode.gpu if pd.decode.gpu is not None else s.gpu,
             "process": pd.decode.process or decode_name,
-            "engine": _half_engine(s, pd.decode.server_args),
+            "engine": _half_engine(s, pd.decode.engine),
             "gpu_memory_fraction": _half_memory_fraction(s, pd.decode.memory_fraction),
             "next": _rename_targets(s.next, inbound_rename),
             "stream_to": [inbound_rename.get(t, t) for t in s.stream_to],

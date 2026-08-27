@@ -222,11 +222,11 @@ class PDStagePlacement(BaseModel):
 
     gpu: int | list[int] | None = None
     process: str | None = None
-    # Note (Audrey Zheng): SGLang server args for this half alone. The two
-    # halves carry different work, so a setting that suits one need not suit
-    # the other, and an experiment that varies one has to leave the other
-    # fixed. Values here merge into this half's server_args_overrides.
-    server_args: dict[str, Any] = Field(default_factory=dict)
+    # Note (Audrey Zheng): engine args for this half alone, merged into the
+    # half's own engine block. The two halves carry different work, so a
+    # setting that suits one need not suit the other, and an experiment that
+    # varies one has to leave the other fixed.
+    engine: dict[str, Any] = Field(default_factory=dict)
     # Note (Audrey Zheng): this half's share of the whole card. Two halves on
     # one GPU are two process groups sharing a device, and the existing
     # colocation policy requires each to declare a share and caps their sum.

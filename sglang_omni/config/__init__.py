@@ -4,10 +4,6 @@ from sglang_omni.config.pd_capability import (
     pd_disaggregation_capable,
     validate_pd_capabilities,
 )
-from sglang_omni.config.pd_overrides import (
-    apply_pd_stage_overrides,
-    parse_pd_stage_assignment,
-)
 from sglang_omni.config.pd_rewrite import PDExpansion, expand_pd_stages
 from sglang_omni.config.placement import (
     GpuPlacement,
@@ -56,8 +52,6 @@ __all__ = [
     "resolve_gpu_stage_names",
     "resolve_stage_gpu_ids",
     "expand_pd_stages",
-    "apply_pd_stage_overrides",
-    "parse_pd_stage_assignment",
     "PDExpansion",
     "PDConfig",
     "PDExecution",

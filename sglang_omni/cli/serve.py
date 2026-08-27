@@ -16,7 +16,6 @@ from sglang_omni.config.patch import (
     Specificity,
 )
 from sglang_omni.config.path import ConfigPath, ConfigPathError
-from sglang_omni.config.pd_overrides import apply_pd_stage_overrides
 from sglang_omni.config.sources import dump_user_config, patches_from_model_path_flag
 from sglang_omni.preprocessing.resource_connector import (
     resolve_allowed_local_media_path,
@@ -333,20 +332,6 @@ def serve(
         Literal["debug", "info", "warning", "error", "critical"],
         typer.Option(help="Log level (default: info)."),
     ] = "info",
-    pd_stage: Annotated[
-        list[str] | None,
-        typer.Option(
-            "--pd-stage",
-            metavar="STAGE=PREFILL_GPUS:DECODE_GPUS",
-            help=(
-                "Split STAGE into prefill and decode halves on the given GPUs, "
-                "for example --pd-stage thinker=0:1. Append @SHARE to give a "
-                "half a share of its card, thinker=0@0.30:0@0.62, which is "
-                "required when the halves share one GPU. Repeat the flag to "
-                "split more than one stage."
-            ),
-        ),
-    ] = None,
     enable_realtime: Annotated[
         bool,
         typer.Option(
@@ -430,10 +415,6 @@ def serve(
     if colocate:
         _validate_colocate_config(merged_config)
     merged_config = apply_tensor_parallel_engine_overrides(merged_config)
-    try:
-        merged_config = apply_pd_stage_overrides(merged_config, pd_stages=pd_stage)
-    except ValueError as exc:
-        raise typer.BadParameter(str(exc)) from exc
 
     if _should_print_merged_config(colocate=colocate, log_level=log_level):
         _print_merged_config(merged_config)

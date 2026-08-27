@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from sglang_omni.config.pd_rewrite import PD_REQUIRED_SERVER_ARGS
+from sglang_omni.config.pd_rewrite import PD_REQUIRED_ENGINE_ARGS
 from sglang_omni.config.schema import EngineArgs, StageConfig
 from sglang_omni.utils.imports import import_string
 
@@ -51,7 +51,7 @@ def validate_pd_capabilities(stages: Iterable[StageConfig]) -> None:
             )
 
 
-def apply_pd_required_server_args(stages: Iterable[StageConfig]) -> list[StageConfig]:
+def apply_pd_required_engine_args(stages: Iterable[StageConfig]) -> list[StageConfig]:
     """Set the engine args PD needs on each generated half.
 
     ``bind_pd_runtime`` refuses anything else, so supplying them here turns a
@@ -75,7 +75,7 @@ def apply_pd_required_server_args(stages: Iterable[StageConfig]) -> list[StageCo
         engine = stage.engine or EngineArgs()
         current = engine.overrides()
         updates: dict[str, Any] = {}
-        for key, required in PD_REQUIRED_SERVER_ARGS.items():
+        for key, required in PD_REQUIRED_ENGINE_ARGS.items():
             existing = current.get(key)
             if existing is not None and existing != required:
                 raise ValueError(

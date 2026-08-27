@@ -14,7 +14,7 @@ from pathlib import Path
 import zmq
 
 from sglang_omni.config.pd_capability import (
-    apply_pd_required_server_args,
+    apply_pd_required_engine_args,
     validate_pd_capabilities,
 )
 from sglang_omni.config.pd_rewrite import expand_pd_stages
@@ -136,7 +136,7 @@ def prepare_pipeline_runtime(
     entry_stage = expansion.entry_stage
     validate_pd_capabilities(expansion.stages)
     expansion = dataclasses.replace(
-        expansion, stages=apply_pd_required_server_args(expansion.stages)
+        expansion, stages=apply_pd_required_engine_args(expansion.stages)
     )
     terminal_stages = [stage.name for stage in expansion.stages if stage.terminal]
 
