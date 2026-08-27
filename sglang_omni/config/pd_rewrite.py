@@ -160,6 +160,7 @@ def _split_pd_stage(
                 role="prefill",
                 partner=decode_name,
                 max_inflight_handoffs=pd.max_inflight_handoffs,
+                decode_pending_limit=pd.decode_pending_limit,
             ),
         },
     )
@@ -183,6 +184,7 @@ def _split_pd_stage(
                 role="decode",
                 partner=prefill_name,
                 max_inflight_handoffs=pd.max_inflight_handoffs,
+                decode_pending_limit=pd.decode_pending_limit,
             ),
         },
     )

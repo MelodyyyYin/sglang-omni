@@ -156,6 +156,9 @@ class Stage:
                 stage_name=name,
                 role=pd_execution.role,
                 partner=pd_execution.partner,
+                decode_pending_limit=getattr(
+                    pd_execution, "decode_pending_limit", None
+                ),
             )
             self._comm.register_kv_pool(pool)
             if receiver is not None:

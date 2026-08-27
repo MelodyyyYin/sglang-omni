@@ -151,6 +151,10 @@ class PDConfig(BaseModel):
     # pool sits in leases. Unset leaves the count where it lands today, which
     # is Prefill's max_running_requests.
     max_inflight_handoffs: int | None = Field(default=None, gt=0)
+    # Note (Audrey Zheng): how much work Decode may have pending before
+    # Prefill stops producing more. Unset leaves Prefill unthrottled, which
+    # is how overload currently shows up as latency rather than as rejection.
+    decode_pending_limit: int | None = Field(default=None, gt=0)
 
 
 class PDExecution(BaseModel):
@@ -166,6 +170,7 @@ class PDExecution(BaseModel):
     role: Literal["prefill", "decode"]
     partner: str
     max_inflight_handoffs: int | None = None
+    decode_pending_limit: int | None = None
 
 
 class StageConfig(BaseModel):

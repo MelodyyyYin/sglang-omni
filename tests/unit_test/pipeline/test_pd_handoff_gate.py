@@ -108,3 +108,45 @@ def test_an_unset_bound_stays_unset_through_the_rewrite() -> None:
     halves = {s.name: s for s in expand_pd_stages(stages, entry_stage="thinker").stages}
 
     assert halves["thinker_prefill"].pd_execution.max_inflight_handoffs is None
+
+
+def test_the_decode_bound_reaches_both_halves() -> None:
+    """Prefill needs it to throttle; Decode carries it so the pair agrees."""
+    from sglang_omni.config import expand_pd_stages
+    from sglang_omni.config.schema import PDStagePlacement
+
+    stages = [
+        stage(
+            "thinker",
+            terminal=True,
+            pd_disaggregation=PDConfig(
+                prefill=PDStagePlacement(gpu=0),
+                decode=PDStagePlacement(gpu=1),
+                decode_pending_limit=64,
+            ),
+        )
+    ]
+
+    halves = {s.name: s for s in expand_pd_stages(stages, entry_stage="thinker").stages}
+
+    assert halves["thinker_prefill"].pd_execution.decode_pending_limit == 64
+    assert halves["thinker_decode"].pd_execution.decode_pending_limit == 64
+
+
+def test_an_unset_decode_bound_leaves_prefill_unthrottled() -> None:
+    from sglang_omni.config import expand_pd_stages
+    from sglang_omni.config.schema import PDStagePlacement
+
+    stages = [
+        stage(
+            "thinker",
+            terminal=True,
+            pd_disaggregation=PDConfig(
+                prefill=PDStagePlacement(gpu=0), decode=PDStagePlacement(gpu=1)
+            ),
+        )
+    ]
+
+    halves = {s.name: s for s in expand_pd_stages(stages, entry_stage="thinker").stages}
+
+    assert halves["thinker_prefill"].pd_execution.decode_pending_limit is None
