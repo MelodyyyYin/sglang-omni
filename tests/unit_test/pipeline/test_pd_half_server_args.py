@@ -6,7 +6,7 @@ from __future__ import annotations
 import pytest
 
 from sglang_omni.config import expand_pd_stages
-from sglang_omni.config.pd_rewrite import pd_required_factory_args
+from sglang_omni.config.pd_capability import apply_pd_required_server_args
 from sglang_omni.config.schema import PDConfig, PDStagePlacement, PipelineConfig
 from tests.unit_test.pipeline.helpers import stage
 
@@ -23,7 +23,13 @@ def _halves(pd: PDConfig, **stage_kwargs):
 
 
 def _overrides(stage_config) -> dict:
-    return dict(stage_config.factory_args.get("server_args_overrides") or {})
+    return stage_config.engine.overrides() if stage_config.engine else {}
+
+
+def _required(halves, name):
+    """Run the pass that sets what PD requires, and return that half."""
+    applied = apply_pd_required_server_args(halves.values())
+    return {s.name: s for s in applied}[name]
 
 
 def test_each_half_receives_only_its_own_server_args() -> None:
@@ -45,7 +51,7 @@ def test_a_half_value_wins_over_the_stage_value() -> None:
             prefill=PDStagePlacement(gpu=0, server_args={"max_running_requests": 8}),
             decode=PDStagePlacement(gpu=1),
         ),
-        factory_args={"server_args_overrides": {"max_running_requests": 64}},
+        engine={"max_running_requests": 64},
     )
 
     assert _overrides(halves["thinker_prefill"])["max_running_requests"] == 8
@@ -53,15 +59,15 @@ def test_a_half_value_wins_over_the_stage_value() -> None:
     assert _overrides(halves["thinker_decode"])["max_running_requests"] == 64
 
 
-def test_no_half_server_args_leaves_factory_args_untouched() -> None:
-    original = {"server_args_overrides": {"max_running_requests": 64}}
+def test_no_half_server_args_leaves_the_stage_engine_untouched() -> None:
+    original = {"max_running_requests": 64}
     halves = _halves(
         PDConfig(prefill=PDStagePlacement(gpu=0), decode=PDStagePlacement(gpu=1)),
-        factory_args=original,
+        engine=original,
     )
 
-    assert halves["thinker_prefill"].factory_args == original
-    assert halves["thinker_decode"].factory_args == original
+    assert _overrides(halves["thinker_prefill"]) == original
+    assert _overrides(halves["thinker_decode"]) == original
 
 
 def test_a_half_cannot_contradict_what_pd_requires() -> None:
@@ -73,10 +79,8 @@ def test_a_half_cannot_contradict_what_pd_requires() -> None:
         )
     )
 
-    with pytest.raises(ValueError, match="requires page_size=1"):
-        pd_required_factory_args(
-            "thinker_prefill", halves["thinker_prefill"].factory_args
-        )
+    with pytest.raises(ValueError, match="requires engine.page_size=1"):
+        apply_pd_required_server_args(halves.values())
 
 
 def test_a_half_may_set_args_pd_does_not_constrain() -> None:
@@ -87,10 +91,7 @@ def test_a_half_may_set_args_pd_does_not_constrain() -> None:
         )
     )
 
-    resolved = pd_required_factory_args(
-        "thinker_decode", halves["thinker_decode"].factory_args
-    )
-    overrides = resolved["server_args_overrides"]
+    overrides = _overrides(_required(halves, "thinker_decode"))
 
     assert overrides["enable_mixed_chunk"] is False
     assert overrides["page_size"] == 1
