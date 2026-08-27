@@ -7,7 +7,6 @@ import typer
 import yaml
 
 from sglang_omni.config import PipelineConfig
-from sglang_omni.config.pd_overrides import apply_pd_stage_overrides
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.patch import (
     ConfigPatch,
@@ -17,6 +16,7 @@ from sglang_omni.config.patch import (
     Specificity,
 )
 from sglang_omni.config.path import ConfigPath, ConfigPathError
+from sglang_omni.config.pd_overrides import apply_pd_stage_overrides
 from sglang_omni.config.sources import dump_user_config, patches_from_model_path_flag
 from sglang_omni.preprocessing.resource_connector import (
     resolve_allowed_local_media_path,

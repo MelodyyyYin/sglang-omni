@@ -178,9 +178,7 @@ def _split_pd_stage(
             "gpu": pd.prefill.gpu if pd.prefill.gpu is not None else s.gpu,
             "process": pd.prefill.process or prefill_name,
             "engine": _half_engine(s, pd.prefill.server_args),
-            "gpu_memory_fraction": _half_memory_fraction(
-                s, pd.prefill.memory_fraction
-            ),
+            "gpu_memory_fraction": _half_memory_fraction(s, pd.prefill.memory_fraction),
             # Note (Yue Yin): Preserve the result path when the first sampled
             # token finishes the request before a KV handoff is needed.
             "next": _rename_targets(s.next, inbound_rename),
@@ -210,9 +208,7 @@ def _split_pd_stage(
             "gpu": pd.decode.gpu if pd.decode.gpu is not None else s.gpu,
             "process": pd.decode.process or decode_name,
             "engine": _half_engine(s, pd.decode.server_args),
-            "gpu_memory_fraction": _half_memory_fraction(
-                s, pd.decode.memory_fraction
-            ),
+            "gpu_memory_fraction": _half_memory_fraction(s, pd.decode.memory_fraction),
             "next": _rename_targets(s.next, inbound_rename),
             "stream_to": [inbound_rename.get(t, t) for t in s.stream_to],
             "project_payload": {

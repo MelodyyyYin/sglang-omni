@@ -263,7 +263,10 @@ def test_non_pd_pipeline_gets_no_server_args_injected(tmp_path) -> None:
     prep = prepare_pipeline_runtime(config)
     with prep.runtime_dir:
         for unchanged in prep.stages_cfg:
-            assert unchanged.engine is None or "page_size" not in unchanged.engine.overrides()
+            assert (
+                unchanged.engine is None
+                or "page_size" not in unchanged.engine.overrides()
+            )
 
 
 def test_a_half_share_reaches_the_placement(tmp_path) -> None:
