@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 from array import array
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -25,8 +27,10 @@ from sglang_omni.scheduling.pd_continuation import (
 )
 from sglang_omni.scheduling.pd_kv_adapter import ReservedAllocation
 from sglang_omni.scheduling.pd_runtime import (
+    DecodeOwnershipCapacityExhausted,
     DecodeRequestPoolExhausted,
     PDDecodeAdmission,
+    PDDecodeOwnershipTracker,
     continuation_from_req,
     req_from_continuation,
 )
@@ -143,6 +147,7 @@ def _decode_scheduler(
         scheduler._pd_ready_queue.put(admission)
     scheduler._pd_deferred_admission = None
     scheduler._pd_admission_lock = threading.Lock()
+    scheduler._pd_ownership = PDDecodeOwnershipTracker(max_queued_requests=16)
     scheduler._pd_state_restorer = state_restorer
     scheduler._aborted_request_ids = set()
     scheduler.req_to_token_pool = pool
@@ -151,6 +156,18 @@ def _decode_scheduler(
     scheduler.outbox = queue.Queue()
     scheduler.is_entry_rank = True
     return scheduler, freed
+
+
+def _own_admissions(scheduler, admissions) -> None:
+    for admission in admissions:
+        scheduler._pd_ownership.reserve(
+            admission.continuation.request_id,
+            admission.continuation.deadline_unix_s,
+        )
+        scheduler._pd_ownership.attach_allocation(
+            admission.continuation.request_id, admission.allocation
+        )
+        scheduler._pd_ownership.transition(admission.continuation.request_id, "ready")
 
 
 def test_continuation_reconstructs_req_and_transferred_mapping() -> None:
@@ -269,6 +286,7 @@ def test_request_pool_exhaustion_has_a_retryable_signal() -> None:
 def test_committed_decode_admission_enters_waiting_queue() -> None:
     pool = _ReqPool()
     scheduler, freed = _decode_scheduler([_decode_admission("request-1", 7)], pool)
+    _own_admissions(scheduler, list(scheduler._pd_ready_queue.queue))
 
     scheduler._drain_pd_admissions()
 
@@ -282,6 +300,7 @@ def test_committed_decode_admission_enters_waiting_queue() -> None:
 def test_aborted_decode_admission_releases_transferred_slots() -> None:
     admission = _decode_admission("request-1", 7)
     scheduler, freed = _decode_scheduler([admission], _ReqPool())
+    _own_admissions(scheduler, [admission])
     scheduler._aborted_request_ids = {"request-1"}
 
     scheduler._drain_pd_admissions()
@@ -295,6 +314,7 @@ def test_decode_admission_retries_pool_exhaustion_without_releasing_kv() -> None
     admission = _decode_admission("request-1", 7)
     pool = _CapacityReqPool(capacity=0)
     scheduler, freed = _decode_scheduler([admission], pool)
+    _own_admissions(scheduler, [admission])
 
     scheduler._drain_pd_admissions()
 
@@ -323,6 +343,7 @@ def test_decode_admission_preserves_fifo_across_capacity_waves() -> None:
     ]
     pool = _CapacityReqPool(capacity=1)
     scheduler, freed = _decode_scheduler(admissions, pool)
+    _own_admissions(scheduler, admissions)
     admitted = []
 
     for expected in ("request-1", "request-2", "request-3"):
@@ -354,6 +375,7 @@ def test_permanent_decode_reconstruction_error_is_not_retried(monkeypatch) -> No
         fail_reconstruction,
     )
     scheduler, freed = _decode_scheduler([admission], _CapacityReqPool(capacity=1))
+    _own_admissions(scheduler, [admission])
 
     scheduler._drain_pd_admissions()
     scheduler._drain_pd_admissions()
@@ -370,6 +392,7 @@ def test_permanent_decode_reconstruction_error_is_not_retried(monkeypatch) -> No
 def test_abort_while_decode_admission_is_deferred_releases_once() -> None:
     admission = _decode_admission("request-1", 7)
     scheduler, freed = _decode_scheduler([admission], _CapacityReqPool(capacity=0))
+    _own_admissions(scheduler, [admission])
     scheduler._drain_pd_admissions()
     scheduler._aborted_request_ids.add("request-1")
 
@@ -388,6 +411,7 @@ def test_discard_decode_admissions_releases_each_allocation_once() -> None:
         _decode_admission("request-2", 10),
     ]
     scheduler, freed = _decode_scheduler(admissions, _CapacityReqPool(capacity=0))
+    _own_admissions(scheduler, admissions)
     scheduler._drain_pd_admissions()
 
     scheduler._discard_pd_admissions()
@@ -409,6 +433,7 @@ def test_metrics_reporter_handles_multiple_reconstructed_requests() -> None:
         _CapacityReqPool(capacity=2),
     )
     scheduler.disaggregation_mode = DisaggregationMode.DECODE
+    _own_admissions(scheduler, list(scheduler._pd_ready_queue.queue))
     scheduler.disagg_decode_prealloc_queue = SimpleNamespace(
         queue=[], retracted_queue=[], num_tokens_pre_allocated=0
     )
@@ -427,6 +452,103 @@ def test_metrics_reporter_handles_multiple_reconstructed_requests() -> None:
     ]
     assert len(snapshots) == 2
     assert all(snapshot.num_decode_requests == 0 for snapshot in snapshots)
+
+
+def test_decode_owned_states_share_one_hard_queue_bound() -> None:
+    tracker = PDDecodeOwnershipTracker(max_queued_requests=2)
+    tracker.reserve("committed", None)
+    tracker.transition("committed", "committed")
+    tracker.reserve("deferred", None)
+    tracker.transition("deferred", "deferred")
+
+    with pytest.raises(DecodeOwnershipCapacityExhausted):
+        tracker.reserve("new", None)
+
+    assert tracker.snapshot() == {"committed": 1, "deferred": 1}
+
+
+def test_expired_deferred_admission_releases_destination_kv_once() -> None:
+    admission = _decode_admission("request-1", 7)
+    admission = PDDecodeAdmission(
+        replace(admission.continuation, deadline_unix_s=time.time() - 1),
+        admission.allocation,
+    )
+    scheduler, freed = _decode_scheduler([admission], _CapacityReqPool(capacity=0))
+    _own_admissions(scheduler, [admission])
+
+    scheduler._drain_pd_admissions()
+    scheduler._drain_pd_admissions()
+
+    assert freed == [admission.allocation.slots]
+    assert scheduler._pd_ownership.snapshot() == {}
+    assert scheduler.waiting_queue == []
+
+
+def test_deadline_expired_before_reconstruction_never_enters_waiting() -> None:
+    admission = _decode_admission("request-1", 7)
+    admission = PDDecodeAdmission(
+        replace(admission.continuation, deadline_unix_s=time.time() - 1),
+        admission.allocation,
+    )
+    scheduler, freed = _decode_scheduler([admission], _ReqPool())
+    _own_admissions(scheduler, [admission])
+
+    scheduler._drain_pd_admissions()
+
+    assert scheduler.waiting_queue == []
+    assert freed == [admission.allocation.slots]
+
+
+def test_timeout_ready_abort_race_has_one_terminal_owner() -> None:
+    admission = _decode_admission("request-1", 7)
+    scheduler, freed = _decode_scheduler([], _ReqPool())
+    _own_admissions(scheduler, [admission])
+    barrier = threading.Barrier(3)
+
+    def release(reason):
+        barrier.wait()
+        scheduler._release_pd_owned("request-1", reason=reason)
+
+    threads = [
+        threading.Thread(target=release, args=("timeout",)),
+        threading.Thread(target=release, args=("abort",)),
+    ]
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    for thread in threads:
+        thread.join(timeout=1)
+
+    assert freed == [admission.allocation.slots]
+    assert scheduler._pd_ownership.snapshot() == {}
+
+
+def test_queue_slot_release_allows_exactly_one_next_admission() -> None:
+    tracker = PDDecodeOwnershipTracker(max_queued_requests=1)
+    tracker.reserve("first", None)
+    tracker.transition("first", "waiting")
+    with pytest.raises(DecodeOwnershipCapacityExhausted):
+        tracker.reserve("second", None)
+
+    tracker.transition("first", "running")
+    tracker.reserve("second", None)
+    with pytest.raises(DecodeOwnershipCapacityExhausted):
+        tracker.reserve("third", None)
+
+    assert tracker.snapshot() == {"reserved": 1, "running": 1}
+
+
+def test_all_decode_owned_exit_paths_return_accounting_to_zero() -> None:
+    tracker = PDDecodeOwnershipTracker(max_queued_requests=8)
+    states = ("reserved", "committed", "ready", "deferred", "waiting", "running")
+    for state in states:
+        tracker.reserve(state, None)
+        tracker.transition(state, state)
+    for state in states:
+        assert tracker.pop(state) is not None
+        assert tracker.pop(state) is None
+
+    assert tracker.snapshot() == {}
 
 
 def test_prefill_handoff_reuses_request_mapping_and_detaches_batch() -> None:
