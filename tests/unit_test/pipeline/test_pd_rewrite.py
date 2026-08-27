@@ -94,8 +94,8 @@ def test_pd_expansion_rewrites_edges_and_metadata() -> None:
     assert prefill.pd_execution.partner == "thinker_decode"
     assert decode.pd_execution.role == "decode"
     assert decode.pd_execution.partner == "thinker_prefill"
-    assert "pd_role" not in prefill.factory_args
-    assert "pd_partner" not in decode.factory_args
+    assert "pd_role" not in prefill.factory.model_dump()
+    assert "pd_partner" not in decode.factory.model_dump()
 
 
 def test_pd_entry_stage_rewritten_to_prefill() -> None:
@@ -153,7 +153,7 @@ def test_pd_output_identity_drives_fan_in_sources() -> None:
         stages=[
             stage(
                 "source",
-                factory=fake_factory_path("pd_capable_factory"),
+                factory_path=fake_factory_path("pd_capable_factory"),
                 next="fanin",
                 pd_disaggregation=_pd(0, 1),
             ),
