@@ -10,6 +10,7 @@ the same slots to both.
 from __future__ import annotations
 
 import threading
+from types import SimpleNamespace
 
 from sglang_omni.scheduling.pd_alloc_lock import LockedKVAllocator
 
@@ -35,6 +36,24 @@ class _RacyAllocator:
 
     def available_size(self) -> int:
         return len(self.free_pages)
+
+
+class _DeterministicAllocFreeRace(_RacyAllocator):
+    """Expose the stale write that loses a concurrent cache free."""
+
+    def __init__(self) -> None:
+        super().__init__(2)
+        self.alloc_read = threading.Event()
+        self.finish_alloc = threading.Event()
+
+    def alloc(self, need_size: int):
+        taken = self.free_pages[:need_size]
+        remaining = self.free_pages[need_size:]
+        self.alloc_read.set()
+        assert self.finish_alloc.wait(timeout=1)
+        self.free_pages = remaining
+        self.handed_out.extend(taken)
+        return taken
 
 
 def test_two_threads_never_receive_the_same_slot() -> None:
@@ -85,3 +104,31 @@ def test_freeing_returns_the_slots() -> None:
 
     allocator.free(taken)
     assert allocator.available_size() == 8
+
+
+def test_comm_alloc_and_cached_alias_free_share_one_domain() -> None:
+    """The free must not interleave between alloc's free-list read and write."""
+
+    inner = _DeterministicAllocFreeRace()
+    allocator = LockedKVAllocator(inner)
+    comm_receiver = SimpleNamespace(allocator=allocator)
+    tree_cache = SimpleNamespace(token_to_kv_pool_allocator=allocator)
+    allocated = []
+
+    alloc_thread = threading.Thread(
+        target=lambda: allocated.extend(comm_receiver.allocator.alloc(1))
+    )
+    free_thread = threading.Thread(
+        target=lambda: tree_cache.token_to_kv_pool_allocator.free([2])
+    )
+    alloc_thread.start()
+    assert inner.alloc_read.wait(timeout=1)
+    free_thread.start()
+    assert free_thread.is_alive()
+    inner.finish_alloc.set()
+    alloc_thread.join(timeout=1)
+    free_thread.join(timeout=1)
+
+    assert allocated == [0]
+    assert sorted(inner.free_pages) == [1, 2]
+    assert len(inner.free_pages) == len(set(inner.free_pages))

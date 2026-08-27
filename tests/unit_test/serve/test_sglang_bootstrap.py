@@ -10,6 +10,7 @@ import pytest
 from sglang_omni.model_runner import _hidden_capture as hidden_capture_module
 from sglang_omni.model_runner import model_worker as model_worker_module
 from sglang_omni.scheduling import bootstrap, sglang_backend
+from sglang_omni.scheduling.pd_alloc_lock import LockedKVAllocator
 from tests.unit_test.fakes import FakeServerArgs
 
 
@@ -107,16 +108,18 @@ def test_create_sglang_infrastructure_runs_0515_initialization_phases(
             events.append("get_memory_pool")
             return "req_pool", "kv_pool"
 
+    consumers = {}
+
     class FakePrefillManager:
         def __init__(self, **kwargs) -> None:
-            del kwargs
+            consumers["prefill"] = kwargs["token_to_kv_pool_allocator"]
 
         def add_one_request(self, req) -> None:
             del req
 
     class FakeDecodeManager:
         def __init__(self, **kwargs) -> None:
-            del kwargs
+            consumers["decode"] = kwargs["token_to_kv_pool_allocator"]
 
     monkeypatch.setattr(model_worker_module, "ModelWorker", FakeWorker)
     monkeypatch.setattr(sglang_backend, "PrefillManager", FakePrefillManager)
@@ -148,6 +151,10 @@ def test_create_sglang_infrastructure_runs_0515_initialization_phases(
         "get_memory_pool",
     ]
     assert infrastructure[0].model_runner.model is FakeRunner.model
+    allocator = infrastructure[3]
+    assert isinstance(allocator, LockedKVAllocator)
+    assert infrastructure[1][1][2] is allocator
+    assert consumers == {"prefill": allocator, "decode": allocator}
 
 
 def test_cuda_graph_init_scopes_prefill_embedding_capture_flag() -> None:

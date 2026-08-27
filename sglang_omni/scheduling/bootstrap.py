@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Protocol
 
+from sglang_omni.scheduling.pd_alloc_lock import LockedKVAllocator
 from sglang_omni.utils.gpu_compat import (
     get_visible_gpu_sm_version,
     gpu_architecture_for_sm,
@@ -155,7 +156,11 @@ def create_sglang_infrastructure(
     if not defer_cuda_graph_capture:
         init_sglang_cuda_graphs(model_worker)
 
-    req_to_token_pool, token_to_kv_pool_allocator = model_worker.get_memory_pool()
+    req_to_token_pool, raw_token_to_kv_pool_allocator = model_worker.get_memory_pool()
+    # Install one synchronization domain before cache/managers/scheduler retain
+    # aliases. Non-PD schedulers pay only an uncontended lock; a Decode half
+    # needs the same object for comm-thread alloc and scheduler/cache free.
+    token_to_kv_pool_allocator = LockedKVAllocator(raw_token_to_kv_pool_allocator)
 
     tree_cache = create_tree_cache(
         server_args,

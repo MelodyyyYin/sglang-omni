@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Serialize KV allocation between the two threads a Decode half runs.
+"""Serialize every allocator mutation for one SGLang KV pool.
 
 ``TokenToKVPoolAllocator.alloc`` reads ``free_pages``, slices the leading
 entries, and writes the remainder back. Nothing in
@@ -16,8 +16,8 @@ Measured on two H200s with both calls recorded: one 3,000-request run logged
 21,309 slots handed to one thread while the other still held them, and the
 requests that received them returned empty completions.
 
-This wraps the allocator so both callers take one lock. Everything else is
-delegated untouched, so the allocator's own behaviour is unchanged.
+This wrapper must be installed before consumers retain aliases. Everything
+else is delegated untouched, so the allocator's own behaviour is unchanged.
 """
 
 from __future__ import annotations

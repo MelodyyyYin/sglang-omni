@@ -600,13 +600,11 @@ class OmniScheduler:
             self.batch_result_processor,
             disaggregation_mode=DisaggregationMode.DECODE,
         )
-        # Note (Audrey Zheng): from here the allocator has two callers on two
-        # threads -- this scheduler, and the comm event loop through the
-        # receiver below -- and its alloc is a read-modify-write with no lock
-        # of its own. Wrap it once, before either side is handed it.
-        self.token_to_kv_pool_allocator = LockedKVAllocator(
-            self.token_to_kv_pool_allocator
-        )
+        if not isinstance(self.token_to_kv_pool_allocator, LockedKVAllocator):
+            raise RuntimeError(
+                "PD Decode requires the KV allocator synchronization domain "
+                "to be installed before cache and scheduler construction"
+            )
         receiver = AllocatorKVReceiver(
             pool_id=self._pd_pool_id,
             token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
