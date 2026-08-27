@@ -8,6 +8,7 @@ from typing import Any, ClassVar
 from pydantic import Field
 
 from sglang_omni.config import (
+    CommConfig,
     EngineStageConfig,
     FactoryArgs,
     PipelineConfig,
@@ -98,6 +99,7 @@ def _image_encoder_stage(
         process=process,
         factory_path=f"{_PKG}.stages.create_image_encoder_executor",
         gpu=gpu,
+        comm=CommConfig(cuda_ipc_pool_size_mb=1024, cuda_ipc_preallocate_pool=True),
         **_encoder_join_edges(speech_enabled=speech_enabled),
     )
 
@@ -111,6 +113,7 @@ def _audio_encoder_stage(
         factory_path=f"{_PKG}.stages.create_audio_encoder_executor",
         factory=FactoryArgs(enable_layer_cuda_graph=True),
         gpu=gpu,
+        comm=CommConfig(cuda_ipc_pool_size_mb=1024, cuda_ipc_preallocate_pool=True),
         disable_direct_cuda_ipc_payload=True,
         **_encoder_join_edges(speech_enabled=speech_enabled),
     )
@@ -122,6 +125,7 @@ def _aggregate_stage(*, process: str, gpu: int) -> StageConfig:
         process=process,
         factory_path=f"{_PKG}.stages.create_aggregate_executor",
         gpu=gpu,
+        comm=CommConfig(cuda_ipc_pool_size_mb=1024, cuda_ipc_preallocate_pool=True),
         wait_for=["preprocessing", "image_encoder", "audio_encoder"],
         wait_for_fn=f"{_PKG}.request_builders.resolve_mm_aggregate_wait_sources",
         merge_fn=f"{_PKG}.merge.merge_for_thinker",

@@ -16,6 +16,10 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import Any, Literal, Sequence
 
+import torch
+
+from sglang_omni.comm.data_ref import TransportKind
+from sglang_omni.comm.router import CommRouter
 from sglang_omni.config.runtime import (
     apply_typed_stage_kwargs,
     resolve_factory_signature_args,
@@ -28,6 +32,7 @@ from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.tp_control import TPFollowerControlPlane, TPLeaderFanout
 from sglang_omni.platforms import current_platform, get_platform_spec
+from sglang_omni.relay.cuda_ipc import CudaIpcRelay
 from sglang_omni.utils.gpu_compat import (
     apply_gpu_compat_env_defaults,
     get_gpu_compat_env_defaults,
@@ -136,6 +141,35 @@ class StageLaunchConfig:
     @property
     def is_follower(self) -> bool:
         return self.role == "follower"
+
+
+@dataclass(frozen=True)
+class _CudaIpcRelayReservation:
+    pool_size_mb: int
+    slot_size_kb: int
+
+    @property
+    def pool_size_bytes(self) -> int:
+        slot_size = self.slot_size_kb * 1024
+        requested = self.pool_size_mb * 1024 * 1024
+        return (requested // slot_size) * slot_size
+
+    def build(self, spec: "StageLaunchConfig") -> CudaIpcRelay:
+        try:
+            return CudaIpcRelay(
+                engine_id=f"{spec.stage_name}_relay",
+                device=f"cuda:{spec.gpu_id}",
+                slot_size_mb=spec.comm_config.get("slot_size_mb", 512),
+                credits=spec.comm_config.get("credits", 2),
+                slot_size_kb=self.slot_size_kb,
+                pool_size_mb=self.pool_size_mb,
+                preallocate_pool=True,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"Stage {spec.stage_name} could not reserve its "
+                f"{self.pool_size_mb} MiB CUDA-IPC relay pool before readiness"
+            ) from exc
 
 
 @dataclass
@@ -601,6 +635,77 @@ def _reclaim_process_cuda_memory(
         )
 
 
+def _static_outbound_targets(spec: StageLaunchConfig) -> set[str]:
+    targets: set[str] = set(spec.stream_targets)
+    if isinstance(spec.next_stages, str):
+        targets.add(spec.next_stages)
+    elif isinstance(spec.next_stages, list):
+        targets.update(spec.next_stages)
+    return {spec.name_map.get(target, target) for target in targets}
+
+
+def _plan_cuda_ipc_relay_reservation(
+    spec: StageLaunchConfig,
+) -> _CudaIpcRelayReservation | None:
+    """Plan an explicit relay reservation only for declared CUDA payload routes."""
+
+    cfg = spec.comm_config
+    if not cfg.get("cuda_ipc_preallocate_pool", False):
+        return None
+    if spec.gpu_id is None:
+        raise ValueError(
+            f"Stage {spec.stage_name} requests a CUDA-IPC relay pool without a GPU"
+        )
+    pool_size_mb = cfg.get("cuda_ipc_pool_size_mb")
+    if pool_size_mb is None:
+        raise ValueError(
+            f"Stage {spec.stage_name} enables cuda_ipc_preallocate_pool but does "
+            "not declare cuda_ipc_pool_size_mb"
+        )
+    router = CommRouter(
+        stage_name=spec.stage_name,
+        gpu_id=spec.gpu_id,
+        placement_gpu_id=spec.placement_gpu_id,
+        same_process_targets=spec.same_process_targets,
+        gpu_stage_names=spec.gpu_stage_names,
+        stage_gpu_ids=spec.stage_gpu_ids,
+        remote_stage_names=spec.remote_stage_names,
+        comm_config=cfg,
+    )
+    if not any(
+        router.outbound(target) is TransportKind.CUDA_IPC
+        for target in _static_outbound_targets(spec)
+    ):
+        return None
+    return _CudaIpcRelayReservation(
+        pool_size_mb=int(pool_size_mb),
+        slot_size_kb=int(cfg.get("cuda_ipc_slot_size_kb", 64)),
+    )
+
+
+def _adjust_factory_budget_for_cuda_relay(
+    defaults: dict[str, Any],
+    reservation: _CudaIpcRelayReservation,
+    *,
+    total_gpu_memory_bytes: int,
+) -> dict[str, Any]:
+    """Charge the absolute relay reservation to this stage's memory fraction."""
+
+    adjusted = dict(defaults)
+    fraction = adjusted.get("total_gpu_memory_fraction")
+    if fraction is None:
+        return adjusted
+    relay_fraction = reservation.pool_size_bytes / int(total_gpu_memory_bytes)
+    remaining = float(fraction) - relay_fraction
+    if remaining <= 0:
+        raise RuntimeError(
+            f"CUDA-IPC relay reservation ({reservation.pool_size_mb} MiB) "
+            f"exceeds the stage GPU budget ({float(fraction):.6f})"
+        )
+    adjusted["total_gpu_memory_fraction"] = remaining
+    return adjusted
+
+
 def _construct_stage(
     spec: StageLaunchConfig,
     log: logging.Logger,
@@ -619,7 +724,26 @@ def _construct_stage(
         spec.tp_size,
     )
 
-    scheduler = _construct_scheduler(spec, gpu_id, log)
+    reservation = _plan_cuda_ipc_relay_reservation(spec)
+    prebuilt_relays: dict[TransportKind, Any] = {}
+
+    def reserve_cuda_relay() -> None:
+        if reservation is not None:
+            prebuilt_relays[TransportKind.CUDA_IPC] = reservation.build(spec)
+
+    try:
+        scheduler = _construct_scheduler(
+            spec,
+            gpu_id,
+            log,
+            cuda_relay_reservation=reservation,
+            before_factory=reserve_cuda_relay if reservation is not None else None,
+        )
+    except Exception:
+        for relay in prebuilt_relays.values():
+            with suppress(Exception):
+                relay.close()
+        raise
 
     def _target_list(targets: str | list[str] | None) -> list[str]:
         if targets is None:
@@ -782,6 +906,7 @@ def _construct_stage(
         control_plane=control_plane,
         input_handler=input_handler,
         comm_config=spec.comm_config,
+        prebuilt_relays=prebuilt_relays or None,
         scheduler=scheduler,
         project_payload=project_payload or None,
         stream_targets=spec.stream_targets or None,
@@ -809,6 +934,9 @@ def _construct_scheduler(
     spec: StageLaunchConfig,
     gpu_id: int | None,
     log: logging.Logger,
+    *,
+    cuda_relay_reservation: _CudaIpcRelayReservation | None = None,
+    before_factory: Any = None,
 ) -> Any:
     """Build a scheduler, serializing GPU factory work per visible device."""
 
@@ -819,10 +947,20 @@ def _construct_scheduler(
         spec.typed_kwargs,
         stage_name=spec.stage_name,
     )
+    defaults = dict(spec.factory_arg_defaults)
+    if cuda_relay_reservation is not None:
+        if gpu_id is None:
+            raise ValueError("CUDA relay reservation requires a GPU factory")
+        total_memory = int(torch.cuda.get_device_properties(int(gpu_id)).total_memory)
+        defaults = _adjust_factory_budget_for_cuda_relay(
+            defaults,
+            cuda_relay_reservation,
+            total_gpu_memory_bytes=total_memory,
+        )
     factory_args = resolve_factory_signature_args(
         factory,
         factory_args,
-        defaults=spec.factory_arg_defaults,
+        defaults=defaults,
         require_gpu_id=spec.require_factory_gpu_id,
         stage_name=spec.stage_name,
     )
@@ -831,6 +969,8 @@ def _construct_scheduler(
 
     with gpu_startup_lock(int(gpu_id)) as lock_path:
         log.info(f"Acquired GPU startup lock for stage {spec.stage_name}: {lock_path}")
+        if before_factory is not None:
+            before_factory()
         return factory(**factory_args)
 
 

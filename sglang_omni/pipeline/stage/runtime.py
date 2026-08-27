@@ -22,7 +22,7 @@ from typing import Any, Awaitable, Callable, Literal
 import torch
 
 from sglang_omni.comm import stage_io
-from sglang_omni.comm.data_ref import DataKind, DataRef
+from sglang_omni.comm.data_ref import DataKind, DataRef, TransportKind
 from sglang_omni.comm.engine import CommEngine
 from sglang_omni.comm.router import CommRouter
 from sglang_omni.pipeline.replicas import ReplicaTopology
@@ -97,6 +97,7 @@ class Stage:
         placement_gpu_id: int | None = None,
         input_handler: InputHandler | None = None,
         relay: Relay | None = None,
+        prebuilt_relays: dict[TransportKind, Relay] | None = None,
         comm_config: dict[str, Any] | None = None,
         scheduler: Any = None,
         project_payload: dict[str, Callable[[Any], Any]] | None = None,
@@ -147,6 +148,7 @@ class Stage:
                 remote_stage_names=remote_stage_names or set(),
                 comm_config=comm_config or {},
                 injected_relay=relay,
+                prebuilt_relays=prebuilt_relays,
             ),
             tp_rank=tp_rank,
             tp_size=tp_size,

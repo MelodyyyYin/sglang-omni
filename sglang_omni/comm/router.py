@@ -38,6 +38,7 @@ class CommRouter:
         remote_stage_names: set[str] | None = None,
         comm_config: dict[str, Any] | None = None,
         injected_relay: Relay | None = None,
+        prebuilt_relays: dict[TransportKind, Relay] | None = None,
     ) -> None:
         self.stage_name = stage_name
         self.gpu_id = gpu_id
@@ -59,7 +60,7 @@ class CommRouter:
         )
         self.comm_config = dict(comm_config or {})
         self.injected_relay = injected_relay
-        self._relays: dict[TransportKind, Relay] = {}
+        self._relays: dict[TransportKind, Relay] = dict(prebuilt_relays or {})
         self._traced_transports: dict[tuple[str, str], str] = {}
         self._cuda_ipc_peer_cache: dict[str, bool] = {}
 
@@ -320,6 +321,7 @@ class CommRouter:
                 credits=credits,
                 slot_size_kb=cuda_ipc_slot_size_kb,
                 pool_size_mb=cuda_ipc_pool_size_mb,
+                preallocate_pool=bool(cfg.get("cuda_ipc_preallocate_pool", False)),
             )
         if kind is TransportKind.MOONCAKE:
             if self.gpu_id is not None and not current_platform.is_cuda_alike():

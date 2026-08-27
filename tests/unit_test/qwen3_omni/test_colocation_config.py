@@ -5,6 +5,7 @@ import pytest
 
 from sglang_omni.config import build_stage_placement_plan, resolve_stage_factory_args
 from sglang_omni.models.qwen3_omni.config import (
+    Qwen3OmniPipelineConfig,
     Qwen3OmniSpeechColocatedPipelineConfig,
     Qwen3OmniSpeechPipelineConfig,
     Variants,
@@ -115,6 +116,30 @@ def test_audio_encoder_scopes_pooled_payload_transport(config_cls) -> None:
     assert audio_extra["enable_layer_cuda_graph"] is True
     image_extra = _stage(config, "image_encoder").factory.model_extra or {}
     assert "enable_layer_cuda_graph" not in image_extra
+
+
+@pytest.mark.parametrize(
+    "config_cls",
+    [Qwen3OmniSpeechPipelineConfig, Qwen3OmniSpeechColocatedPipelineConfig],
+)
+def test_multimodal_cuda_payload_routes_reserve_relay_memory(config_cls) -> None:
+    config = config_cls(model_path="dummy")
+
+    for stage_name in ("image_encoder", "audio_encoder"):
+        stage = _stage(config, stage_name)
+        assert stage.comm.cuda_ipc_preallocate_pool is True
+        assert stage.comm.cuda_ipc_pool_size_mb == 1024
+
+    thinker_comm = _stage(config, "thinker").comm
+    assert thinker_comm is None or thinker_comm.cuda_ipc_preallocate_pool is False
+
+
+def test_multimodal_aggregate_reserves_relay_memory() -> None:
+    config = Qwen3OmniPipelineConfig(model_path="dummy")
+    aggregate = _stage(config, "mm_aggregate")
+
+    assert aggregate.comm.cuda_ipc_preallocate_pool is True
+    assert aggregate.comm.cuda_ipc_pool_size_mb == 1024
 
 
 def test_colocated_config_passes_with_explicit_budgets_without_ar_mem_fraction() -> (

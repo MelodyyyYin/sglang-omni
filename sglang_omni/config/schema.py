@@ -53,6 +53,7 @@ class CommConfig(BaseModel):
     credits: int = 2
     cuda_ipc_slot_size_kb: int = 64
     cuda_ipc_pool_size_mb: int | None = None
+    cuda_ipc_preallocate_pool: bool = False
     mooncake_protocol: str = "rdma"
     mooncake_hostname: str | None = None
     mooncake_device_name: str = ""
