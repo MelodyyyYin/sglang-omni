@@ -3,18 +3,41 @@
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import pytest
 
 from sglang_omni.config import expand_pd_stages
 from sglang_omni.config.pd_capability import apply_pd_required_server_args
-from sglang_omni.config.schema import PDConfig, PDStagePlacement, PipelineConfig
-from tests.unit_test.pipeline.helpers import stage
+from sglang_omni.config.schema import (
+    PDConfig,
+    PDStagePlacement,
+    PipelineConfig,
+    StageConfig,
+)
+from tests.unit_test.pipeline.helpers import FACTORY
+
+
+class _EngineStageConfig(StageConfig):
+    """A stage type that may carry an ``engine`` block, as a real one does."""
+
+    engine_stage: ClassVar[bool] = True
+
+
+def _engine_stage(name: str, **kwargs):
+    kwargs.setdefault("factory_path", FACTORY)
+    kwargs.setdefault("process", "pipeline")
+    return _EngineStageConfig(name=name, **kwargs)
 
 
 def _halves(pd: PDConfig, **stage_kwargs):
     config = PipelineConfig(
         model_path="dummy",
-        stages=[stage("thinker", terminal=True, pd_disaggregation=pd, **stage_kwargs)],
+        stages=[
+            _engine_stage(
+                "thinker", terminal=True, pd_disaggregation=pd, **stage_kwargs
+            )
+        ],
     )
     expansion = expand_pd_stages(
         list(config.stages), entry_stage=config.resolved_entry_stage

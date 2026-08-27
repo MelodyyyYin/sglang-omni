@@ -90,6 +90,7 @@ def test_a_gpu_list_must_still_match_tp_size() -> None:
                     "thinker",
                     terminal=True,
                     tp_size=2,
+                    gpu=[0, 1],
                     pd_disaggregation=PDConfig(
                         prefill=PDStagePlacement(gpu=[0]),
                         decode=PDStagePlacement(gpu=[1, 2]),
