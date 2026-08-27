@@ -159,6 +159,12 @@ class Stage:
                 decode_pending_limit=getattr(
                     pd_execution, "decode_pending_limit", None
                 ),
+                max_inflight_handoffs=getattr(
+                    pd_execution, "max_inflight_handoffs", None
+                ),
+                max_inflight_handoff_tokens=getattr(
+                    pd_execution, "max_inflight_handoff_tokens", None
+                ),
             )
             self._comm.register_kv_pool(pool)
             if receiver is not None:
@@ -1064,46 +1070,21 @@ class Stage:
                 except _queue_mod.Empty:
                     break
 
-    def _pd_handoff_gate(self) -> Any:
-        """Return the semaphore bounding handoffs in flight, or None if unset.
-
-        Each handoff holds that request's prompt KV on the Prefill card until
-        Decode acknowledges it, through ``SGLangKVPageLease``. Without this the
-        count lands on Prefill's ``max_running_requests``, which was chosen to
-        size batches rather than to bound leases: measured at 256 offered, the
-        Prefill half held 64 handoffs in flight, and at a 6127-token image
-        prompt that is 392,128 tokens of lease against a 344,253-token pool.
-        """
-        gate = self.__dict__.get("_pd_handoff_semaphore")
-        if gate is not None:
-            return gate
-        limit = getattr(self.pd_execution, "max_inflight_handoffs", None)
-        if not limit:
-            return None
-        gate = asyncio.Semaphore(int(limit))
-        self._pd_handoff_semaphore = gate
-        return gate
-
     def _launch_pd_handoff(self, request_id: str, handoff: Any) -> None:
         # Note (Yue Yin): ACK latency must not stop this stage from draining
         # scheduler output for unrelated requests.
         task = asyncio.create_task(self._send_pd_handoff(request_id, handoff))
         self._receive_tasks.add(task)
         task.add_done_callback(self._receive_tasks.discard)
+        # The task may be cancelled before its coroutine executes. The lease
+        # release is idempotent with CommEngine ACK/failure/shutdown cleanup.
+        task.add_done_callback(lambda _done: handoff.lease.release())
         task.add_done_callback(
             lambda done: self._on_background_task_done(done, f"PD handoff {request_id}")
         )
 
     async def _send_pd_handoff(self, request_id: str, handoff: Any) -> None:
-        gate = self._pd_handoff_gate()
-        if gate is None:
-            await self._send_pd_handoff_now(request_id, handoff)
-            return
-        # Note (Audrey Zheng): the wait happens inside the task, so the stage
-        # keeps draining scheduler output for unrelated requests while a
-        # handoff queues for a slot.
-        async with gate:
-            await self._send_pd_handoff_now(request_id, handoff)
+        await self._send_pd_handoff_now(request_id, handoff)
 
     async def _send_pd_handoff_now(self, request_id: str, handoff: Any) -> None:
         metadata = PrefillContinuationProducer(tp_size=1).prepare_rank_metadata(

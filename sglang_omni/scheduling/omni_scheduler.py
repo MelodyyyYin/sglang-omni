@@ -67,6 +67,7 @@ from sglang_omni.scheduling.pd_continuation import (
     ContinuationAwareKVReceiver,
     PDHandoffController,
 )
+from sglang_omni.scheduling.pd_handoff_capacity import HandoffCapacity
 from sglang_omni.scheduling.pd_kv_adapter import (
     AllocatorKVReceiver,
     SGLangKVPageLease,
@@ -550,6 +551,8 @@ class OmniScheduler:
         self._pd_pool_id: str | None = None
         self._pd_ready_queue = _queue_mod.Queue()
         self._pd_deferred_admission: PDDecodeAdmission | None = None
+        self._pd_handoff_capacity_waiting: list[Any] = []
+        self._pd_handoff_capacity: HandoffCapacity | None = None
         self._pd_admission_lock = threading.Lock()
         self._pd_receiver: AllocatorKVReceiver | None = None
         self._pd_controller: PDHandoffController | None = None
@@ -562,6 +565,8 @@ class OmniScheduler:
         partner: str,
         decode_pending_limit: int | None = None,
         peer_pending_fn: Any = None,
+        max_inflight_handoffs: int | None = None,
+        max_inflight_handoff_tokens: int | None = None,
     ) -> tuple[Any, Any | None]:
         if self.tp_size != 1:
             raise NotImplementedError("PR3 PD runtime supports tp_size == 1 only")
@@ -578,6 +583,14 @@ class OmniScheduler:
         # bound at all on what Decode accumulates.
         self._pd_decode_pending_limit = decode_pending_limit
         self._pd_peer_pending_fn = peer_pending_fn
+        if role == "prefill" and max_inflight_handoffs:
+            token_limit = max_inflight_handoff_tokens
+            if token_limit is None:
+                token_limit = int(self.token_to_kv_pool_allocator.available_size())
+            self._pd_handoff_capacity = HandoffCapacity(
+                max_requests=int(max_inflight_handoffs),
+                max_tokens=int(token_limit),
+            )
         self._warn_if_decode_queue_unbounded(stage_name, role)
         self._pd_pool_id = f"{stage_name}:kv"
         raw_pool = self.token_to_kv_pool_allocator.get_kvcache()
@@ -707,7 +720,11 @@ class OmniScheduler:
     ) -> None:
         retained = []
         for req in batch.reqs:
-            if req.finished() or getattr(req, "_pd_handoff_started", False):
+            source_lease = None
+            if req.finished():
+                self._release_pd_handoff_capacity(req)
+                continue
+            if getattr(req, "_pd_handoff_started", False):
                 continue
             if id(req) not in sampled_request_ids or req.inflight_middle_chunks > 0:
                 # Note (Yue Yin): Upstream decrements middle-chunk accounting
@@ -734,6 +751,18 @@ class OmniScheduler:
                     seq_len=len(req.origin_input_ids),
                     page_size=self.page_size,
                 )
+                capacity_lease = getattr(req, "_pd_handoff_capacity_lease", None)
+                if (
+                    self.__dict__.get("_pd_handoff_capacity") is not None
+                    and capacity_lease is None
+                ):
+                    raise RuntimeError("PD handoff request has no capacity lease")
+                req._pd_handoff_capacity_lease = None
+                source_lease = SGLangKVPageLease(
+                    req,
+                    self.tree_cache,
+                    capacity_lease=capacity_lease,
+                )
                 self.outbox.put(
                     OutgoingMessage(
                         request_id=req.rid,
@@ -744,12 +773,15 @@ class OmniScheduler:
                             target_pool_id=f"{self._pd_partner}:kv",
                             source_page_indices=pages,
                             to_stage=self._pd_partner,
-                            lease=SGLangKVPageLease(req, self.tree_cache),
+                            lease=source_lease,
                         ),
                     )
                 )
             except Exception as exc:
-                self._release_request_kv_cache(req)
+                if source_lease is not None:
+                    source_lease.release()
+                else:
+                    self._release_request_kv_cache(req)
                 self._emit_request_error(req.rid, exc)
         batch.reqs = retained
 
@@ -1199,6 +1231,7 @@ class OmniScheduler:
     def _queued_admission_count(self) -> int:
         return (
             len(self.waiting_queue)
+            + len(self.__dict__.get("_pd_handoff_capacity_waiting", ()))
             + len(self._pending_request_builds)
             + len(self._pending_request_admissions)
             + len(self._backlogged_request_build_payloads)
@@ -1455,6 +1488,26 @@ class OmniScheduler:
             req._coalesce_enqueue_t = time.perf_counter()
             req._omni_terminal_claimed = False
             req._omni_data = req_data
+            capacity = self.__dict__.get("_pd_handoff_capacity")
+            if capacity is None:
+                self.waiting_queue.append(req)
+                return
+            weight = len(req.origin_input_ids)
+            if not capacity.can_ever_fit(weight):
+                self._emit_request_error(
+                    req_id,
+                    ValueError(
+                        f"request prompt has {weight} tokens, exceeding "
+                        f"max_inflight_handoff_tokens={capacity.max_tokens}"
+                    ),
+                )
+                self.abort(req_id)
+                return
+            permit = capacity.try_acquire(weight)
+            if permit is None:
+                self._pd_handoff_capacity_waiting.append(req)
+                return
+            req._pd_handoff_capacity_lease = permit
             self.waiting_queue.append(req)
 
         if request_admission_lock_held:
@@ -1571,6 +1624,7 @@ class OmniScheduler:
         own that state, so feed it in and write the (possibly rebuilt) running
         batch back before handing the runnable batch to the caller.
         """
+        self._drain_pd_handoff_capacity_waiters()
         self._drain_pd_admissions()
         pd_role = self.__dict__.get("_pd_role")
         if (
@@ -2102,6 +2156,7 @@ class OmniScheduler:
             try:
                 self._shutdown_request_build_executor()
             finally:
+                self._discard_pd_handoff_capacity()
                 self._discard_pending_request_admissions()
                 self._shutdown_resources()
 
@@ -2110,6 +2165,8 @@ class OmniScheduler:
 
     def stop(self) -> None:
         self._running = False
+        if self.__dict__.get("_scheduler_thread_id") is None:
+            self._discard_pd_handoff_capacity()
         self._discard_pending_request_admissions()
         self._shutdown_resources()
 
@@ -2169,10 +2226,18 @@ class OmniScheduler:
             waiting_queue = []
             for req in self.waiting_queue:
                 if req.rid == request_id:
+                    self._release_pd_handoff_capacity(req)
                     _detach_request_data(req)
                 else:
                     waiting_queue.append(req)
             self.waiting_queue = waiting_queue
+            capacity_waiting = []
+            for req in self.__dict__.get("_pd_handoff_capacity_waiting", ()):
+                if req.rid == request_id:
+                    _detach_request_data(req)
+                else:
+                    capacity_waiting.append(req)
+            self._pd_handoff_capacity_waiting = capacity_waiting
         if not running_abort:
             self._run_abort_callback(request_id)
         self._pending_stream_ingress.pop(request_id, None)
@@ -2678,9 +2743,62 @@ class OmniScheduler:
                 self._release_request_kv_cache(req)
 
     def _release_request_kv_cache(self, req: Any) -> None:
-        if req.req_pool_idx is None and req.mamba_pool_idx is None:
+        try:
+            if req.req_pool_idx is None and req.mamba_pool_idx is None:
+                return
+            release_kv_cache(req, self.tree_cache)
+        finally:
+            self._release_pd_handoff_capacity(req)
+
+    @staticmethod
+    def _release_pd_handoff_capacity(req: Any) -> None:
+        permit = getattr(req, "_pd_handoff_capacity_lease", None)
+        if permit is None:
             return
-        release_kv_cache(req, self.tree_cache)
+        req._pd_handoff_capacity_lease = None
+        permit.release()
+
+    def _drain_pd_handoff_capacity_waiters(self) -> None:
+        capacity = self.__dict__.get("_pd_handoff_capacity")
+        waiting = self.__dict__.get("_pd_handoff_capacity_waiting")
+        if capacity is None or not waiting:
+            return
+        while waiting:
+            req = waiting[0]
+            if req.rid in self._aborted_request_ids:
+                waiting.pop(0)
+                continue
+            permit = capacity.try_acquire(len(req.origin_input_ids))
+            if permit is None:
+                return
+            waiting.pop(0)
+            req._pd_handoff_capacity_lease = permit
+            self.waiting_queue.append(req)
+
+    def _discard_pd_handoff_capacity(self) -> None:
+        seen: set[int] = set()
+        async_pending = self.__dict__.get("_async_pending")
+        async_pending_batch = async_pending[0] if async_pending is not None else None
+        batches = (
+            self.__dict__.get("running_batch"),
+            self.__dict__.get("cur_batch"),
+            self.__dict__.get("last_batch"),
+            async_pending_batch,
+        )
+        for req in list(self.__dict__.get("waiting_queue", ())) + list(
+            self.__dict__.get("_pd_handoff_capacity_waiting", ())
+        ):
+            if id(req) not in seen:
+                seen.add(id(req))
+                self._release_pd_handoff_capacity(req)
+        for batch in batches:
+            if batch is None:
+                continue
+            for req in batch.reqs:
+                if id(req) not in seen:
+                    seen.add(id(req))
+                    self._release_pd_handoff_capacity(req)
+        self.__dict__.get("_pd_handoff_capacity_waiting", []).clear()
 
     def _event_loop_normal(self) -> None:
         # Note (Chenyang): yield the GIL when idle so co-located non-AR stages

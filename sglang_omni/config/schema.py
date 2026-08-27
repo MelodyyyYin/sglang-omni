@@ -145,12 +145,13 @@ class PDConfig(BaseModel):
 
     prefill: PDStagePlacement = Field(default_factory=PDStagePlacement)
     decode: PDStagePlacement = Field(default_factory=PDStagePlacement)
-    # Note (Audrey Zheng): how many handoffs the Prefill half may have in
-    # flight. Each one holds that request's prompt KV on the Prefill card
-    # until Decode acknowledges it, so this bounds how much of the Prefill
-    # pool sits in leases. Unset leaves the count where it lands today, which
-    # is Prefill's max_running_requests.
+    # Reserve before Prefill admission, then carry the permit with the source
+    # KV lease until Decode acknowledges it. This bounds ownership rather than
+    # only the async send coroutines.
     max_inflight_handoffs: int | None = Field(default=None, gt=0)
+    # Bound the prompt KV protected by those handoffs by actual tokens, not
+    # only request count. When omitted, runtime uses the Prefill KV-pool size.
+    max_inflight_handoff_tokens: int | None = Field(default=None, gt=0)
     # Note (Audrey Zheng): how much work Decode may have pending before
     # Prefill stops producing more. Unset leaves Prefill unthrottled, which
     # is how overload currently shows up as latency rather than as rejection.
@@ -170,6 +171,7 @@ class PDExecution(BaseModel):
     role: Literal["prefill", "decode"]
     partner: str
     max_inflight_handoffs: int | None = None
+    max_inflight_handoff_tokens: int | None = None
     decode_pending_limit: int | None = None
 
 
