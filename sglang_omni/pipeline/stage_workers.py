@@ -17,7 +17,10 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import Any, Literal, Sequence
 
-from sglang_omni.config.runtime import resolve_factory_signature_args
+from sglang_omni.config.runtime import (
+    apply_typed_stage_kwargs,
+    resolve_factory_signature_args,
+)
 from sglang_omni.config.schema import PDExecution
 from sglang_omni.pipeline.control_plane import StageControlPlane
 from sglang_omni.pipeline.local_dispatch import LocalStageDispatcher
@@ -60,8 +63,13 @@ class StageLaunchConfig:
 
     # Factory
     factory: str = ""
-    factory_args: dict[str, Any] = field(default_factory=dict)
+    # Constructor kwargs from PipelineConfig.stage_factory_kwargs (plus TP
+    # wiring). Typed group kwargs are overlaid against the factory's
+    # signature in the child, which imports the factory anyway.
+    factory_kwargs: dict[str, Any] = field(default_factory=dict)
+    typed_kwargs: dict[str, Any] = field(default_factory=dict)
     factory_arg_defaults: dict[str, Any] = field(default_factory=dict)
+    require_factory_gpu_id: bool = False
     env_defaults: dict[str, str] = field(default_factory=dict)
 
     # Routing: static next stage(s)
@@ -100,12 +108,15 @@ class StageLaunchConfig:
     # Same-process full payload wiring
     same_process_targets: set[str] = field(default_factory=set)
 
-    # Fusion name map
+    # Compiler identity maps
     name_map: dict[str, str] = field(default_factory=dict)
     source_name_map: dict[str, str] = field(default_factory=dict)
 
     # Note (Yue Yin): Keep compiler metadata out of user factory kwargs.
     pd_execution: PDExecution | None = None
+
+    # Replica topology (logical stage name -> instance names)
+    replica_topology: dict[str, list[str]] = field(default_factory=dict)
 
     # TP internal control (leader -> followers)
     follower_work_queues: list[Any] = field(default_factory=list)
@@ -624,9 +635,9 @@ def _construct_stage(
         )
 
     def _map_target_list(targets: str | list[str] | None) -> list[str]:
-        return [spec.name_map.get(t, t) for t in _target_list(targets)]
+        return [spec.name_map.get(target, target) for target in _target_list(targets)]
 
-    def _map_wait_source_list(sources: str | Iterable[str] | None) -> list[Any] | None:
+    def _wait_source_list(sources: str | Iterable[str] | None) -> list[Any] | None:
         if sources is None:
             return None
         if isinstance(sources, str):
@@ -690,7 +701,7 @@ def _construct_stage(
             mapped = spec.name_map.get(target, target)
             get_next = lambda request_id, output, _t=mapped: _t
         elif isinstance(target, list):
-            mapped = [spec.name_map.get(t, t) for t in target]
+            mapped = [spec.name_map.get(item, item) for item in target]
             get_next = lambda request_id, output, _t=mapped: _t
         else:
             get_next = lambda request_id, output: None
@@ -719,7 +730,7 @@ def _construct_stage(
 
             def expected_sources_fn(request_id, from_stage, data, _fn=wait_for_fn):
                 resolved_sources = _fn(request_id, from_stage, data)
-                return _map_wait_source_list(resolved_sources)
+                return _wait_source_list(resolved_sources)
 
         input_handler = AggregatedInput(
             sources=sources,
@@ -786,6 +797,7 @@ def _construct_stage(
         tp_fanout=tp_fanout,
         is_terminal=spec.is_terminal,
         pd_execution=spec.pd_execution,
+        replica_topology=spec.replica_topology or None,
     )
 
     if spec.is_stream_receiver:
@@ -897,6 +909,12 @@ def _construct_scheduler(
     """Build a scheduler, serializing GPU factory work per visible device."""
 
     factory = import_string(spec.factory)
+    factory_args = apply_typed_stage_kwargs(
+        factory,
+        spec.factory_kwargs,
+        spec.typed_kwargs,
+        stage_name=spec.stage_name,
+    )
     defaults = dict(spec.factory_arg_defaults)
     plan = _weight_sharing_plan(spec, gpu_id)
     if plan is not None:
@@ -907,8 +925,10 @@ def _construct_scheduler(
         defaults["weight_sharing_plan"] = plan
     factory_args = resolve_factory_signature_args(
         factory,
-        spec.factory_args,
+        factory_args,
         defaults=defaults,
+        require_gpu_id=spec.require_factory_gpu_id,
+        stage_name=spec.stage_name,
     )
     if gpu_id is None:
         return factory(**factory_args)
