@@ -19,6 +19,7 @@ from sglang_omni.model_runner.weight_rendezvous import (
     publish_parameter_handles,
     read_parameter_handles,
     rendezvous_dir_from_endpoint,
+    wait_for_parameter_handles,
 )
 
 
@@ -89,3 +90,24 @@ def test_handles_published_for_another_gpu_are_declined(tmp_path: Path) -> None:
         read_parameter_handles(rendezvous_dir=tmp_path, stage_name="prefill", gpu_id=1)
         is None
     )
+
+
+def test_a_peer_on_another_gpu_stops_the_wait_at_once(tmp_path: Path) -> None:
+    """No amount of waiting turns another card's handles into usable ones."""
+    import time
+
+    publish_parameter_handles(
+        {"w": ("rebuild", ())},
+        rendezvous_dir=tmp_path,
+        stage_name="prefill",
+        gpu_id=0,
+        weight_bytes=1,
+    )
+    started = time.monotonic()
+
+    result = wait_for_parameter_handles(
+        rendezvous_dir=tmp_path, stage_name="prefill", gpu_id=1, timeout_s=30.0
+    )
+
+    assert result is None
+    assert time.monotonic() - started < 1.0

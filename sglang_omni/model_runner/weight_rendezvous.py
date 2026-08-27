@@ -157,22 +157,25 @@ def wait_for_parameter_handles(
     gpu_id: int,
     timeout_s: float,
 ) -> dict[str, Any] | None:
-    """Block until *stage_name* publishes, or give up at the deadline.
+    """Block until *stage_name* publishes, then return its handles or None.
+
+    The wait is for the file to appear, not for handles this half can use.
+    A peer on another device publishes handles that name memory on that
+    device, and no amount of waiting changes that, so this returns as soon as
+    it can decide. Treating a device mismatch as "not yet" made a cross-GPU
+    pair wait out the whole timeout and fail to start.
 
     Only safe to call before taking ``gpu_startup_lock``. Inside the lock this
     would hold it against the very half being waited for, which is why
     :func:`read_parameter_handles` does not wait.
 
-    Returning None at the deadline lets the caller load its own weights rather
-    than fail the stage, which is the right trade when the peer is absent.
+    Returning None lets the caller load its own weights rather than fail the
+    stage, which is the right trade both when the peer is absent and when it
+    is on another card.
     """
+    path = Path(rendezvous_dir) / _SUBDIR / f"{stage_name}.pkl"
     deadline = time.monotonic() + timeout_s
-    while True:
-        handles = read_parameter_handles(
-            rendezvous_dir=rendezvous_dir, stage_name=stage_name, gpu_id=gpu_id
-        )
-        if handles is not None:
-            return handles
+    while not path.exists():
         if time.monotonic() >= deadline:
             logger.warning(
                 "%s published no parameter handles within %.0fs; "
@@ -182,3 +185,6 @@ def wait_for_parameter_handles(
             )
             return None
         time.sleep(_POLL_INTERVAL_S)
+    return read_parameter_handles(
+        rendezvous_dir=rendezvous_dir, stage_name=stage_name, gpu_id=gpu_id
+    )
