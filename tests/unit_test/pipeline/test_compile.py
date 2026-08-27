@@ -6,7 +6,6 @@ from typing import Any
 
 import pytest
 
-import sglang_omni.platforms as platforms
 from sglang_omni.config.runtime import resolve_factory_signature_args
 from sglang_omni.config.schema import (
     EndpointsConfig,
@@ -591,9 +590,7 @@ def test_pd_decode_launches_and_shares_abort_endpoint_without_inbound_edge(
 
 
 def test_pd_non_capable_factory_is_rejected_before_launch(tmp_path) -> None:
-    config = _pd_pipeline(
-        tmp_path, factory_path=fake_factory_path("dummy_factory")
-    )
+    config = _pd_pipeline(tmp_path, factory_path=fake_factory_path("dummy_factory"))
     with pytest.raises(ValueError, match="not PD-capable"):
         prepare_pipeline_runtime(config)
 

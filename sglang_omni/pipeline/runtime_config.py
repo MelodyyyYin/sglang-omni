@@ -144,9 +144,7 @@ def prepare_pipeline_runtime(
 
     identity_map = {stage.name: stage.name for stage in source_stages}
     name_map = _compose_name_map(identity_map, expansion.routing_map, stages_cfg)
-    source_name_map = _compose_name_map(
-        identity_map, expansion.output_map, stages_cfg
-    )
+    source_name_map = _compose_name_map(identity_map, expansion.output_map, stages_cfg)
     runtime_dir = ipc_runtime_dir
     if runtime_dir is None:
         runtime_dir = create_ipc_runtime_dir(config, stages=stages_cfg)
