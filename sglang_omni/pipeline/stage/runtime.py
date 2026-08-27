@@ -159,10 +159,21 @@ class Stage:
                 decode_pending_limit=getattr(
                     pd_execution, "decode_pending_limit", None
                 ),
+                peer_capacity_fn=(
+                    (lambda: self._comm.peer_capacity(pd_execution.partner))
+                    if pd_execution.role == "prefill"
+                    else None
+                ),
             )
             self._comm.register_kv_pool(pool)
             if receiver is not None:
                 self._comm.register_kv_receiver(pool.pool_id, receiver)
+                limit = getattr(pd_execution, "decode_pending_limit", None)
+                if limit:
+                    self._comm.configure_capacity_updates(
+                        to_stage=pd_execution.partner,
+                        limit=int(limit),
+                    )
 
         self._running = False
         self._aborted: set[str] = set()

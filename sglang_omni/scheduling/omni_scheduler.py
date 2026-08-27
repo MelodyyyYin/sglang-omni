@@ -562,6 +562,7 @@ class OmniScheduler:
         partner: str,
         decode_pending_limit: int | None = None,
         peer_pending_fn: Any = None,
+        peer_capacity_fn: Any = None,
     ) -> tuple[Any, Any | None]:
         if self.tp_size != 1:
             raise NotImplementedError("PR3 PD runtime supports tp_size == 1 only")
@@ -578,6 +579,7 @@ class OmniScheduler:
         # bound at all on what Decode accumulates.
         self._pd_decode_pending_limit = decode_pending_limit
         self._pd_peer_pending_fn = peer_pending_fn
+        self._pd_peer_capacity_fn = peer_capacity_fn
         self._warn_if_decode_queue_unbounded(stage_name, role)
         self._pd_pool_id = f"{stage_name}:kv"
         raw_pool = self.token_to_kv_pool_allocator.get_kvcache()
@@ -1678,6 +1680,25 @@ class OmniScheduler:
             logger.debug("peer pending read failed", exc_info=True)
             return None
 
+    def _pd_peer_capacity(self) -> int | None:
+        reader = self.__dict__.get("_pd_peer_capacity_fn")
+        if reader is None:
+            return None
+        try:
+            value = reader()
+        except Exception:
+            logger.debug("peer capacity read failed", exc_info=True)
+            return None
+        return None if value is None else int(value)
+
+    def _pd_decode_has_capacity(self) -> bool:
+        """Fail closed until Decode independently publishes usable capacity."""
+
+        if not self.__dict__.get("_pd_decode_pending_limit"):
+            return True
+        capacity = self._pd_peer_capacity()
+        return capacity is not None and capacity > 0
+
     def get_new_batch_prefill(self, running_batch):
         # Note (Audrey Zheng): stop admitting when the Decode half is already
         # holding more than it can work through. Colocated throttles admission
@@ -1694,10 +1715,10 @@ class OmniScheduler:
         # costs nothing.
         limit = self.__dict__.get("_pd_decode_pending_limit")
         if limit and self.__dict__.get("_pd_role") == "prefill":
-            pending = self._pd_peer_pending()
-            if pending is not None and pending >= limit:
+            if not self._pd_decode_has_capacity():
+                pending = self._pd_peer_pending()
                 logger.debug(
-                    "holding prefill admission: decode holds %d >= %d",
+                    "holding prefill admission: decode holds %s, limit=%d, no credit",
                     pending,
                     limit,
                 )

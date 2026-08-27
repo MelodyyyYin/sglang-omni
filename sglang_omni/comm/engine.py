@@ -34,6 +34,7 @@ from sglang_omni.profiler.comm_trace import elapsed_ms as _comm_elapsed_ms
 from sglang_omni.profiler.comm_trace import emit as _comm_trace
 from sglang_omni.profiler.comm_trace import now_ns as _comm_now_ns
 from sglang_omni.proto import (
+    CapacityUpdateMessage,
     DataAckMessage,
     DataReadyMessage,
     KVTransferPrepareMessage,
@@ -129,6 +130,13 @@ class CommEngine:
         self._kv_receivers: dict[str, KVReceiver] = {}
         # Note (Audrey Zheng): the newest depth each peer reported on an ack.
         self._peer_pending: dict[str, int] = {}
+        self._peer_capacity: dict[str, tuple[str, int, int]] = {}
+        self._capacity_target: str | None = None
+        self._capacity_limit: int | None = None
+        self._capacity_generation = uuid4().hex
+        self._capacity_sequence = 0
+        self._capacity_interval_s = 0.05
+        self._capacity_task: asyncio.Task[None] | None = None
         self._kv_ready: dict[str, asyncio.Future[KVTransferReadyMessage]] = {}
         self._outbound_kv_requests: dict[str, str] = {}
         self._inbound_kv: dict[str, _InboundKVTransfer] = {}
@@ -158,6 +166,12 @@ class CommEngine:
             task,
             f"rank endpoint {self.router.stage_name}_rank{self.tp_rank}",
         )
+        if self._capacity_target is not None:
+            capacity_task = asyncio.create_task(self._run_capacity_updates())
+            self._capacity_task = capacity_task
+            self._track_task(
+                capacity_task, f"capacity updates from {self.router.stage_name}"
+            )
 
     def outbound(self, target: str) -> TransportKind:
         return self.router.outbound(target)
@@ -374,6 +388,92 @@ class CommEngine:
         """Newest depth *stage* reported, or None if it has never reported one."""
         return self._peer_pending.get(stage)
 
+    def configure_capacity_updates(
+        self,
+        *,
+        to_stage: str,
+        limit: int,
+        interval_s: float = 0.05,
+    ) -> None:
+        """Publish hard Decode capacity independently from KV transfer ACKs."""
+
+        if limit <= 0:
+            raise ValueError("capacity limit must be positive")
+        if interval_s <= 0:
+            raise ValueError("capacity update interval must be positive")
+        if to_stage not in self.rank_endpoints:
+            raise KeyError(f"capacity target {to_stage!r} has no rank endpoint")
+        self._capacity_target = to_stage
+        self._capacity_limit = int(limit)
+        self._capacity_interval_s = float(interval_s)
+
+    async def _run_capacity_updates(self) -> None:
+        """Send depth changes and heartbeats even when no handoff is in flight."""
+
+        last_value: tuple[int, int] | None = None
+        last_sent_at = float("-inf")
+        loop = asyncio.get_running_loop()
+        try:
+            while not self._closed:
+                depth = self._local_pending_depth()
+                target = self._capacity_target
+                limit = self._capacity_limit
+                now = loop.time()
+                if depth is not None and target is not None and limit is not None:
+                    pending = max(0, int(depth))
+                    available = max(0, limit - pending)
+                    value = (pending, available)
+                    if value != last_value or now - last_sent_at >= 1.0:
+                        self._capacity_sequence += 1
+                        await send_to_endpoint(
+                            self._rank_send_sockets,
+                            self.rank_endpoints[target][self.tp_rank],
+                            CapacityUpdateMessage(
+                                from_stage=self.router.stage_name,
+                                to_stage=target,
+                                generation=self._capacity_generation,
+                                sequence=self._capacity_sequence,
+                                limit=limit,
+                                receiver_pending=pending,
+                                available_capacity=available,
+                            ),
+                        )
+                        last_value = value
+                        last_sent_at = now
+                await asyncio.sleep(self._capacity_interval_s)
+        except asyncio.CancelledError:
+            pass
+
+    def record_capacity_update(self, update: CapacityUpdateMessage) -> None:
+        """Record only the newest update from one Decode process generation."""
+
+        if update.to_stage != self.router.stage_name:
+            raise ValueError(
+                f"capacity update for {update.to_stage!r} delivered to "
+                f"{self.router.stage_name!r}"
+            )
+        current = self._peer_capacity.get(update.from_stage)
+        if current is not None:
+            generation, sequence, _capacity = current
+            if generation != update.generation:
+                raise RuntimeError(
+                    f"capacity publisher {update.from_stage!r} changed generation"
+                )
+            if update.sequence <= sequence:
+                return
+        self._peer_capacity[update.from_stage] = (
+            update.generation,
+            update.sequence,
+            update.available_capacity,
+        )
+        self._peer_pending[update.from_stage] = update.receiver_pending
+
+    def peer_capacity(self, stage: str) -> int | None:
+        """Newest independently published available capacity for *stage*."""
+
+        current = self._peer_capacity.get(stage)
+        return None if current is None else current[2]
+
     async def send_kv_pages(
         self,
         *,
@@ -525,6 +625,10 @@ class CommEngine:
                         task,
                         f"KV receive {message.request_id}:{message.from_stage}",
                     )
+                    continue
+
+                if isinstance(message, CapacityUpdateMessage):
+                    self.record_capacity_update(message)
                     continue
 
                 self.ack_transfer(message)
@@ -715,6 +819,11 @@ class CommEngine:
         if rank_control_task is not None:
             rank_control_task.cancel()
             await asyncio.gather(rank_control_task, return_exceptions=True)
+        capacity_task = self._capacity_task
+        self._capacity_task = None
+        if capacity_task is not None:
+            capacity_task.cancel()
+            await asyncio.gather(capacity_task, return_exceptions=True)
         rank_receive_tasks = tuple(self._rank_receive_tasks)
         for task in rank_receive_tasks:
             task.cancel()

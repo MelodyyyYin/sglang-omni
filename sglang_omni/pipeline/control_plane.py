@@ -12,6 +12,7 @@ from sglang_omni.proto import (
     AbortMessage,
     AdminMessage,
     AdminResultMessage,
+    CapacityUpdateMessage,
     CompleteMessage,
     DataAckMessage,
     DataReadyMessage,
@@ -31,6 +32,7 @@ ControlMessage = (
     AdminMessage
     | AdminResultMessage
     | DataAckMessage
+    | CapacityUpdateMessage
     | DataReadyMessage
     | KVTransferPrepareMessage
     | KVTransferReadyMessage

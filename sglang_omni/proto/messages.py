@@ -178,6 +178,69 @@ class DataAckMessage(msgspec.Struct):
         )
 
 
+@dataclass(frozen=True)
+class CapacityUpdateMessage:
+    """Decode capacity published independently of transfer acknowledgements."""
+
+    from_stage: str
+    to_stage: str
+    generation: str
+    sequence: int
+    limit: int
+    receiver_pending: int
+    available_capacity: int
+
+    def __post_init__(self) -> None:
+        _require_str(self.from_stage, "from_stage")
+        _require_str(self.to_stage, "to_stage")
+        _require_str(self.generation, "generation")
+        _require_non_negative_int(self.sequence, "sequence")
+        _require_non_negative_int(self.limit, "limit")
+        _require_non_negative_int(self.receiver_pending, "receiver_pending")
+        _require_non_negative_int(self.available_capacity, "available_capacity")
+        if self.limit == 0:
+            raise ValueError("limit must be positive")
+        if self.available_capacity > self.limit:
+            raise ValueError("available_capacity must not exceed limit")
+
+    def to_dict(self) -> dict[str, Any]:
+        _require_str(self.from_stage, "from_stage")
+        _require_str(self.to_stage, "to_stage")
+        _require_str(self.generation, "generation")
+        _require_non_negative_int(self.sequence, "sequence")
+        _require_non_negative_int(self.limit, "limit")
+        _require_non_negative_int(self.receiver_pending, "receiver_pending")
+        _require_non_negative_int(self.available_capacity, "available_capacity")
+        if self.available_capacity > self.limit:
+            raise ValueError("available_capacity must not exceed limit")
+        return {
+            "type": "capacity_update",
+            "from_stage": self.from_stage,
+            "to_stage": self.to_stage,
+            "generation": self.generation,
+            "sequence": self.sequence,
+            "limit": self.limit,
+            "receiver_pending": self.receiver_pending,
+            "available_capacity": self.available_capacity,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "CapacityUpdateMessage":
+        return cls(
+            from_stage=_require_str(d.get("from_stage"), "from_stage"),
+            to_stage=_require_str(d.get("to_stage"), "to_stage"),
+            generation=_require_str(d.get("generation"), "generation"),
+            sequence=_require_non_negative_int(d.get("sequence"), "sequence"),
+            limit=_require_non_negative_int(d.get("limit"), "limit"),
+            receiver_pending=_require_non_negative_int(
+                d.get("receiver_pending"), "receiver_pending"
+            ),
+            available_capacity=_require_non_negative_int(
+                d.get("available_capacity"), "available_capacity"
+            ),
+        )
+
+
 @dataclass
 class AbortMessage:
     """Broadcast abort signal to all stages."""
@@ -370,6 +433,7 @@ def parse_message(
 ) -> (
     AdminMessage
     | AdminResultMessage
+    | CapacityUpdateMessage
     | DataAckMessage
     | DataReadyMessage
     | KVTransferPrepareMessage
@@ -388,6 +452,8 @@ def parse_message(
         return DataReadyMessage.from_dict(d)
     elif msg_type == "data_ack":
         return DataAckMessage.from_dict(d)
+    elif msg_type == "capacity_update":
+        return CapacityUpdateMessage.from_dict(d)
     elif msg_type == "kv_transfer_prepare":
         return KVTransferPrepareMessage.from_dict(d)
     elif msg_type == "kv_transfer_ready":

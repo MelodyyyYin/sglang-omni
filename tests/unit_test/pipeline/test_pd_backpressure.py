@@ -3,10 +3,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from types import SimpleNamespace
 
-from sglang_omni.proto.messages import DataAckMessage
+import pytest
+
+from sglang_omni.comm.engine import CommEngine
+from sglang_omni.proto.messages import CapacityUpdateMessage, DataAckMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 
 _LOGGER = "sglang_omni.scheduling.omni_scheduler"
@@ -17,6 +21,12 @@ def _prefill(limit, depth) -> OmniScheduler:
     scheduler._pd_role = "prefill"
     scheduler._pd_decode_pending_limit = limit
     scheduler._pd_peer_pending_fn = (lambda: depth) if depth is not None else None
+    return scheduler
+
+
+def _capacity_prefill(limit, capacity) -> OmniScheduler:
+    scheduler = _prefill(limit, None)
+    scheduler._pd_peer_capacity_fn = lambda: capacity
     return scheduler
 
 
@@ -43,6 +53,82 @@ def test_a_reader_that_raises_reports_no_reading() -> None:
 
 def test_a_peer_that_never_reported_reads_as_none() -> None:
     assert _prefill(64, None)._pd_peer_pending() is None
+
+
+def test_no_capacity_report_holds_a_hard_bound_closed() -> None:
+    assert _capacity_prefill(2, None)._pd_decode_has_capacity() is False
+
+
+def test_positive_capacity_allows_prefill_and_zero_holds_it() -> None:
+    assert _capacity_prefill(2, 1)._pd_decode_has_capacity() is True
+    assert _capacity_prefill(2, 0)._pd_decode_has_capacity() is False
+
+
+def test_capacity_update_rejects_a_publisher_generation_change() -> None:
+    source = CommEngine(SimpleNamespace(stage_name="prefill", comm_config={}))
+    first = CapacityUpdateMessage("decode", "prefill", "generation-a", 1, 2, 2, 0)
+    source.record_capacity_update(first)
+
+    with pytest.raises(RuntimeError, match="changed generation"):
+        source.record_capacity_update(
+            CapacityUpdateMessage("decode", "prefill", "generation-b", 1, 2, 0, 2)
+        )
+
+
+def test_decode_drain_returns_capacity_without_another_handoff(monkeypatch) -> None:
+    """reach limit -> stop -> Decode drains -> an independent update resumes."""
+
+    async def scenario() -> None:
+        source = CommEngine(
+            SimpleNamespace(stage_name="thinker_prefill", comm_config={}),
+            rank_endpoints={
+                "thinker_prefill": ("ipc://prefill",),
+                "thinker_decode": ("ipc://decode",),
+            },
+        )
+        destination = CommEngine(
+            SimpleNamespace(stage_name="thinker_decode", comm_config={}),
+            rank_endpoints={
+                "thinker_prefill": ("ipc://prefill",),
+                "thinker_decode": ("ipc://decode",),
+            },
+        )
+        depth = 2
+        receiver = SimpleNamespace(pending_depth=lambda: depth)
+        destination.register_kv_receiver("decode:kv", receiver)
+        destination.configure_capacity_updates(
+            to_stage="thinker_prefill", limit=2, interval_s=0.001
+        )
+
+        updates: asyncio.Queue[CapacityUpdateMessage] = asyncio.Queue()
+
+        async def deliver(_sockets, _endpoint, message) -> None:
+            assert isinstance(message, CapacityUpdateMessage)
+            source.record_capacity_update(message)
+            await updates.put(message)
+
+        monkeypatch.setattr("sglang_omni.comm.engine.send_to_endpoint", deliver)
+        task = asyncio.create_task(destination._run_capacity_updates())
+        scheduler = _capacity_prefill(2, None)
+        scheduler._pd_peer_capacity_fn = lambda: source.peer_capacity("thinker_decode")
+        try:
+            first = await asyncio.wait_for(updates.get(), timeout=1)
+            assert first.receiver_pending == 2
+            assert first.available_capacity == 0
+            assert scheduler._pd_decode_has_capacity() is False
+
+            # No DataReady/DataAck or new handoff occurs after Prefill stops.
+            depth = 0
+            resumed = await asyncio.wait_for(updates.get(), timeout=1)
+            assert resumed.receiver_pending == 0
+            assert resumed.available_capacity == 2
+            assert scheduler._pd_decode_has_capacity() is True
+        finally:
+            destination._closed = True
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
 
 
 def test_the_decode_depth_counts_every_accepted_request() -> None:
