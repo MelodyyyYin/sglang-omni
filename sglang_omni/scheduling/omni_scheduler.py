@@ -62,6 +62,7 @@ from sglang_omni.proto.admin import (
     ADMIN_WEIGHTS_CHECKER,
 )
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.pd_alloc_lock import LockedKVAllocator
 from sglang_omni.scheduling.pd_continuation import (
     ContinuationAwareKVReceiver,
     PDHandoffController,
@@ -598,6 +599,13 @@ class OmniScheduler:
         self.batch_result_processor = dataclasses.replace(
             self.batch_result_processor,
             disaggregation_mode=DisaggregationMode.DECODE,
+        )
+        # Note (Audrey Zheng): from here the allocator has two callers on two
+        # threads -- this scheduler, and the comm event loop through the
+        # receiver below -- and its alloc is a read-modify-write with no lock
+        # of its own. Wrap it once, before either side is handed it.
+        self.token_to_kv_pool_allocator = LockedKVAllocator(
+            self.token_to_kv_pool_allocator
         )
         receiver = AllocatorKVReceiver(
             pool_id=self._pd_pool_id,
