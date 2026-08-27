@@ -8,12 +8,11 @@ mis-configured pipeline fails fast.
 
 from __future__ import annotations
 
-import inspect
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from sglang_omni.config.pd_rewrite import pd_required_factory_args
-from sglang_omni.config.schema import StageConfig
+from sglang_omni.config.pd_rewrite import PD_REQUIRED_SERVER_ARGS
+from sglang_omni.config.schema import EngineArgs, StageConfig
 from sglang_omni.utils.imports import import_string
 
 # Note (Yue Yin): A private dunder avoids collisions with factory-owned metadata.
@@ -41,52 +40,51 @@ def validate_pd_capabilities(stages: Iterable[StageConfig]) -> None:
     for stage in stages:
         if stage.pd_execution is None:
             continue
-        factory = import_string(stage.factory)
+        factory = import_string(stage.factory_path)
         if not factory_supports_pd(factory):
             raise ValueError(
                 f"Stage {stage.name!r} is PD-disaggregated (role="
-                f"{stage.pd_execution.role!r}) but its factory {stage.factory!r} "
+                f"{stage.pd_execution.role!r}) but its factory "
+                f"{stage.factory_path!r} "
                 "is not PD-capable; decorate the factory with "
                 "@pd_disaggregation_capable to opt in"
             )
 
 
 def apply_pd_required_server_args(stages: Iterable[StageConfig]) -> list[StageConfig]:
-    """Set the server args PD needs on each generated half.
+    """Set the engine args PD needs on each generated half.
 
     ``bind_pd_runtime`` refuses anything else, so supplying them here turns a
-    configuration that would fail at bind time into one that runs. Only
-    factories that declare ``server_args_overrides`` receive it, because
-    ``resolve_factory_signature_args`` passes ``factory_args`` through verbatim
-    and a strict signature would raise. A model whose factory does not take it
-    sets the same args in its own engine builder.
+    configuration that would fail at bind time into one that runs.
+
+    They go in the stage's ``engine`` block, which is where SGLang ServerArgs
+    live. That block only exists on stage types that declare ``engine_stage``,
+    so a PD half of another kind is left alone rather than given a block it
+    may not carry. ``EngineArgs`` allows free-form keys and reports them from
+    ``overrides()``, so neither key needs declaring.
+
+    A value that contradicts one of them is rejected rather than overwritten,
+    because the request cannot be honoured and failing at bind time would
+    report it as a runtime error instead of a configuration one.
     """
     out: list[StageConfig] = []
     for stage in stages:
-        if stage.pd_execution is None:
+        if stage.pd_execution is None or not type(stage).engine_stage:
             out.append(stage)
             continue
-        factory = import_string(stage.factory)
-        if not _accepts_server_args_overrides(factory):
-            out.append(stage)
-            continue
+        engine = stage.engine or EngineArgs()
+        current = engine.overrides()
+        updates: dict[str, Any] = {}
+        for key, required in PD_REQUIRED_SERVER_ARGS.items():
+            existing = current.get(key)
+            if existing is not None and existing != required:
+                raise ValueError(
+                    f"Stage {stage.name!r} is PD-disaggregated, which requires "
+                    f"engine.{key}={required!r}, but the configuration sets "
+                    f"engine.{key}={existing!r}"
+                )
+            updates[key] = required
         out.append(
-            stage.model_copy(
-                update={
-                    "factory_args": pd_required_factory_args(
-                        stage.name, stage.factory_args
-                    )
-                }
-            )
+            stage.model_copy(update={"engine": engine.model_copy(update=updates)})
         )
     return out
-
-
-def _accepts_server_args_overrides(factory: Callable[..., Any]) -> bool:
-    try:
-        parameters = inspect.signature(factory).parameters
-    except (TypeError, ValueError):
-        return False
-    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
-        return True
-    return "server_args_overrides" in parameters

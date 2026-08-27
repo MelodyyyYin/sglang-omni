@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import logging
 import re
 import shutil
@@ -19,9 +21,31 @@ from sglang_omni.config.pd_capability import (
 from sglang_omni.config.pd_rewrite import expand_pd_stages
 from sglang_omni.config.placement import StagePlacementPlan, build_stage_placement_plan
 from sglang_omni.config.schema import PipelineConfig, StageConfig
-from sglang_omni.config.topology import ProcessTopologyPlan, build_process_topology_plan
+from sglang_omni.config.topology import (
+    LogicalProcessPlan,
+    ProcessTopologyPlan,
+    build_process_topology_plan,
+    compile_logical_processes,
+)
+from sglang_omni.pipeline.replicas import (
+    ReplicaTopology,
+    expand_replica_stages,
+    validate_device_assignment,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _visible_device_count() -> int | None:
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return None
+        return torch.cuda.device_count()
+    except Exception:
+        return None
+
 
 # PyZMQ checks the filesystem path after ``ipc://`` against this budget.
 _IPC_SUN_PATH_BUDGET = getattr(zmq, "IPC_PATH_MAX_LEN", 100)
@@ -71,6 +95,8 @@ class PipelineRuntimePrep:
     runtime_dir_created_here: bool
     terminal_stages: list[str]
     terminal_name_map: dict[str, str]
+    replica_topology: ReplicaTopology
+    logical_process_plan: LogicalProcessPlan
 
 
 def create_ipc_runtime_dir(
@@ -82,7 +108,7 @@ def create_ipc_runtime_dir(
     base_root = Path(config.endpoints.base_path)
     base_root.mkdir(parents=True, exist_ok=True)
     if stages is None:
-        stages, _, _ = config.apply_fusion()
+        stages = list(config.stages)
 
     namespace_prefix = re.sub(r"[^0-9a-z]+", "-", config.name.lower()).strip("-")
     if not namespace_prefix:
@@ -102,21 +128,31 @@ def prepare_pipeline_runtime(
     *,
     ipc_runtime_dir: IpcRuntimeDir | None = None,
 ) -> PipelineRuntimePrep:
-    """Prepare fused stages, endpoint allocation, and process topology."""
-    stages_cfg, name_map, entry_stage = config.apply_fusion()
+    """Compile PD/process topology, expand replicas, and allocate endpoints."""
+    source_stages = [stage.model_copy(deep=True) for stage in config.stages]
+    entry_stage = config.resolved_entry_stage
     # Note (Yue Yin): Expand before placement so each half receives independent
     # process, device, and rank endpoints.
-    expansion = expand_pd_stages(stages_cfg, entry_stage=entry_stage)
-    stages_cfg = expansion.stages
+    expansion = expand_pd_stages(source_stages, entry_stage=entry_stage)
     entry_stage = expansion.entry_stage
-    fusion_name_map = name_map
-    name_map = _compose_name_map(fusion_name_map, expansion.routing_map, stages_cfg)
-    source_name_map = _compose_name_map(
-        fusion_name_map, expansion.output_map, stages_cfg
+    validate_pd_capabilities(expansion.stages)
+    expansion = dataclasses.replace(
+        expansion, stages=apply_pd_required_server_args(expansion.stages)
     )
-    validate_pd_capabilities(stages_cfg)
-    stages_cfg = apply_pd_required_server_args(stages_cfg)
-    terminal_stages = [s.name for s in stages_cfg if s.terminal]
+    terminal_stages = [stage.name for stage in expansion.stages if stage.terminal]
+
+    # The logical Process plan must see the generated Prefill/Decode stages;
+    # each half owns an independently placed process before replica expansion.
+    expanded_config = config.model_copy(
+        update={"stages": expansion.stages, "entry_stage": entry_stage}
+    )
+    logical_plan, stages_cfg = compile_logical_processes(expanded_config)
+    stages_cfg, replica_topology = expand_replica_stages(stages_cfg, logical_plan)
+    validate_device_assignment(stages_cfg, device_count=_visible_device_count())
+
+    identity_map = {stage.name: stage.name for stage in source_stages}
+    name_map = _compose_name_map(identity_map, expansion.routing_map, stages_cfg)
+    source_name_map = _compose_name_map(identity_map, expansion.output_map, stages_cfg)
     runtime_dir = ipc_runtime_dir
     if runtime_dir is None:
         runtime_dir = create_ipc_runtime_dir(config, stages=stages_cfg)
@@ -125,7 +161,11 @@ def prepare_pipeline_runtime(
         runtime_dir_created_here = False
 
     try:
-        placement_plan = build_stage_placement_plan(config, stages_cfg=stages_cfg)
+        placement_plan = build_stage_placement_plan(
+            config,
+            stages_cfg=stages_cfg,
+            replica_instances=replica_topology.replicas,
+        )
         process_plan = build_process_topology_plan(
             config,
             placement_plan,
@@ -152,23 +192,25 @@ def prepare_pipeline_runtime(
         runtime_dir_created_here=runtime_dir_created_here,
         terminal_stages=terminal_stages,
         terminal_name_map=expansion.output_map,
+        replica_topology=replica_topology,
+        logical_process_plan=logical_plan,
     )
 
 
 def _compose_name_map(
-    fusion_map: dict[str, str],
+    base_map: dict[str, str],
     routing_map: dict[str, str],
     stages: list[StageConfig],
 ) -> dict[str, str]:
-    """Compose the fusion name map with the PD routing map.
+    """Compose a logical identity map with a PD routing/output map.
 
-    Fusion maps raw -> canonical; PD routing maps canonical -> prefill.
+    The base maps raw -> canonical; PD maps canonical -> one physical half.
     One lookup therefore takes any alias to the correct physical prefill half.
     Generated physical names map to themselves so route_fn may use them too.
     """
     composed = {
         raw: routing_map.get(canonical, canonical)
-        for raw, canonical in fusion_map.items()
+        for raw, canonical in base_map.items()
     }
     for stage in stages:
         composed.setdefault(stage.name, stage.name)
