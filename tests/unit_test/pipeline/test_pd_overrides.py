@@ -66,7 +66,7 @@ def _pipeline(tmp_path) -> PipelineConfig:
             stage("pre", next="thinker"),
             stage(
                 "thinker",
-                factory=fake_factory_path("pd_capable_factory"),
+                factory_path=fake_factory_path("pd_capable_factory"),
                 next="post",
             ),
             stage("post", terminal=True),
@@ -159,7 +159,7 @@ def _pd_stages(tmp_path, *, factory: str, server_args=None):
         stages=[
             stage(
                 "thinker",
-                factory=factory,
+                factory_path=factory,
                 terminal=True,
                 factory_args=factory_args,
                 pd_disaggregation=_pd(1, 2),
@@ -174,7 +174,7 @@ def _pd_stages(tmp_path, *, factory: str, server_args=None):
 def test_pd_halves_receive_the_server_args_pd_requires(tmp_path) -> None:
     from sglang_omni.config.pd_rewrite import PD_REQUIRED_SERVER_ARGS
 
-    stages = _pd_stages(tmp_path, factory=fake_factory_path("pd_capable_factory"))
+    stages = _pd_stages(tmp_path, factory_path=fake_factory_path("pd_capable_factory"))
 
     for name in ("thinker_prefill", "thinker_decode"):
         overrides = stages[name].factory_args["server_args_overrides"]
@@ -185,7 +185,7 @@ def test_pd_halves_receive_the_server_args_pd_requires(tmp_path) -> None:
 def test_pd_injection_keeps_unrelated_server_args(tmp_path) -> None:
     stages = _pd_stages(
         tmp_path,
-        factory=fake_factory_path("pd_capable_factory"),
+        factory_path=fake_factory_path("pd_capable_factory"),
         server_args={"enable_mixed_chunk": False},
     )
 
@@ -199,7 +199,7 @@ def test_pd_injection_rejects_a_contradicting_server_arg(tmp_path) -> None:
     with pytest.raises(ValueError, match="requires page_size=1"):
         _pd_stages(
             tmp_path,
-            factory=fake_factory_path("pd_capable_factory"),
+            factory_path=fake_factory_path("pd_capable_factory"),
             server_args={"page_size": 16},
         )
 
@@ -207,7 +207,7 @@ def test_pd_injection_rejects_a_contradicting_server_arg(tmp_path) -> None:
 def test_pd_injection_skips_a_factory_that_cannot_receive_it(tmp_path) -> None:
     """A strict signature must not be handed a keyword it does not declare."""
     stages = _pd_stages(
-        tmp_path, factory=fake_factory_path("strict_pd_capable_factory")
+        tmp_path, factory_path=fake_factory_path("strict_pd_capable_factory")
     )
 
     for name in ("thinker_prefill", "thinker_decode"):

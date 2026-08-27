@@ -28,7 +28,7 @@ def _halves(prefill: PDStagePlacement, decode: PDStagePlacement) -> dict:
 
 
 def _fraction(stage_config) -> float | None:
-    return stage_config.runtime.resources.total_gpu_memory_fraction
+    return stage_config.gpu_memory_fraction
 
 
 def test_one_gpu_holds_both_halves() -> None:
