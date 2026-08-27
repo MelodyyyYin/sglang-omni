@@ -39,11 +39,12 @@ def validate_pd_capabilities(stages: Iterable[StageConfig]) -> None:
     for stage in stages:
         if stage.pd_execution is None:
             continue
-        factory = import_string(stage.factory)
+        factory = import_string(stage.factory_path)
         if not factory_supports_pd(factory):
             raise ValueError(
                 f"Stage {stage.name!r} is PD-disaggregated (role="
-                f"{stage.pd_execution.role!r}) but its factory {stage.factory!r} "
+                f"{stage.pd_execution.role!r}) but its factory "
+                f"{stage.factory_path!r} "
                 "is not PD-capable; decorate the factory with "
                 "@pd_disaggregation_capable to opt in"
             )
