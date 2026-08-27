@@ -111,12 +111,11 @@ def apply_pd_stage_overrides(
 
     config = pipeline_config.model_copy(deep=True)
     stages = {stage.name: stage for stage in config.stages}
-    role_map = type(config).isolation_role_to_stage()
 
     requested: dict[str, _PDStageAssignment] = {}
     for assignment in pd_stages:
         parsed = parse_pd_stage_assignment(assignment)
-        stage = _resolve_stage(stages, role_map, parsed.stage_name)
+        stage = _resolve_stage(stages, parsed.stage_name)
         if stage.name in requested:
             raise ValueError(
                 f"Stage {stage.name!r} has multiple --pd-stage assignments"
@@ -181,11 +180,10 @@ def _parse_gpu_spec(assignment: str, role: str, spec: str) -> int | list[int]:
 
 def _resolve_stage(
     stages: dict[str, StageConfig],
-    role_map: dict[str, str],
     requested_name: str,
 ) -> StageConfig:
-    stage_name = role_map.get(requested_name, requested_name)
-    stage = stages.get(stage_name)
+    """Look the stage up by name, as every other per-stage setting does."""
+    stage = stages.get(requested_name)
     if stage is None:
         known = ", ".join(sorted(stages))
         raise ValueError(

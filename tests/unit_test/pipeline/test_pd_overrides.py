@@ -8,6 +8,8 @@ from typing import ClassVar
 import pytest
 
 from sglang_omni.config import apply_pd_stage_overrides, parse_pd_stage_assignment
+from sglang_omni.config.pd_capability import apply_pd_required_server_args
+from sglang_omni.config.pd_rewrite import expand_pd_stages
 from sglang_omni.config.schema import (
     EndpointsConfig,
     PDConfig,
@@ -211,7 +213,7 @@ def test_pd_injection_keeps_unrelated_server_args(tmp_path) -> None:
 
 
 def test_pd_injection_rejects_a_contradicting_server_arg(tmp_path) -> None:
-    with pytest.raises(ValueError, match="requires page_size=1"):
+    with pytest.raises(ValueError, match="requires engine.page_size=1"):
         _pd_stages(
             tmp_path,
             factory=fake_factory_path("pd_capable_factory"),
@@ -219,14 +221,36 @@ def test_pd_injection_rejects_a_contradicting_server_arg(tmp_path) -> None:
         )
 
 
-def test_pd_injection_skips_a_factory_that_cannot_receive_it(tmp_path) -> None:
-    """A strict signature must not be handed a keyword it does not declare."""
-    stages = _pd_stages(
-        tmp_path, factory=fake_factory_path("strict_pd_capable_factory")
+def test_a_non_engine_stage_gets_no_engine_block(tmp_path) -> None:
+    """The engine block only exists on stage types that declare engine_stage."""
+    config = PipelineConfig(
+        model_path="dummy",
+        name="pd",
+        endpoints=EndpointsConfig(base_path=str(tmp_path)),
+        entry_stage="thinker",
+        stages=[
+            stage(
+                "thinker",
+                factory_path=fake_factory_path("pd_capable_factory"),
+                terminal=True,
+                pd_disaggregation=PDConfig(
+                    prefill=PDStagePlacement(gpu=0),
+                    decode=PDStagePlacement(gpu=1),
+                ),
+            )
+        ],
     )
+    halves = {
+        s.name: s
+        for s in apply_pd_required_server_args(
+            expand_pd_stages(
+                list(config.stages), entry_stage=config.resolved_entry_stage
+            ).stages
+        )
+    }
 
     for name in ("thinker_prefill", "thinker_decode"):
-        assert stages[name].engine is None or "page_size" not in stages[name].engine.overrides()
+        assert halves[name].engine is None
 
 
 def test_non_pd_pipeline_gets_no_server_args_injected(tmp_path) -> None:
