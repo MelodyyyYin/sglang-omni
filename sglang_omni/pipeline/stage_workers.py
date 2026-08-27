@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import gc
+import inspect
 import logging
 import multiprocessing
 import os
@@ -918,6 +919,11 @@ def _construct_scheduler(
     defaults = dict(spec.factory_arg_defaults)
     plan = _weight_sharing_plan(spec, gpu_id)
     if plan is not None:
+        if "weight_sharing_plan" not in inspect.signature(factory).parameters:
+            raise RuntimeError(
+                f"Stage {spec.stage_name} enables same-GPU PD weight sharing, "
+                f"but factory {spec.factory!r} does not support weight sharing"
+            )
         # Note (Audrey Zheng): the adopter waits here, outside
         # gpu_startup_lock. Waiting inside it would hold the lock against the
         # publishing half, which needs the same lock to load at all.

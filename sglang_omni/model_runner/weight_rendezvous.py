@@ -27,8 +27,10 @@ import logging
 import os
 import pickle
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +40,48 @@ _POLL_INTERVAL_S = 0.2
 
 class RendezvousUnavailable(RuntimeError):
     """The run's IPC directory could not be derived from an endpoint."""
+
+
+class PublisherUnavailable(RuntimeError):
+    """The recorded publisher generation is no longer alive."""
+
+
+@dataclass(frozen=True)
+class PublishedWeightManifest:
+    generation: str
+    publisher_pid: int
+    publisher_start_identity: str | None
+    gpu_id: int
+    parameters: dict[str, Any]
+    weight_bytes: int
+
+
+def _process_start_identity(pid: int) -> str | None:
+    try:
+        # Linux /proc stat field 22 is stable for one process generation even
+        # when a PID is later reused.
+        return Path(f"/proc/{pid}/stat").read_text().split()[21]
+    except (FileNotFoundError, IndexError, OSError):
+        return None
+
+
+def assert_publisher_alive(manifest: PublishedWeightManifest) -> None:
+    try:
+        os.kill(manifest.publisher_pid, 0)
+    except ProcessLookupError as exc:
+        raise PublisherUnavailable(
+            f"weight publisher process {manifest.publisher_pid} is unavailable"
+        ) from exc
+    except PermissionError:
+        pass
+    expected = manifest.publisher_start_identity
+    if (
+        expected is not None
+        and _process_start_identity(manifest.publisher_pid) != expected
+    ):
+        raise PublisherUnavailable(
+            f"weight publisher process {manifest.publisher_pid} generation changed"
+        )
 
 
 def rendezvous_dir_from_endpoint(endpoint: str) -> Path:
@@ -61,6 +105,7 @@ def publish_parameter_handles(
     stage_name: str,
     gpu_id: int,
     weight_bytes: int = 0,
+    publisher_pid: int | None = None,
 ) -> Path:
     """Write *handles* where the peer half can read them. Returns the path.
 
@@ -77,15 +122,16 @@ def publish_parameter_handles(
     directory.mkdir(parents=True, exist_ok=True)
     final = directory / f"{stage_name}.pkl"
     staging = directory / f"{stage_name}.pkl.{os.getpid()}"
-    staging.write_bytes(
-        pickle.dumps(
-            {
-                "gpu_id": int(gpu_id),
-                "handles": handles,
-                "weight_bytes": int(weight_bytes),
-            }
-        )
+    pid = os.getpid() if publisher_pid is None else int(publisher_pid)
+    manifest = PublishedWeightManifest(
+        generation=uuid4().hex,
+        publisher_pid=pid,
+        publisher_start_identity=_process_start_identity(pid),
+        gpu_id=int(gpu_id),
+        parameters=handles,
+        weight_bytes=int(weight_bytes),
     )
+    staging.write_bytes(pickle.dumps(manifest))
     os.replace(staging, final)
     logger.info(
         "published %d parameter handles for %s at %s",
@@ -101,7 +147,7 @@ def read_parameter_handles(
     rendezvous_dir: Path,
     stage_name: str,
     gpu_id: int,
-) -> dict[str, Any] | None:
+) -> PublishedWeightManifest | None:
     """Return the handles *stage_name* published for *gpu_id*, or None.
 
     Returns None when the peer has not published, and when it published for a
@@ -123,17 +169,26 @@ def read_parameter_handles(
         )
         return None
     published = pickle.loads(payload)
-    if published["gpu_id"] != int(gpu_id):
+    if not isinstance(published, PublishedWeightManifest):
+        raise PublisherUnavailable(
+            f"{stage_name} published an unversioned weight manifest"
+        )
+    if published.gpu_id != int(gpu_id):
         logger.info(
             "%s published handles for GPU %s, not GPU %s; this half keeps its own",
             stage_name,
-            published["gpu_id"],
+            published.gpu_id,
             gpu_id,
         )
         return None
-    handles = published["handles"]
-    logger.info("adopted %d parameter handles from %s", len(handles), stage_name)
-    return handles
+    assert_publisher_alive(published)
+    logger.info(
+        "adopted %d parameter handles from %s generation=%s",
+        len(published.parameters),
+        stage_name,
+        published.generation,
+    )
+    return published
 
 
 def read_published_weight_bytes(
@@ -147,6 +202,8 @@ def read_published_weight_bytes(
         published = pickle.loads(path.read_bytes())
     except (FileNotFoundError, KeyError, EOFError):
         return 0
+    if isinstance(published, PublishedWeightManifest):
+        return int(published.weight_bytes)
     return int(published.get("weight_bytes", 0))
 
 
@@ -156,7 +213,7 @@ def wait_for_parameter_handles(
     stage_name: str,
     gpu_id: int,
     timeout_s: float,
-) -> dict[str, Any] | None:
+) -> PublishedWeightManifest | None:
     """Block until *stage_name* publishes, then return its handles or None.
 
     The wait is for the file to appear, not for handles this half can use.

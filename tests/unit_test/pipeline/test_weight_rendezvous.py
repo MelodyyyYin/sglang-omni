@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from sglang_omni.model_runner.weight_rendezvous import (
+    PublisherUnavailable,
     RendezvousUnavailable,
     publish_parameter_handles,
     read_parameter_handles,
@@ -45,10 +46,12 @@ def test_handles_survive_the_round_trip(tmp_path: Path) -> None:
         handles, rendezvous_dir=tmp_path, stage_name="prefill", gpu_id=0
     )
 
-    assert (
-        read_parameter_handles(rendezvous_dir=tmp_path, stage_name="prefill", gpu_id=0)
-        == handles
+    manifest = read_parameter_handles(
+        rendezvous_dir=tmp_path, stage_name="prefill", gpu_id=0
     )
+    assert manifest.parameters == handles
+    assert manifest.generation
+    assert manifest.publisher_pid > 0
 
 
 def test_an_unpublished_peer_reads_as_none(tmp_path: Path) -> None:
@@ -72,7 +75,9 @@ def test_a_reader_never_observes_a_partial_file(tmp_path: Path) -> None:
     leftovers = [p.name for p in directory.iterdir() if p.name != "prefill.pkl"]
     assert leftovers == []
     assert (
-        read_parameter_handles(rendezvous_dir=tmp_path, stage_name="prefill", gpu_id=0)
+        read_parameter_handles(
+            rendezvous_dir=tmp_path, stage_name="prefill", gpu_id=0
+        ).parameters
         == big
     )
 
@@ -111,3 +116,26 @@ def test_a_peer_on_another_gpu_stops_the_wait_at_once(tmp_path: Path) -> None:
 
     assert result is None
     assert time.monotonic() - started < 1.0
+
+
+def test_dead_publisher_manifest_is_rejected(tmp_path: Path) -> None:
+    publish_parameter_handles(
+        {"w": ("rebuild", ())},
+        rendezvous_dir=tmp_path,
+        stage_name="prefill",
+        gpu_id=0,
+        publisher_pid=999_999_999,
+    )
+
+    with pytest.raises(PublisherUnavailable, match="publisher process"):
+        read_parameter_handles(rendezvous_dir=tmp_path, stage_name="prefill", gpu_id=0)
+
+
+def test_republishing_changes_the_publisher_generation(tmp_path: Path) -> None:
+    kwargs = dict(rendezvous_dir=tmp_path, stage_name="prefill", gpu_id=0)
+    publish_parameter_handles({"w": ("first", ())}, **kwargs)
+    first = read_parameter_handles(**kwargs)
+    publish_parameter_handles({"w": ("second", ())}, **kwargs)
+    second = read_parameter_handles(**kwargs)
+
+    assert first.generation != second.generation

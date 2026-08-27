@@ -8,7 +8,9 @@ factory names the parameter.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -52,6 +54,57 @@ def test_a_stage_without_a_gpu_gets_no_plan() -> None:
 def test_a_non_ipc_endpoint_yields_no_plan() -> None:
     """A TCP endpoint has no run directory, and guessing one would misplace it."""
     assert _weight_sharing_plan(_spec(recv_endpoint="tcp://127.0.0.1:5555"), 0) is None
+
+
+def test_unsupported_factory_fails_before_waiting_for_publisher(monkeypatch) -> None:
+    import pytest
+
+    from sglang_omni.pipeline import stage_workers
+
+    spec = _spec()
+    spec.factory = "tests.unit_test.fixtures.pipeline_fakes.strict_pd_capable_factory"
+    spec.factory_kwargs = {}
+    spec.typed_kwargs = {}
+    spec.factory_arg_defaults = {}
+    spec.require_factory_gpu_id = False
+    waited = False
+
+    def should_not_wait(*_args, **_kwargs):
+        nonlocal waited
+        waited = True
+
+    monkeypatch.setattr(stage_workers, "_adopt_peer_weights", should_not_wait)
+    with pytest.raises(RuntimeError, match="does not support weight sharing"):
+        stage_workers._construct_scheduler(spec, 0, logging.getLogger(__name__))
+
+    assert waited is False
+
+
+def test_publisher_process_death_is_pipeline_fatal() -> None:
+    from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
+
+    async def exercise():
+        runner = object.__new__(MultiProcessPipelineRunner)
+        runner._started = True
+        runner._groups = [
+            SimpleNamespace(
+                any_dead=lambda: True,
+                dead_summary=lambda: "thinker_prefill publisher exited",
+            )
+        ]
+        failures = []
+
+        async def fail_runtime(error):
+            failures.append(error)
+            runner._started = False
+
+        runner._fail_runtime = fail_runtime
+        await runner._monitor_children()
+        return failures
+
+    failures = asyncio.run(exercise())
+    assert len(failures) == 1
+    assert "thinker_prefill publisher exited" in str(failures[0])
 
 
 def test_the_thinker_factory_declares_the_parameter() -> None:
