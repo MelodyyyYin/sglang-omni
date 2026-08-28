@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import queue as _queue_mod
+import threading
+import time
 from contextlib import suppress
 from dataclasses import dataclass
 from itertools import count
@@ -45,6 +48,9 @@ from sglang_omni.relay.base import Relay
 
 logger = logging.getLogger(__name__)
 
+_CAPACITY_HEARTBEAT_S = 0.5
+_CAPACITY_STALE_MULTIPLIER = 3.0
+
 
 @dataclass
 class _InboundKVTransfer:
@@ -53,6 +59,16 @@ class _InboundKVTransfer:
     destination: KVPageDestination
     copy_started: bool = False
     abort_error: BaseException | None = None
+
+
+@dataclass
+class _PeerCapacity:
+    generation: str
+    sequence: int
+    granted_total: int
+    consumed_total: int
+    received_at: float
+    retired: bool = False
 
 
 class _PendingTransfer(msgspec.Struct):
@@ -130,12 +146,20 @@ class CommEngine:
         self._kv_receivers: dict[str, KVReceiver] = {}
         # Note (Audrey Zheng): the newest depth each peer reported on an ack.
         self._peer_pending: dict[str, int] = {}
-        self._peer_capacity: dict[str, tuple[str, int, int]] = {}
+        self._peer_capacity: dict[str, _PeerCapacity] = {}
+        self._peer_capacity_lock = threading.Lock()
+        self._capacity_freshness_timeout_s = (
+            _CAPACITY_HEARTBEAT_S * _CAPACITY_STALE_MULTIPLIER
+        )
         self._capacity_target: str | None = None
         self._capacity_limit: int | None = None
         self._capacity_generation = uuid4().hex
-        self._capacity_sequence = 0
-        self._capacity_interval_s = 0.05
+        self._capacity_heartbeat_s = _CAPACITY_HEARTBEAT_S
+        self._capacity_observations: _queue_mod.SimpleQueue[int] = (
+            _queue_mod.SimpleQueue()
+        )
+        self._capacity_wakeup: asyncio.Event | None = None
+        self._capacity_loop: asyncio.AbstractEventLoop | None = None
         self._capacity_task: asyncio.Task[None] | None = None
         self._kv_ready: dict[str, asyncio.Future[KVTransferReadyMessage]] = {}
         self._outbound_kv_requests: dict[str, str] = {}
@@ -393,56 +417,98 @@ class CommEngine:
         *,
         to_stage: str,
         limit: int,
-        interval_s: float = 0.05,
+        heartbeat_s: float = _CAPACITY_HEARTBEAT_S,
     ) -> None:
         """Publish hard Decode capacity independently from KV transfer ACKs."""
 
         if limit <= 0:
             raise ValueError("capacity limit must be positive")
-        if interval_s <= 0:
-            raise ValueError("capacity update interval must be positive")
+        if heartbeat_s <= 0:
+            raise ValueError("capacity heartbeat must be positive")
         if to_stage not in self.rank_endpoints:
             raise KeyError(f"capacity target {to_stage!r} has no rank endpoint")
         self._capacity_target = to_stage
         self._capacity_limit = int(limit)
-        self._capacity_interval_s = float(interval_s)
+        self._capacity_heartbeat_s = float(heartbeat_s)
+
+    def configure_capacity_reader(
+        self, *, from_stage: str, heartbeat_s: float = _CAPACITY_HEARTBEAT_S
+    ) -> None:
+        if heartbeat_s <= 0:
+            raise ValueError("capacity heartbeat must be positive")
+        if from_stage not in self.rank_endpoints:
+            raise KeyError(f"capacity source {from_stage!r} has no rank endpoint")
+        self._capacity_freshness_timeout_s = (
+            float(heartbeat_s) * _CAPACITY_STALE_MULTIPLIER
+        )
+
+    def publish_capacity_depth(self, pending: int) -> None:
+        """Queue an exact Decode depth transition from the scheduler thread."""
+
+        self._capacity_observations.put(max(0, int(pending)))
+        loop = self._capacity_loop
+        wakeup = self._capacity_wakeup
+        if loop is not None and wakeup is not None:
+            loop.call_soon_threadsafe(wakeup.set)
 
     async def _run_capacity_updates(self) -> None:
-        """Send depth changes and heartbeats even when no handoff is in flight."""
+        """Publish cumulative grants on depth changes plus a liveness heartbeat."""
 
-        last_value: tuple[int, int] | None = None
-        last_sent_at = float("-inf")
         loop = asyncio.get_running_loop()
+        self._capacity_loop = loop
+        wakeup = self._capacity_wakeup = asyncio.Event()
+        limit = self._capacity_limit
+        target = self._capacity_target
+        if limit is None or target is None:
+            return
+        pending = self._local_pending_depth()
+        last_pending = max(0, int(pending or 0))
+        # No report existed before the publisher task started, so earlier
+        # depth transitions consumed no remote credits.  Collapse them into
+        # the initial snapshot instead of minting completion grants.
+        while True:
+            try:
+                last_pending = self._capacity_observations.get_nowait()
+            except _queue_mod.Empty:
+                break
+        granted_total = max(0, int(limit) - last_pending)
+        sequence = 1
         try:
             while not self._closed:
-                depth = self._local_pending_depth()
-                target = self._capacity_target
-                limit = self._capacity_limit
-                now = loop.time()
-                if depth is not None and target is not None and limit is not None:
-                    pending = max(0, int(depth))
-                    available = max(0, limit - pending)
-                    value = (pending, available)
-                    if value != last_value or now - last_sent_at >= 1.0:
-                        self._capacity_sequence += 1
-                        await send_to_endpoint(
-                            self._rank_send_sockets,
-                            self.rank_endpoints[target][self.tp_rank],
-                            CapacityUpdateMessage(
-                                from_stage=self.router.stage_name,
-                                to_stage=target,
-                                generation=self._capacity_generation,
-                                sequence=self._capacity_sequence,
-                                limit=limit,
-                                receiver_pending=pending,
-                                available_capacity=available,
-                            ),
-                        )
-                        last_value = value
-                        last_sent_at = now
-                await asyncio.sleep(self._capacity_interval_s)
+                wakeup.clear()
+                while True:
+                    try:
+                        observed = self._capacity_observations.get_nowait()
+                    except _queue_mod.Empty:
+                        break
+                    if observed == last_pending:
+                        continue
+                    if observed < last_pending:
+                        granted_total += last_pending - observed
+                    last_pending = observed
+                    sequence += 1
+                await send_to_endpoint(
+                    self._rank_send_sockets,
+                    self.rank_endpoints[target][self.tp_rank],
+                    CapacityUpdateMessage(
+                        from_stage=self.router.stage_name,
+                        to_stage=target,
+                        generation=self._capacity_generation,
+                        sequence=sequence,
+                        granted_total=granted_total,
+                    ),
+                )
+                try:
+                    await asyncio.wait_for(
+                        wakeup.wait(), timeout=self._capacity_heartbeat_s
+                    )
+                except TimeoutError:
+                    pass
         except asyncio.CancelledError:
             pass
+        finally:
+            self._capacity_loop = None
+            self._capacity_wakeup = None
 
     def record_capacity_update(self, update: CapacityUpdateMessage) -> None:
         """Record only the newest update from one Decode process generation."""
@@ -452,27 +518,75 @@ class CommEngine:
                 f"capacity update for {update.to_stage!r} delivered to "
                 f"{self.router.stage_name!r}"
             )
-        current = self._peer_capacity.get(update.from_stage)
-        if current is not None:
-            generation, sequence, _capacity = current
-            if generation != update.generation:
+        now = time.monotonic()
+        with self._peer_capacity_lock:
+            current = self._peer_capacity.get(update.from_stage)
+            if current is None:
+                self._peer_capacity[update.from_stage] = _PeerCapacity(
+                    generation=update.generation,
+                    sequence=update.sequence,
+                    granted_total=update.granted_total,
+                    consumed_total=0,
+                    received_at=now,
+                )
+                return
+            if current.generation != update.generation:
+                current.retired = True
                 raise RuntimeError(
                     f"capacity publisher {update.from_stage!r} changed generation"
                 )
-            if update.sequence <= sequence:
+            if current.retired or update.sequence < current.sequence:
                 return
-        self._peer_capacity[update.from_stage] = (
-            update.generation,
-            update.sequence,
-            update.available_capacity,
-        )
-        self._peer_pending[update.from_stage] = update.receiver_pending
+            if update.sequence == current.sequence:
+                if update.granted_total != current.granted_total:
+                    current.retired = True
+                    raise RuntimeError("capacity heartbeat changed its grant")
+                current.received_at = now
+                return
+            if update.granted_total < current.granted_total:
+                current.retired = True
+                raise RuntimeError("capacity grant moved backwards")
+            current.sequence = update.sequence
+            current.granted_total = update.granted_total
+            current.received_at = now
 
     def peer_capacity(self, stage: str) -> int | None:
         """Newest independently published available capacity for *stage*."""
 
-        current = self._peer_capacity.get(stage)
-        return None if current is None else current[2]
+        with self._peer_capacity_lock:
+            current = self._peer_capacity.get(stage)
+            if not self._capacity_is_fresh(current):
+                return None
+            return max(0, current.granted_total - current.consumed_total)
+
+    def claim_peer_capacity(self, stage: str, maximum: int) -> int:
+        if maximum <= 0:
+            return 0
+        with self._peer_capacity_lock:
+            current = self._peer_capacity.get(stage)
+            if not self._capacity_is_fresh(current):
+                return 0
+            available = max(0, current.granted_total - current.consumed_total)
+            claimed = min(int(maximum), available)
+            current.consumed_total += claimed
+            return claimed
+
+    def refund_peer_capacity(self, stage: str, count: int) -> None:
+        if count <= 0:
+            return
+        with self._peer_capacity_lock:
+            current = self._peer_capacity.get(stage)
+            if current is None or current.consumed_total < count:
+                raise RuntimeError(f"capacity refund underflow for {stage!r}")
+            current.consumed_total -= int(count)
+
+    def _capacity_is_fresh(self, current: _PeerCapacity | None) -> bool:
+        return bool(
+            current is not None
+            and not current.retired
+            and time.monotonic() - current.received_at
+            <= self._capacity_freshness_timeout_s
+        )
 
     async def send_kv_pages(
         self,

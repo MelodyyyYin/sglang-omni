@@ -159,9 +159,27 @@ class Stage:
                 decode_pending_limit=getattr(
                     pd_execution, "decode_pending_limit", None
                 ),
-                peer_capacity_fn=(
-                    (lambda: self._comm.peer_capacity(pd_execution.partner))
+                claim_peer_capacity_fn=(
+                    (
+                        lambda maximum: self._comm.claim_peer_capacity(
+                            pd_execution.partner, maximum
+                        )
+                    )
                     if pd_execution.role == "prefill"
+                    else None
+                ),
+                refund_peer_capacity_fn=(
+                    (
+                        lambda count: self._comm.refund_peer_capacity(
+                            pd_execution.partner, count
+                        )
+                    )
+                    if pd_execution.role == "prefill"
+                    else None
+                ),
+                capacity_depth_changed_fn=(
+                    self._comm.publish_capacity_depth
+                    if pd_execution.role == "decode"
                     else None
                 ),
             )
@@ -174,6 +192,8 @@ class Stage:
                         to_stage=pd_execution.partner,
                         limit=int(limit),
                     )
+            elif getattr(pd_execution, "decode_pending_limit", None):
+                self._comm.configure_capacity_reader(from_stage=pd_execution.partner)
 
         self._running = False
         self._aborted: set[str] = set()

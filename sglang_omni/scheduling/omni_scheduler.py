@@ -562,7 +562,9 @@ class OmniScheduler:
         partner: str,
         decode_pending_limit: int | None = None,
         peer_pending_fn: Any = None,
-        peer_capacity_fn: Any = None,
+        claim_peer_capacity_fn: Any = None,
+        refund_peer_capacity_fn: Any = None,
+        capacity_depth_changed_fn: Any = None,
     ) -> tuple[Any, Any | None]:
         if self.tp_size != 1:
             raise NotImplementedError("PR3 PD runtime supports tp_size == 1 only")
@@ -579,7 +581,10 @@ class OmniScheduler:
         # bound at all on what Decode accumulates.
         self._pd_decode_pending_limit = decode_pending_limit
         self._pd_peer_pending_fn = peer_pending_fn
-        self._pd_peer_capacity_fn = peer_capacity_fn
+        self._pd_claim_peer_capacity_fn = claim_peer_capacity_fn
+        self._pd_refund_peer_capacity_fn = refund_peer_capacity_fn
+        self._pd_capacity_depth_changed_fn = capacity_depth_changed_fn
+        self._pd_last_capacity_depth: int | None = None
         self._warn_if_decode_queue_unbounded(stage_name, role)
         self._pd_pool_id = f"{stage_name}:kv"
         raw_pool = self.token_to_kv_pool_allocator.get_kvcache()
@@ -623,6 +628,7 @@ class OmniScheduler:
                 self._pd_ready_queue.put(
                     PDDecodeAdmission(pending.continuation, allocation)
                 )
+                self._notify_pd_capacity_depth()
             except Exception:
                 # Note (Yue Yin): take_committed transfers ownership out of the
                 # receiver before the scheduler queue can accept it.
@@ -709,7 +715,10 @@ class OmniScheduler:
     ) -> None:
         retained = []
         for req in batch.reqs:
-            if req.finished() or getattr(req, "_pd_handoff_started", False):
+            if req.finished():
+                self._refund_pd_capacity_for_req(req)
+                continue
+            if getattr(req, "_pd_handoff_started", False):
                 continue
             if id(req) not in sampled_request_ids or req.inflight_middle_chunks > 0:
                 # Note (Yue Yin): Upstream decrements middle-chunk accounting
@@ -750,6 +759,7 @@ class OmniScheduler:
                         ),
                     )
                 )
+                req._pd_decode_credit_reserved = False
             except Exception as exc:
                 self._release_request_kv_cache(req)
                 self._emit_request_error(req.rid, exc)
@@ -1595,6 +1605,7 @@ class OmniScheduler:
                 self, self.running_batch, self.last_batch
             )
         self.running_batch = plan.running_batch
+        self._notify_pd_capacity_depth()
         return plan.batch_to_run
 
     def process_batch_result(self, batch, result):
@@ -1615,6 +1626,7 @@ class OmniScheduler:
                 if len(req.output_ids) > output_lengths[id(req)]
             }
             self._queue_pd_prefill_handoffs(batch, sampled_request_ids)
+        self._notify_pd_capacity_depth()
 
     def _warn_if_decode_queue_unbounded(self, stage_name: str, role: str) -> None:
         """Say which admission policy is in effect on the Decode half.
@@ -1663,6 +1675,16 @@ class OmniScheduler:
             depth += len(running.reqs)
         return depth
 
+    def _notify_pd_capacity_depth(self) -> None:
+        callback = self.__dict__.get("_pd_capacity_depth_changed_fn")
+        if callback is None or self.__dict__.get("_pd_role") != "decode":
+            return
+        depth = self._pd_decode_depth()
+        if depth == self.__dict__.get("_pd_last_capacity_depth"):
+            return
+        self._pd_last_capacity_depth = depth
+        callback(depth)
+
     def _pd_peer_pending(self) -> int | None:
         """Newest depth the Decode half reported, or None if it never has.
 
@@ -1680,49 +1702,42 @@ class OmniScheduler:
             logger.debug("peer pending read failed", exc_info=True)
             return None
 
-    def _pd_peer_capacity(self) -> int | None:
-        reader = self.__dict__.get("_pd_peer_capacity_fn")
-        if reader is None:
-            return None
-        try:
-            value = reader()
-        except Exception:
-            logger.debug("peer capacity read failed", exc_info=True)
-            return None
-        return None if value is None else int(value)
-
-    def _pd_decode_has_capacity(self) -> bool:
-        """Fail closed until Decode independently publishes usable capacity."""
-
-        if not self.__dict__.get("_pd_decode_pending_limit"):
-            return True
-        capacity = self._pd_peer_capacity()
-        return capacity is not None and capacity > 0
-
     def get_new_batch_prefill(self, running_batch):
-        # Note (Audrey Zheng): stop admitting when the Decode half is already
-        # holding more than it can work through. Colocated throttles admission
-        # implicitly, because prefill and decode contend for one card and one
-        # scheduler thread; splitting them removes that and nothing replaces
-        # it. Measured on two H200s at offered 16: Decode held about 437
-        # requests against `max_running_requests=64`, and a request took 40.96 s
-        # against 2.29 s colocated, while admission still read 100%.
-        #
-        # Holding here rather than at the handoff is deliberate. A request that
-        # already sampled cannot be kept in the Prefill batch -- it would
-        # continue decoding on the wrong half -- so the only safe place to stop
-        # is before its KV exists. The request waits in the Prefill queue and
-        # costs nothing.
         limit = self.__dict__.get("_pd_decode_pending_limit")
-        if limit and self.__dict__.get("_pd_role") == "prefill":
-            if not self._pd_decode_has_capacity():
-                pending = self._pd_peer_pending()
-                logger.debug(
-                    "holding prefill admission: decode holds %s, limit=%d, no credit",
-                    pending,
-                    limit,
-                )
-                return NextBatchPlan(batch_to_run=None, running_batch=running_batch)
+        if not limit or self.__dict__.get("_pd_role") != "prefill":
+            return OmniScheduler._get_new_batch_prefill_without_pd_capacity(
+                self, running_batch
+            )
+
+        waiting = list(self.waiting_queue)
+        claim = self.__dict__.get("_pd_claim_peer_capacity_fn")
+        claimed = 0 if claim is None else int(claim(len(waiting)))
+        if claimed < 0 or claimed > len(waiting):
+            raise RuntimeError("invalid Decode capacity claim")
+        if claimed == 0 and self.chunked_req is None:
+            return NextBatchPlan(batch_to_run=None, running_batch=running_batch)
+
+        eligible = waiting[:claimed]
+        tail = waiting[claimed:]
+        self.waiting_queue = eligible
+        try:
+            plan = OmniScheduler._get_new_batch_prefill_without_pd_capacity(
+                self, running_batch
+            )
+        except BaseException:
+            self.waiting_queue.extend(tail)
+            self._refund_pd_capacity(claimed)
+            raise
+
+        remaining_ids = {id(req) for req in self.waiting_queue}
+        admitted = [req for req in eligible if id(req) not in remaining_ids]
+        self.waiting_queue.extend(tail)
+        self._refund_pd_capacity(claimed - len(admitted))
+        for req in admitted:
+            req._pd_decode_credit_reserved = True
+        return plan
+
+    def _get_new_batch_prefill_without_pd_capacity(self, running_batch):
         # Note: (maydomine) batch prefill admissions to amortize the fixed step
         # cost; the oldest-request deadline survives partial admission and aborts.
         #
@@ -1757,6 +1772,17 @@ class OmniScheduler:
         if now - oldest >= self.prefill_coalesce_wait_s:
             return _Upstream.get_new_batch_prefill(self, running_batch)
         return NextBatchPlan(batch_to_run=None, running_batch=running_batch)
+
+    def _refund_pd_capacity(self, count: int) -> None:
+        refund = self.__dict__.get("_pd_refund_peer_capacity_fn")
+        if count > 0 and refund is not None:
+            refund(count)
+
+    def _refund_pd_capacity_for_req(self, req: Any) -> None:
+        if not getattr(req, "_pd_decode_credit_reserved", False):
+            return
+        req._pd_decode_credit_reserved = False
+        self._refund_pd_capacity(1)
 
     def run_batch(self, batch, pp_proxy_tensors=None):
         try:
@@ -2190,6 +2216,7 @@ class OmniScheduler:
             waiting_queue = []
             for req in self.waiting_queue:
                 if req.rid == request_id:
+                    self._refund_pd_capacity_for_req(req)
                     _detach_request_data(req)
                 else:
                     waiting_queue.append(req)
@@ -2215,6 +2242,7 @@ class OmniScheduler:
             _remove_from_batch(self.last_batch, request_id)
             _remove_from_batch(self._async_pending_batch(), request_id)
         self._drain_inbox_for_request(request_id)
+        self._notify_pd_capacity_depth()
 
     def admin(
         self, action: str, payload: dict[str, Any] | None = None
@@ -2699,9 +2727,12 @@ class OmniScheduler:
                 self._release_request_kv_cache(req)
 
     def _release_request_kv_cache(self, req: Any) -> None:
-        if req.req_pool_idx is None and req.mamba_pool_idx is None:
-            return
-        release_kv_cache(req, self.tree_cache)
+        try:
+            if req.req_pool_idx is None and req.mamba_pool_idx is None:
+                return
+            release_kv_cache(req, self.tree_cache)
+        finally:
+            self._refund_pd_capacity_for_req(req)
 
     def _event_loop_normal(self) -> None:
         # Note (Chenyang): yield the GIL when idle so co-located non-AR stages

@@ -180,48 +180,34 @@ class DataAckMessage(msgspec.Struct):
 
 @dataclass(frozen=True)
 class CapacityUpdateMessage:
-    """Decode capacity published independently of transfer acknowledgements."""
+    """Cumulative Decode admission grants for one publisher generation."""
 
     from_stage: str
     to_stage: str
     generation: str
     sequence: int
-    limit: int
-    receiver_pending: int
-    available_capacity: int
+    granted_total: int
 
     def __post_init__(self) -> None:
         _require_str(self.from_stage, "from_stage")
         _require_str(self.to_stage, "to_stage")
         _require_str(self.generation, "generation")
         _require_non_negative_int(self.sequence, "sequence")
-        _require_non_negative_int(self.limit, "limit")
-        _require_non_negative_int(self.receiver_pending, "receiver_pending")
-        _require_non_negative_int(self.available_capacity, "available_capacity")
-        if self.limit == 0:
-            raise ValueError("limit must be positive")
-        if self.available_capacity > self.limit:
-            raise ValueError("available_capacity must not exceed limit")
+        _require_non_negative_int(self.granted_total, "granted_total")
 
     def to_dict(self) -> dict[str, Any]:
         _require_str(self.from_stage, "from_stage")
         _require_str(self.to_stage, "to_stage")
         _require_str(self.generation, "generation")
         _require_non_negative_int(self.sequence, "sequence")
-        _require_non_negative_int(self.limit, "limit")
-        _require_non_negative_int(self.receiver_pending, "receiver_pending")
-        _require_non_negative_int(self.available_capacity, "available_capacity")
-        if self.available_capacity > self.limit:
-            raise ValueError("available_capacity must not exceed limit")
+        _require_non_negative_int(self.granted_total, "granted_total")
         return {
             "type": "capacity_update",
             "from_stage": self.from_stage,
             "to_stage": self.to_stage,
             "generation": self.generation,
             "sequence": self.sequence,
-            "limit": self.limit,
-            "receiver_pending": self.receiver_pending,
-            "available_capacity": self.available_capacity,
+            "granted_total": self.granted_total,
         }
 
     @classmethod
@@ -231,12 +217,8 @@ class CapacityUpdateMessage:
             to_stage=_require_str(d.get("to_stage"), "to_stage"),
             generation=_require_str(d.get("generation"), "generation"),
             sequence=_require_non_negative_int(d.get("sequence"), "sequence"),
-            limit=_require_non_negative_int(d.get("limit"), "limit"),
-            receiver_pending=_require_non_negative_int(
-                d.get("receiver_pending"), "receiver_pending"
-            ),
-            available_capacity=_require_non_negative_int(
-                d.get("available_capacity"), "available_capacity"
+            granted_total=_require_non_negative_int(
+                d.get("granted_total"), "granted_total"
             ),
         )
 

@@ -8,6 +8,7 @@ import logging
 from types import SimpleNamespace
 
 import pytest
+from sglang.srt.managers.schedule_batch import NextBatchPlan
 
 from sglang_omni.comm.engine import CommEngine
 from sglang_omni.proto.messages import CapacityUpdateMessage, DataAckMessage
@@ -21,12 +22,6 @@ def _prefill(limit, depth) -> OmniScheduler:
     scheduler._pd_role = "prefill"
     scheduler._pd_decode_pending_limit = limit
     scheduler._pd_peer_pending_fn = (lambda: depth) if depth is not None else None
-    return scheduler
-
-
-def _capacity_prefill(limit, capacity) -> OmniScheduler:
-    scheduler = _prefill(limit, None)
-    scheduler._pd_peer_capacity_fn = lambda: capacity
     return scheduler
 
 
@@ -56,23 +51,63 @@ def test_a_peer_that_never_reported_reads_as_none() -> None:
 
 
 def test_no_capacity_report_holds_a_hard_bound_closed() -> None:
-    assert _capacity_prefill(2, None)._pd_decode_has_capacity() is False
+    source = CommEngine(SimpleNamespace(stage_name="prefill", comm_config={}))
+
+    assert source.claim_peer_capacity("decode", 1) == 0
 
 
 def test_positive_capacity_allows_prefill_and_zero_holds_it() -> None:
-    assert _capacity_prefill(2, 1)._pd_decode_has_capacity() is True
-    assert _capacity_prefill(2, 0)._pd_decode_has_capacity() is False
+    source = CommEngine(SimpleNamespace(stage_name="prefill", comm_config={}))
+    source.record_capacity_update(
+        CapacityUpdateMessage("decode", "prefill", "generation", 1, 1)
+    )
+
+    assert source.claim_peer_capacity("decode", 1) == 1
+    assert source.claim_peer_capacity("decode", 1) == 0
 
 
 def test_capacity_update_rejects_a_publisher_generation_change() -> None:
     source = CommEngine(SimpleNamespace(stage_name="prefill", comm_config={}))
-    first = CapacityUpdateMessage("decode", "prefill", "generation-a", 1, 2, 2, 0)
+    first = CapacityUpdateMessage("decode", "prefill", "generation-a", 1, 2)
     source.record_capacity_update(first)
 
     with pytest.raises(RuntimeError, match="changed generation"):
         source.record_capacity_update(
-            CapacityUpdateMessage("decode", "prefill", "generation-b", 1, 2, 0, 2)
+            CapacityUpdateMessage("decode", "prefill", "generation-b", 1, 2)
         )
+    assert source.peer_capacity("decode") is None
+
+
+def test_duplicate_and_out_of_order_updates_do_not_restore_credit() -> None:
+    source = CommEngine(SimpleNamespace(stage_name="prefill", comm_config={}))
+    source.record_capacity_update(
+        CapacityUpdateMessage("decode", "prefill", "generation", 2, 2)
+    )
+    assert source.claim_peer_capacity("decode", 1) == 1
+
+    source.record_capacity_update(
+        CapacityUpdateMessage("decode", "prefill", "generation", 2, 2)
+    )
+    source.record_capacity_update(
+        CapacityUpdateMessage("decode", "prefill", "generation", 1, 1)
+    )
+
+    assert source.peer_capacity("decode") == 1
+
+
+def test_positive_capacity_expires_when_publisher_is_silent(monkeypatch) -> None:
+    now = [10.0]
+    monkeypatch.setattr("sglang_omni.comm.engine.time.monotonic", lambda: now[0])
+    source = CommEngine(SimpleNamespace(stage_name="prefill", comm_config={}))
+    source._capacity_freshness_timeout_s = 1.5
+    source.record_capacity_update(
+        CapacityUpdateMessage("decode", "prefill", "generation", 1, 1)
+    )
+
+    assert source.peer_capacity("decode") == 1
+    now[0] += 1.6
+    assert source.peer_capacity("decode") is None
+    assert source.claim_peer_capacity("decode", 1) == 0
 
 
 def test_decode_drain_returns_capacity_without_another_handoff(monkeypatch) -> None:
@@ -93,11 +128,10 @@ def test_decode_drain_returns_capacity_without_another_handoff(monkeypatch) -> N
                 "thinker_decode": ("ipc://decode",),
             },
         )
-        depth = 2
-        receiver = SimpleNamespace(pending_depth=lambda: depth)
+        receiver = SimpleNamespace(pending_depth=lambda: 2)
         destination.register_kv_receiver("decode:kv", receiver)
         destination.configure_capacity_updates(
-            to_stage="thinker_prefill", limit=2, interval_s=0.001
+            to_stage="thinker_prefill", limit=2, heartbeat_s=0.05
         )
 
         updates: asyncio.Queue[CapacityUpdateMessage] = asyncio.Queue()
@@ -109,24 +143,104 @@ def test_decode_drain_returns_capacity_without_another_handoff(monkeypatch) -> N
 
         monkeypatch.setattr("sglang_omni.comm.engine.send_to_endpoint", deliver)
         task = asyncio.create_task(destination._run_capacity_updates())
-        scheduler = _capacity_prefill(2, None)
-        scheduler._pd_peer_capacity_fn = lambda: source.peer_capacity("thinker_decode")
         try:
             first = await asyncio.wait_for(updates.get(), timeout=1)
-            assert first.receiver_pending == 2
-            assert first.available_capacity == 0
-            assert scheduler._pd_decode_has_capacity() is False
+            assert first.granted_total == 0
+            assert source.claim_peer_capacity("thinker_decode", 1) == 0
 
             # No DataReady/DataAck or new handoff occurs after Prefill stops.
-            depth = 0
+            destination.publish_capacity_depth(0)
             resumed = await asyncio.wait_for(updates.get(), timeout=1)
-            assert resumed.receiver_pending == 0
-            assert resumed.available_capacity == 2
-            assert scheduler._pd_decode_has_capacity() is True
+            assert resumed.granted_total == 2
+            assert source.claim_peer_capacity("thinker_decode", 2) == 2
         finally:
             destination._closed = True
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
+def test_prestart_depth_changes_do_not_mint_unconsumed_credits(monkeypatch) -> None:
+    async def scenario() -> None:
+        destination = CommEngine(
+            SimpleNamespace(stage_name="decode", comm_config={}),
+            rank_endpoints={"decode": ("ipc://decode",), "prefill": ("ipc://prefill",)},
+        )
+        destination.register_kv_receiver(
+            "decode:kv", SimpleNamespace(pending_depth=lambda: 0)
+        )
+        destination.configure_capacity_updates(to_stage="prefill", limit=2)
+        destination.publish_capacity_depth(2)
+        destination.publish_capacity_depth(0)
+        updates = asyncio.Queue()
+
+        async def deliver(_sockets, _endpoint, message) -> None:
+            await updates.put(message)
+
+        monkeypatch.setattr("sglang_omni.comm.engine.send_to_endpoint", deliver)
+        task = asyncio.create_task(destination._run_capacity_updates())
+        try:
+            update = await asyncio.wait_for(updates.get(), timeout=1)
+            assert update.granted_total == 2
+        finally:
+            destination._closed = True
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
+def test_one_credit_cannot_admit_two_requests_in_one_wave(monkeypatch) -> None:
+    scheduler = _prefill(2, None)
+    scheduler.chunked_req = None
+    scheduler.waiting_queue = [SimpleNamespace(rid="a"), SimpleNamespace(rid="b")]
+    scheduler._pd_claim_peer_capacity_fn = lambda maximum: min(maximum, 1)
+    refunds = []
+    scheduler._pd_refund_peer_capacity_fn = refunds.append
+
+    def select(running_batch):
+        admitted = list(scheduler.waiting_queue)
+        scheduler.waiting_queue = []
+        return NextBatchPlan(
+            batch_to_run=SimpleNamespace(reqs=admitted),
+            running_batch=running_batch,
+        )
+
+    monkeypatch.setattr(
+        OmniScheduler,
+        "_get_new_batch_prefill_without_pd_capacity",
+        lambda _scheduler, running_batch: select(running_batch),
+    )
+    plan = scheduler.get_new_batch_prefill(SimpleNamespace())
+
+    assert [req.rid for req in plan.batch_to_run.reqs] == ["a"]
+    assert [req.rid for req in scheduler.waiting_queue] == ["b"]
+    assert scheduler.waiting_queue[0].__dict__.get("_pd_decode_credit_reserved") is None
+    assert plan.batch_to_run.reqs[0]._pd_decode_credit_reserved is True
+    assert refunds == []
+
+
+def test_close_cancels_capacity_publisher_task() -> None:
+    async def scenario() -> None:
+        router = SimpleNamespace(
+            stage_name="decode", comm_config={}, close=lambda: None
+        )
+        engine = CommEngine(router)
+        cancelled = asyncio.Event()
+
+        async def publisher() -> None:
+            try:
+                await asyncio.Future()
+            finally:
+                cancelled.set()
+
+        engine._capacity_task = asyncio.create_task(publisher())
+        await asyncio.sleep(0)
+        await engine.close()
+
+        assert cancelled.is_set()
+        assert engine._capacity_task is None
 
     asyncio.run(scenario())
 
