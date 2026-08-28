@@ -16,6 +16,10 @@ from sglang_omni.pipeline.stage_workers import (
     _patched_spawn_env,
 )
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
+from sglang_omni.scheduling.pd_alloc_lock import (
+    LockedKVAllocator,
+    synchronize_pd_allocator,
+)
 from tests.unit_test.fixtures.pipeline_fakes import FakeScheduler, fake_factory_path
 
 cuda_platform = CUDAOmniPlatform()
@@ -271,6 +275,31 @@ def test_gpu_scheduler_construction_uses_startup_lock(monkeypatch) -> None:
 
     assert isinstance(scheduler, FakeScheduler)
     assert seen_gpu_ids == [0]
+
+
+def test_scheduler_construction_scopes_allocator_lock_to_pd(monkeypatch) -> None:
+    raw_allocator = object()
+
+    def factory():
+        return synchronize_pd_allocator(raw_allocator)
+
+    monkeypatch.setattr(stage_workers, "import_string", lambda _path: factory)
+
+    ordinary = stage_workers._construct_scheduler(
+        StageLaunchConfig(stage_name="ordinary", factory="unused"),
+        None,
+        _RecordingLog(),
+    )
+    pd = stage_workers._construct_scheduler(
+        StageLaunchConfig(
+            stage_name="thinker_decode", factory="unused", pd_execution=object()
+        ),
+        None,
+        _RecordingLog(),
+    )
+
+    assert ordinary is raw_allocator
+    assert isinstance(pd, LockedKVAllocator)
 
 
 def test_scheduler_applies_child_defaults_without_overriding_explicit_args(

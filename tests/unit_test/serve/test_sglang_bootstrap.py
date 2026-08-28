@@ -10,7 +10,10 @@ import pytest
 from sglang_omni.model_runner import _hidden_capture as hidden_capture_module
 from sglang_omni.model_runner import model_worker as model_worker_module
 from sglang_omni.scheduling import bootstrap, sglang_backend
-from sglang_omni.scheduling.pd_alloc_lock import LockedKVAllocator
+from sglang_omni.scheduling.pd_alloc_lock import (
+    LockedKVAllocator,
+    pd_allocator_sync_scope,
+)
 from tests.unit_test.fakes import FakeServerArgs
 
 
@@ -72,8 +75,9 @@ def test_runtime_configuration_reports_explicit_phase_backends(
     )
 
 
+@pytest.mark.parametrize("pd_enabled", [False, True])
 def test_create_sglang_infrastructure_runs_0515_initialization_phases(
-    monkeypatch,
+    monkeypatch, pd_enabled
 ) -> None:
     events: list[str] = []
     monkeypatch.setattr(
@@ -140,19 +144,23 @@ def test_create_sglang_infrastructure_runs_0515_initialization_phases(
         chunked_prefill_size=8,
         max_prefill_tokens=16,
     )
-    infrastructure = bootstrap.create_sglang_infrastructure(server_args, 0)
+    with pd_allocator_sync_scope(pd_enabled):
+        infrastructure = bootstrap.create_sglang_infrastructure(server_args, 0)
 
     assert events == [
         "runtime_configuration",
         "model_worker",
         "alloc_memory_pool",
+        "get_memory_pool",
         "init_attention_backends",
         "init_cuda_graphs",
-        "get_memory_pool",
     ]
     assert infrastructure[0].model_runner.model is FakeRunner.model
     allocator = infrastructure[3]
-    assert isinstance(allocator, LockedKVAllocator)
+    assert isinstance(allocator, LockedKVAllocator) is pd_enabled
+    if not pd_enabled:
+        assert allocator == "kv_pool"
+    assert infrastructure[0].model_runner.token_to_kv_pool_allocator is allocator
     assert infrastructure[1][1][2] is allocator
     assert consumers == {"prefill": allocator, "decode": allocator}
 
@@ -333,9 +341,9 @@ def test_hidden_capture_is_installed_before_graph_initialization(monkeypatch) ->
         "model_worker",
         ("install_hidden_capture", FakeRunner.model, [0, 24], 8192),
         "alloc_memory_pool",
+        "get_memory_pool",
         "init_attention_backends",
         "init_cuda_graphs",
-        "get_memory_pool",
     ]
 
 

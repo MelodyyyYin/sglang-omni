@@ -806,12 +806,16 @@ def _construct_scheduler(
         spec.factory_args,
         defaults=spec.factory_arg_defaults,
     )
+    from sglang_omni.scheduling.pd_alloc_lock import pd_allocator_sync_scope
+
     if gpu_id is None:
-        return factory(**factory_args)
+        with pd_allocator_sync_scope(spec.pd_execution is not None):
+            return factory(**factory_args)
 
     with gpu_startup_lock(int(gpu_id)) as lock_path:
         log.info(f"Acquired GPU startup lock for stage {spec.stage_name}: {lock_path}")
-        return factory(**factory_args)
+        with pd_allocator_sync_scope(spec.pd_execution is not None):
+            return factory(**factory_args)
 
 
 def _prepare_accelerator_environment(

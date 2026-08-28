@@ -1,58 +1,104 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Serialize every allocator mutation for one SGLang KV pool.
-
-``TokenToKVPoolAllocator.alloc`` reads ``free_pages``, slices the leading
-entries, and writes the remainder back. Nothing in
-``sglang/srt/mem_cache/allocator`` holds a lock, which is correct while one
-thread owns the allocator.
-
-A PD Decode half has two. The scheduler thread allocates for decode steps.
-The comm event loop allocates inside ``prepare_kv_receive`` ->
-``AllocatorKVReceiver.reserve``, and ``bind_pd_runtime`` hands it the same
-allocator instance. Two callers that interleave between the read and the
-write receive the same slots.
-
-Measured on two H200s with both calls recorded: one 3,000-request run logged
-21,309 slots handed to one thread while the other still held them, and the
-requests that received them returned empty completions.
-
-This wrapper must be installed before consumers retain aliases. Everything
-else is delegated untouched, so the allocator's own behaviour is unchanged.
-"""
+"""Serialize allocator access shared by PD scheduler and comm threads."""
 
 from __future__ import annotations
 
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
+
+_pd_allocator_sync: ContextVar[bool] = ContextVar(
+    "sglang_omni_pd_allocator_sync", default=False
+)
+
+
+@contextmanager
+def pd_allocator_sync_scope(enabled: bool) -> Iterator[None]:
+    """Select allocator synchronization while a stage factory is constructed."""
+
+    token = _pd_allocator_sync.set(enabled)
+    try:
+        yield
+    finally:
+        _pd_allocator_sync.reset(token)
+
+
+def synchronize_pd_allocator(allocator: Any) -> Any:
+    """Wrap *allocator* only for a PD stage being constructed."""
+
+    if not _pd_allocator_sync.get():
+        return allocator
+    if isinstance(allocator, LockedKVAllocator):
+        return allocator
+    return LockedKVAllocator(allocator)
 
 
 class LockedKVAllocator:
-    """Delegate to *inner*, holding a lock across ``alloc`` and ``free``.
-
-    Only the two methods that mutate the free list are guarded. The lock is
-    uncontended on the scheduler thread except when a transfer is reserving,
-    so the cost on the decode path is one uncontended acquire per step.
-    """
+    """Delegate the SGLang allocator interface through one reentrant lock."""
 
     def __init__(self, inner: Any) -> None:
         # Note (Audrey Zheng): set through __dict__ because __setattr__ below
         # forwards to the wrapped allocator.
         self.__dict__["_inner"] = inner
-        self.__dict__["_alloc_lock"] = threading.Lock()
+        self.__dict__["_alloc_lock"] = threading.RLock()
+
+    def _call(self, name: str, *args: Any, **kwargs: Any) -> Any:
+        with self.__dict__["_alloc_lock"]:
+            return getattr(self.__dict__["_inner"], name)(*args, **kwargs)
 
     def alloc(self, need_size: int) -> Any:
-        with self.__dict__["_alloc_lock"]:
-            return self.__dict__["_inner"].alloc(need_size)
+        return self._call("alloc", need_size)
 
     def free(self, free_index: Any) -> Any:
-        with self.__dict__["_alloc_lock"]:
-            return self.__dict__["_inner"].free(free_index)
+        return self._call("free", free_index)
+
+    def alloc_extend(self, *args: Any, **kwargs: Any) -> Any:
+        return self._call("alloc_extend", *args, **kwargs)
+
+    def alloc_decode(self, *args: Any, **kwargs: Any) -> Any:
+        return self._call("alloc_decode", *args, **kwargs)
+
+    def available_size(self) -> Any:
+        return self._call("available_size")
+
+    def backup_state(self) -> Any:
+        return self._call("backup_state")
+
+    def restore_state(self, state: Any) -> Any:
+        return self._call("restore_state", state)
+
+    def merge_and_sort_free(self) -> Any:
+        return self._call("merge_and_sort_free")
+
+    def clear(self) -> Any:
+        return self._call("clear")
+
+    def resize(self, config: Any) -> Any:
+        return self._call("resize", config)
+
+    def free_group_begin(self) -> Any:
+        lock = self.__dict__["_alloc_lock"]
+        lock.acquire()
+        try:
+            return self.__dict__["_inner"].free_group_begin()
+        except BaseException:
+            lock.release()
+            raise
+
+    def free_group_end(self) -> Any:
+        try:
+            return self.__dict__["_inner"].free_group_end()
+        finally:
+            self.__dict__["_alloc_lock"].release()
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.__dict__["_inner"], name)
 
     def __setattr__(self, name: str, value: Any) -> None:
-        setattr(self.__dict__["_inner"], name, value)
+        with self.__dict__["_alloc_lock"]:
+            setattr(self.__dict__["_inner"], name, value)
 
     def __repr__(self) -> str:
         return f"LockedKVAllocator({self.__dict__['_inner']!r})"

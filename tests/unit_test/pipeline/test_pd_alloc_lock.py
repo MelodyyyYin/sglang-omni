@@ -22,6 +22,8 @@ class _RacyAllocator:
         self.free_pages = list(range(size))
         self.page_size = 1
         self.handed_out: list[int] = []
+        self.free_group: list[list[int]] = []
+        self.is_not_in_free_group = True
 
     def alloc(self, need_size: int):
         taken = self.free_pages[:need_size]
@@ -32,7 +34,20 @@ class _RacyAllocator:
         return taken
 
     def free(self, index) -> None:
-        self.free_pages.extend(index)
+        if self.is_not_in_free_group:
+            self.free_pages.extend(index)
+        else:
+            self.free_group.append(index)
+
+    def free_group_begin(self) -> None:
+        self.is_not_in_free_group = False
+        self.free_group = []
+
+    def free_group_end(self) -> None:
+        self.is_not_in_free_group = True
+        for indices in self.free_group:
+            self.free(indices)
+        self.free_group = []
 
     def available_size(self) -> int:
         return len(self.free_pages)
@@ -128,6 +143,25 @@ def test_comm_alloc_and_cached_alias_free_share_one_domain() -> None:
     inner.finish_alloc.set()
     alloc_thread.join(timeout=1)
     free_thread.join(timeout=1)
+
+    assert allocated == [0]
+    assert sorted(inner.free_pages) == [1, 2]
+    assert len(inner.free_pages) == len(set(inner.free_pages))
+
+
+def test_free_group_holds_the_domain_until_group_end() -> None:
+    inner = _RacyAllocator(2)
+    allocator = LockedKVAllocator(inner)
+    allocated: list[int] = []
+
+    allocator.free_group_begin()
+    allocator.free([2])
+    thread = threading.Thread(target=lambda: allocated.extend(allocator.alloc(1)))
+    thread.start()
+    assert thread.is_alive()
+
+    allocator.free_group_end()
+    thread.join(timeout=1)
 
     assert allocated == [0]
     assert sorted(inner.free_pages) == [1, 2]
