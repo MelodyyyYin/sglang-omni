@@ -101,7 +101,7 @@ def test_decode_queue_capacity_is_claimed_before_inner_kv_reservation():
         ownership_reserve=lambda continuation: tracker.reserve(
             continuation.request_id, continuation.deadline_unix_s
         ),
-        ownership_release=lambda request_id: tracker.pop(request_id),
+        ownership_release=lambda request_id: tracker.pop_for_release(request_id),
     )
     first = _sample_continuation(request_id="first", transfer_id="xfer-first")
     second = _sample_continuation(request_id="second", transfer_id="xfer-second")

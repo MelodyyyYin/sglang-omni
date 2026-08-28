@@ -9,7 +9,7 @@ import time
 from array import array
 from collections import Counter
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import torch
 
@@ -43,11 +43,22 @@ class DecodeOwnershipCapacityExhausted(RuntimeError):
     """Decode cannot accept another KV-owning continuation."""
 
 
+PDDecodeState = Literal[
+    "reserved",
+    "committed",
+    "ready",
+    "deferred",
+    "waiting",
+    "running",
+    "terminal_pending",
+]
+
+
 @dataclass
 class PDDecodeOwnedRequest:
     request_id: str
     deadline_unix_s: float | None
-    state: str = "reserved"
+    state: PDDecodeState = "reserved"
     allocation: ReservedAllocation | None = None
     req: Any = None
 
@@ -63,15 +74,22 @@ class PDDecodeOwnershipTracker:
     _QUEUED_STATES = frozenset(
         {"reserved", "committed", "ready", "deferred", "waiting"}
     )
+    _TRANSITIONS: dict[PDDecodeState, frozenset[PDDecodeState]] = {
+        "reserved": frozenset({"committed"}),
+        "committed": frozenset({"ready"}),
+        "ready": frozenset({"deferred", "waiting"}),
+        "deferred": frozenset({"waiting"}),
+        "waiting": frozenset({"running"}),
+        "running": frozenset({"waiting", "terminal_pending"}),
+        "terminal_pending": frozenset(),
+    }
 
     def __init__(self, max_queued_requests: int | None) -> None:
         self._max_queued_requests = max_queued_requests
         self._lock = threading.RLock()
         self._owned: dict[str, PDDecodeOwnedRequest] = {}
 
-    def reserve(
-        self, request_id: str, deadline_unix_s: float | None
-    ) -> PDDecodeOwnedRequest:
+    def reserve(self, request_id: str, deadline_unix_s: float | None) -> None:
         with self._lock:
             if request_id in self._owned:
                 raise RuntimeError(f"duplicate Decode ownership for {request_id!r}")
@@ -84,48 +102,77 @@ class PDDecodeOwnershipTracker:
                 )
             owned = PDDecodeOwnedRequest(request_id, deadline_unix_s)
             self._owned[request_id] = owned
-            return owned
 
-    def attach_allocation(
-        self, request_id: str, allocation: ReservedAllocation
-    ) -> None:
+    def mark_committed(self, request_id: str) -> bool:
+        return self.transition_if_owned(request_id, {"reserved"}, "committed")
+
+    def mark_ready(self, request_id: str, allocation: ReservedAllocation) -> bool:
         with self._lock:
-            self._owned[request_id].allocation = allocation
+            owned = self._owned.get(request_id)
+            if owned is None:
+                return False
+            self._validate_transition(owned.state, "ready")
+            owned.allocation = allocation
+            owned.state = "ready"
+            return True
 
-    def attach_req(self, request_id: str, req: Any) -> None:
+    def mark_waiting(self, request_id: str, req: Any) -> bool:
         with self._lock:
-            self._owned[request_id].req = req
+            owned = self._owned.get(request_id)
+            if owned is None:
+                return False
+            self._validate_transition(owned.state, "waiting")
+            owned.req = req
+            owned.state = "waiting"
+            return True
 
-    def transition(self, request_id: str, state: str) -> None:
+    def transition_if_owned(
+        self,
+        request_id: str,
+        expected_states: set[PDDecodeState] | frozenset[PDDecodeState],
+        new_state: PDDecodeState,
+    ) -> bool:
+        if new_state not in self._TRANSITIONS:
+            raise ValueError(f"unknown Decode ownership state {new_state!r}")
         with self._lock:
-            self._owned[request_id].state = state
+            owned = self._owned.get(request_id)
+            if owned is None or owned.state not in expected_states:
+                return False
+            if owned.state != new_state:
+                self._validate_transition(owned.state, new_state)
+                owned.state = new_state
+            if new_state == "terminal_pending":
+                owned.deadline_unix_s = None
+            return True
 
-    def mark_terminal_pending(self, request_id: str) -> None:
+    def owns(self, request_id: str) -> bool:
         with self._lock:
-            owned = self._owned[request_id]
-            owned.state = "terminal_pending"
-            owned.deadline_unix_s = None
+            return request_id in self._owned
 
-    def pop(self, request_id: str) -> PDDecodeOwnedRequest | None:
+    def pop_for_release(self, request_id: str) -> PDDecodeOwnedRequest | None:
         with self._lock:
             return self._owned.pop(request_id, None)
-
-    def get(self, request_id: str) -> PDDecodeOwnedRequest | None:
-        with self._lock:
-            return self._owned.get(request_id)
 
     def request_ids(self) -> tuple[str, ...]:
         with self._lock:
             return tuple(self._owned)
 
-    def expired_request_ids(self, now_unix_s: float) -> tuple[str, ...]:
+    def claim_expired(
+        self, now_unix_s: float
+    ) -> tuple[tuple[PDDecodeOwnedRequest, bool], ...]:
         with self._lock:
-            return tuple(
-                request_id
-                for request_id, owned in self._owned.items()
-                if owned.deadline_unix_s is not None
-                and now_unix_s >= owned.deadline_unix_s
-            )
+            claimed = []
+            for request_id, owned in list(self._owned.items()):
+                if owned.deadline_unix_s is None or now_unix_s < owned.deadline_unix_s:
+                    continue
+                if owned.state == "running":
+                    owned.state = "terminal_pending"
+                    owned.deadline_unix_s = None
+                    claimed.append((owned, True))
+                else:
+                    del self._owned[request_id]
+                    claimed.append((owned, False))
+            return tuple(claimed)
 
     def snapshot(self) -> dict[str, int]:
         with self._lock:
@@ -137,6 +184,14 @@ class PDDecodeOwnershipTracker:
 
     def _queued_count_locked(self) -> int:
         return sum(owned.state in self._QUEUED_STATES for owned in self._owned.values())
+
+    def _validate_transition(
+        self, current: PDDecodeState, new_state: PDDecodeState
+    ) -> None:
+        if new_state not in self._TRANSITIONS[current]:
+            raise RuntimeError(
+                f"invalid Decode ownership transition {current!r} -> {new_state!r}"
+            )
 
 
 def sampling_params_to_dict(params: Any) -> dict[str, Any]:
@@ -286,6 +341,5 @@ def req_from_continuation(
     req.kv = ReqKvInfo(kv_allocated_len=allocation.seq_len, swa_evicted_seqlen=0)
     req.set_extend_range(allocation.seq_len, allocation.seq_len)
     req._omni_terminal_claimed = False
-    req._pd_deadline_unix_s = continuation.deadline_unix_s
     req._coalesce_enqueue_t = 0.0
     return req

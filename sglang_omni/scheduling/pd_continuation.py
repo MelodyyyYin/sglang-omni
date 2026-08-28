@@ -497,6 +497,7 @@ class ContinuationAwareKVReceiver:
         is_local: bool = True,
         allowed_resume_schemas: frozenset[str] = frozenset(),
         ownership_reserve: Callable[[DecodeContinuation], None] | None = None,
+        ownership_committed: Callable[[str], None] | None = None,
         ownership_release: Callable[[str], None] | None = None,
     ) -> None:
         self._inner = inner
@@ -506,6 +507,7 @@ class ContinuationAwareKVReceiver:
         self._is_local = is_local
         self._allowed_resume_schemas = allowed_resume_schemas
         self._ownership_reserve = ownership_reserve
+        self._ownership_committed = ownership_committed
         self._ownership_release = ownership_release
 
     def reserve(self, request: KVTransferPrepareMessage) -> KVPageDestination:
@@ -539,6 +541,8 @@ class ContinuationAwareKVReceiver:
         destination: KVPageDestination,
     ) -> None:
         self._inner.commit(request, destination)
+        if self._ownership_committed is not None:
+            self._ownership_committed(request.request_id)
         self._controller.set_kv_committed(request.request_id, request.transfer_id)
 
     def abort(
@@ -547,13 +551,19 @@ class ContinuationAwareKVReceiver:
         destination: KVPageDestination | None,
         error: BaseException,
     ) -> None:
-        self._inner.abort(request, destination, error)
-        self._controller.abort(
-            request.request_id,
-            reason=str(error) or type(error).__name__,
-            transfer_id=request.transfer_id,
-        )
-        if self._ownership_release is not None:
+        if self._ownership_release is None:
+            self._inner.abort(request, destination, error)
+            self._controller.abort(
+                request.request_id,
+                reason=str(error) or type(error).__name__,
+                transfer_id=request.transfer_id,
+            )
+        else:
+            self._controller.abort(
+                request.request_id,
+                reason=str(error) or type(error).__name__,
+                transfer_id=request.transfer_id,
+            )
             self._ownership_release(request.request_id)
 
     def _decode_metadata(

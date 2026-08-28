@@ -601,22 +601,24 @@ class OmniScheduler:
         def on_ready(pending):
             if pending.continuation is None:
                 raise RuntimeError("rank-ready handoff has no continuation")
-            allocation = receiver.take_committed(pending.request_id)
-            try:
-                self._pd_ownership.attach_allocation(pending.request_id, allocation)
-                self._pd_ownership.transition(pending.request_id, "ready")
-                self._pd_ready_queue.put(
-                    PDDecodeAdmission(pending.continuation, allocation)
-                )
-            except Exception:
-                # Note (Yue Yin): take_committed transfers ownership out of the
-                # receiver before the scheduler queue can accept it.
-                self._release_pd_owned(
-                    pending.request_id,
-                    reason="ready queue rejected continuation",
-                    fallback_allocation=allocation,
-                )
-                raise
+            with self._pd_admission_lock:
+                allocation = receiver.take_committed(pending.request_id)
+                try:
+                    if not self._pd_ownership.mark_ready(
+                        pending.request_id, allocation
+                    ):
+                        self.token_to_kv_pool_allocator.free(allocation.slots)
+                        return
+                    self._pd_ready_queue.put(
+                        PDDecodeAdmission(pending.continuation, allocation)
+                    )
+                except Exception:
+                    # take_committed transfers ownership out of the receiver.
+                    self._release_pd_owned(
+                        pending.request_id,
+                        reason="ready queue rejected continuation",
+                    )
+                    raise
 
         def reserve_ownership(continuation):
             deadline = continuation.deadline_unix_s
@@ -625,13 +627,13 @@ class OmniScheduler:
             self._pd_ownership.reserve(continuation.request_id, deadline)
 
         def release_ownership(request_id):
-            self._release_pd_owned(request_id, reason="handoff cleanup")
+            with self._pd_admission_lock:
+                self._release_pd_owned(request_id, reason="handoff cleanup")
 
         controller = PDHandoffController(
             rank_ready_callback=on_ready,
-            cleanup_callback=lambda pending, _reason: (
-                receiver.release(pending.request_id),
-                release_ownership(pending.request_id),
+            cleanup_callback=lambda pending, _reason: release_ownership(
+                pending.request_id
             ),
         )
         self._pd_receiver = receiver
@@ -641,6 +643,7 @@ class OmniScheduler:
             controller,
             allowed_resume_schemas=self._pd_resume_schemas,
             ownership_reserve=reserve_ownership,
+            ownership_committed=self._pd_ownership.mark_committed,
             ownership_release=release_ownership,
         )
 
@@ -649,17 +652,20 @@ class OmniScheduler:
         request_id: str,
         *,
         reason: str,
-        fallback_allocation: Any = None,
     ) -> bool:
         """Claim and release one Decode-owned request exactly once."""
 
         tracker = self.__dict__.get("_pd_ownership")
-        owned = tracker.pop(request_id) if tracker is not None else None
+        owned = tracker.pop_for_release(request_id) if tracker is not None else None
         if owned is None:
-            if fallback_allocation is not None:
-                self.token_to_kv_pool_allocator.free(fallback_allocation.slots)
-                return True
             return False
+        self._release_pd_owned_record(owned)
+        logger.debug(
+            "released PD Decode ownership request=%s reason=%s", request_id, reason
+        )
+        return True
+
+    def _release_pd_owned_record(self, owned: Any) -> None:
         if owned.req is not None:
             if (
                 owned.req.req_pool_idx is not None
@@ -672,33 +678,28 @@ class OmniScheduler:
             # Before rank-ready, the receiver still owns the destination KV.
             receiver = self.__dict__.get("_pd_receiver")
             if receiver is not None:
-                receiver.release(request_id)
-        logger.debug(
-            "released PD Decode ownership request=%s reason=%s", request_id, reason
-        )
-        return True
+                receiver.release(owned.request_id)
 
     def _expire_pd_owned_requests(self) -> None:
         tracker = self.__dict__.get("_pd_ownership")
         if tracker is None:
             return
-        for request_id in tracker.expired_request_ids(time.time()):
+        for owned, running in tracker.claim_expired(time.time()):
+            request_id = owned.request_id
             self._emit_request_error(
                 request_id,
                 TimeoutError("PD end-to-end request deadline reached"),
                 metadata={"pd_deadline": True},
             )
             self._aborted_request_ids.add(request_id)
-            owned = tracker.get(request_id)
-            if owned is not None and owned.state == "running":
-                tracker.mark_terminal_pending(request_id)
+            if running:
                 self._mark_running_request_aborted(request_id)
                 continue
-            if owned is not None and owned.req is not None:
+            if owned.req is not None:
                 self.waiting_queue = [
                     req for req in self.waiting_queue if req.rid != request_id
                 ]
-            self._release_pd_owned(request_id, reason="end-to-end deadline")
+            self._release_pd_owned_record(owned)
 
     def _drain_pd_admissions(self) -> None:
         ready_queue = self.__dict__.get("_pd_ready_queue")
@@ -714,7 +715,7 @@ class OmniScheduler:
                     except _queue_mod.Empty:
                         return
                 request_id = admission.continuation.request_id
-                if self._pd_ownership.get(request_id) is None:
+                if not self._pd_ownership.owns(request_id):
                     self._pd_deferred_admission = None
                     continue
                 if request_id in self._aborted_request_ids:
@@ -734,7 +735,10 @@ class OmniScheduler:
                     # Note (Yue Yin): The committed KV must remain owned while
                     # an earlier request is still using the request-pool slot.
                     self._pd_deferred_admission = admission
-                    self._pd_ownership.transition(request_id, "deferred")
+                    if not self._pd_ownership.transition_if_owned(
+                        request_id, {"ready", "deferred"}, "deferred"
+                    ):
+                        self._pd_deferred_admission = None
                     return
                 except Exception as exc:
                     self._pd_deferred_admission = None
@@ -744,8 +748,11 @@ class OmniScheduler:
                     )
                     continue
                 self._pd_deferred_admission = None
-                self._pd_ownership.attach_req(request_id, req)
-                self._pd_ownership.transition(request_id, "waiting")
+                if not self._pd_ownership.mark_waiting(request_id, req):
+                    raise RuntimeError(
+                        f"Decode ownership disappeared during admission for "
+                        f"{request_id!r}"
+                    )
                 self.waiting_queue.append(req)
                 self.outbox.put(
                     OutgoingMessage(request_id=request_id, type="pd_admitted")
@@ -762,10 +769,10 @@ class OmniScheduler:
                 self._release_pd_owned(
                     admission.continuation.request_id, reason="shutdown"
                 )
-        tracker = self.__dict__.get("_pd_ownership")
-        if tracker is not None:
-            for request_id in tracker.request_ids():
-                self._release_pd_owned(request_id, reason="shutdown")
+            tracker = self.__dict__.get("_pd_ownership")
+            if tracker is not None:
+                for request_id in tracker.request_ids():
+                    self._release_pd_owned(request_id, reason="shutdown")
             while True:
                 try:
                     admission = ready_queue.get_nowait()
@@ -1286,21 +1293,19 @@ class OmniScheduler:
         time.sleep(0.0001 if request_admission_pending else 0.001)
 
     def _queued_admission_count(self) -> int:
+        tracker = self.__dict__.get("_pd_ownership")
+        waiting_count = (
+            tracker.queued_count()
+            if tracker is not None and self.__dict__.get("_pd_role") == "decode"
+            else len(self.waiting_queue)
+        )
         count = (
-            len(self.waiting_queue)
+            waiting_count
             + len(self._pending_request_builds)
             + len(self._pending_request_admissions)
             + len(self._backlogged_request_build_payloads)
             + len(self._deferred_request_payloads)
         )
-        tracker = self.__dict__.get("_pd_ownership")
-        if tracker is not None:
-            # waiting_queue is already counted above; add only Decode-owned
-            # reservations/commits/ready/deferred records.
-            pd_waiting = sum(
-                1 for req in self.waiting_queue if tracker.get(req.rid) is not None
-            )
-            count += max(0, tracker.queued_count() - pd_waiting)
         return count
 
     def _waiting_queue_is_full(self) -> bool:
@@ -1698,8 +1703,7 @@ class OmniScheduler:
             and self.running_batch is not None
         ):
             for req in self.running_batch.reqs:
-                if tracker.get(req.rid) is not None:
-                    tracker.transition(req.rid, "running")
+                tracker.transition_if_owned(req.rid, {"waiting", "running"}, "running")
         return plan.batch_to_run
 
     def process_batch_result(self, batch, result):
@@ -2194,7 +2198,12 @@ class OmniScheduler:
                     waiting_queue.append(req)
             self.waiting_queue = waiting_queue
         if not running_abort:
-            self._release_pd_owned(request_id, reason="abort")
+            pd_admission_lock = self.__dict__.get("_pd_admission_lock")
+            if pd_admission_lock is None:
+                self._release_pd_owned(request_id, reason="abort")
+            else:
+                with pd_admission_lock:
+                    self._release_pd_owned(request_id, reason="abort")
         if not running_abort:
             self._run_abort_callback(request_id)
         self._pending_stream_ingress.pop(request_id, None)
@@ -2632,8 +2641,17 @@ class OmniScheduler:
             hisparse_coordinator=batch.hisparse_coordinator,
         )
         batch.reqs = []
+        tracker = self.__dict__.get("_pd_ownership")
         for req in retracted_reqs:
-            self._add_request_to_queue(req)
+            transitioned = tracker is not None and tracker.transition_if_owned(
+                req.rid, {"running"}, "waiting"
+            )
+            try:
+                self._add_request_to_queue(req)
+            except Exception:
+                if transitioned:
+                    tracker.transition_if_owned(req.rid, {"waiting"}, "running")
+                raise
         batch.batch_is_full = False
         self.chunked_req = None
         return len(retracted_reqs)
@@ -2704,7 +2722,7 @@ class OmniScheduler:
 
     def _release_request_kv_cache(self, req: Any) -> None:
         tracker = self.__dict__.get("_pd_ownership")
-        if tracker is not None and tracker.get(req.rid) is not None:
+        if tracker is not None and tracker.owns(req.rid):
             self._release_pd_owned(req.rid, reason="request terminal")
             return
         if req.req_pool_idx is None and req.mamba_pool_idx is None:
