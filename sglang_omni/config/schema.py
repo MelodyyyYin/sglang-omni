@@ -145,12 +145,9 @@ class PDConfig(BaseModel):
 
     prefill: PDStagePlacement = Field(default_factory=PDStagePlacement)
     decode: PDStagePlacement = Field(default_factory=PDStagePlacement)
-    # Reserve before Prefill admission, then carry the permit with the source
-    # KV lease until Decode acknowledges it. This bounds ownership rather than
-    # only the async send coroutines.
+    # Maximum number of transfers concurrently waiting for Decode ACK.
     max_inflight_handoffs: int | None = Field(default=None, gt=0)
-    # Bound the prompt KV protected by those handoffs by actual tokens, not
-    # only request count. When omitted, runtime uses the Prefill KV-pool size.
+    # Page-rounded source KV that may be reserved for pending handoffs.
     max_inflight_handoff_tokens: int | None = Field(default=None, gt=0)
     # Note (Audrey Zheng): how much work Decode may have pending before
     # Prefill stops producing more. Unset leaves Prefill unthrottled, which

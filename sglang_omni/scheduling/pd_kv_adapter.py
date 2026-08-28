@@ -232,11 +232,11 @@ class SGLangKVPageLease:
     """Keep Prefill KV alive until the receiver ACK releases the source."""
 
     def __init__(
-        self, req: Any, tree_cache: Any, *, capacity_lease: Any | None = None
+        self, req: Any, tree_cache: Any, *, on_release: Callable[[], None] | None = None
     ) -> None:
         self._req = req
         self._tree_cache = tree_cache
-        self._capacity_lease = capacity_lease
+        self._on_release = on_release
         self._lock = threading.Lock()
 
     def release(self) -> None:
@@ -245,12 +245,12 @@ class SGLangKVPageLease:
             if req is None:
                 return
             self._req = None
-            capacity_lease = self._capacity_lease
-            self._capacity_lease = None
+            on_release = self._on_release
+            self._on_release = None
         from sglang.srt.mem_cache.common import release_kv_cache
 
         try:
             release_kv_cache(req, self._tree_cache)
         finally:
-            if capacity_lease is not None:
-                capacity_lease.release()
+            if on_release is not None:
+                on_release()

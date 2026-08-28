@@ -159,9 +159,6 @@ class Stage:
                 decode_pending_limit=getattr(
                     pd_execution, "decode_pending_limit", None
                 ),
-                max_inflight_handoffs=getattr(
-                    pd_execution, "max_inflight_handoffs", None
-                ),
                 max_inflight_handoff_tokens=getattr(
                     pd_execution, "max_inflight_handoff_tokens", None
                 ),
@@ -1070,28 +1067,64 @@ class Stage:
                 except _queue_mod.Empty:
                     break
 
+    def _pd_handoff_gate(self) -> Any:
+        gate = self.__dict__.get("_pd_handoff_semaphore")
+        if gate is not None:
+            return gate
+        limit = getattr(
+            self.__dict__.get("pd_execution"), "max_inflight_handoffs", None
+        )
+        if not limit:
+            return None
+        gate = asyncio.Semaphore(int(limit))
+        self._pd_handoff_semaphore = gate
+        return gate
+
     def _launch_pd_handoff(self, request_id: str, handoff: Any) -> None:
         # Note (Yue Yin): ACK latency must not stop this stage from draining
         # scheduler output for unrelated requests.
-        task = asyncio.create_task(self._send_pd_handoff(request_id, handoff))
+        entered = False
+
+        async def run() -> None:
+            nonlocal entered
+            entered = True
+            await self._send_pd_handoff(request_id, handoff)
+
+        task = asyncio.create_task(run())
         self._receive_tasks.add(task)
         task.add_done_callback(self._receive_tasks.discard)
-        # The task may be cancelled before its coroutine executes. The lease
-        # release is idempotent with CommEngine ACK/failure/shutdown cleanup.
-        task.add_done_callback(lambda _done: handoff.lease.release())
+
+        def release_before_start(_done: Any) -> None:
+            if not entered:
+                handoff.lease.release()
+
+        task.add_done_callback(release_before_start)
         task.add_done_callback(
             lambda done: self._on_background_task_done(done, f"PD handoff {request_id}")
         )
 
     async def _send_pd_handoff(self, request_id: str, handoff: Any) -> None:
-        await self._send_pd_handoff_now(request_id, handoff)
+        gate = self._pd_handoff_gate()
+        if gate is None:
+            await self._send_pd_handoff_now(request_id, handoff)
+            return
+        send_started = False
+        try:
+            async with gate:
+                send_started = True
+                await self._send_pd_handoff_now(request_id, handoff)
+        finally:
+            if not send_started:
+                handoff.lease.release()
 
     async def _send_pd_handoff_now(self, request_id: str, handoff: Any) -> None:
-        metadata = PrefillContinuationProducer(tp_size=1).prepare_rank_metadata(
-            handoff.continuation,
-            0,
-        )
+        comm_started = False
         try:
+            metadata = PrefillContinuationProducer(tp_size=1).prepare_rank_metadata(
+                handoff.continuation,
+                0,
+            )
+            comm_started = True
             await self._comm.send_kv_pages(
                 request_id=request_id,
                 source_pool_id=handoff.source_pool_id,
@@ -1108,6 +1141,8 @@ class Stage:
             logger.exception("PD handoff failed for request %s", request_id)
             await self._send_failure(request_id, f"PD handoff failed: {exc}")
         finally:
+            if not comm_started:
+                handoff.lease.release()
             self._clear_request_state(request_id)
 
     async def _drain_outbox_follower(self) -> None:
